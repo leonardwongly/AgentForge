@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { performance } from "node:perf_hooks";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { PullRequestInput } from "@agentforge/core";
@@ -77,5 +78,32 @@ describe("deterministic detectors", () => {
     expect(migration.map((fact) => fact.type)).toContain("migration_added");
     expect(secret.map((fact) => fact.type)).toContain("secret_like_value_detected");
     expect(JSON.stringify(secret)).not.toContain("ghp_123456");
+  });
+
+  it("handles a 500-file PR without unbounded detector work", () => {
+    const pr: PullRequestInput = {
+      repositoryFullName: "acme/large-pr",
+      pullRequestNumber: 500,
+      title: "Large generated fixture",
+      authorLogin: "developer",
+      baseBranch: "main",
+      headBranch: "feature/large-pr",
+      headSha: "abc500",
+      body: "Large metadata-only evaluation.",
+      labels: [],
+      commits: [],
+      changedFiles: Array.from({ length: 500 }, (_, index) => ({
+        filename: `docs/generated-${index}.md`,
+        status: "modified",
+        patch: `+line ${index}`
+      }))
+    };
+
+    const started = performance.now();
+    const facts = extractVerifiedFacts(pr, fintechConfig());
+    const durationMs = performance.now() - started;
+
+    expect(facts).toHaveLength(0);
+    expect(durationMs).toBeLessThan(2000);
   });
 });
