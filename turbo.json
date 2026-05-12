@@ -1,5 +1,26 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalEnv": [
+    "DATABASE_URL",
+    "REDIS_URL",
+    "NODE_ENV",
+    "GITHUB_APP_ID",
+    "GITHUB_APP_PRIVATE_KEY",
+    "GITHUB_WEBHOOK_SECRET",
+    "GITHUB_CLIENT_ID",
+    "GITHUB_CLIENT_SECRET",
+    "APP_BASE_URL",
+    "API_BASE_URL",
+    "DEFAULT_POLICY_MODE",
+    "SOURCE_CODE_STORAGE",
+    "FULL_DIFF_RETENTION",
+    "REDACT_SECRETS",
+    "LLM_FEATURES",
+    "AUDIT_RECORD_RETENTION_DAYS",
+    "EXPORT_STORAGE_BUCKET",
+    "EXPORT_STORAGE_REGION",
+    "SESSION_SECRET"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
