@@ -1,0 +1,46 @@
+# GitHub App Setup
+
+Create a GitHub App for local or production use.
+
+Required webhook events:
+
+- `pull_request`
+- `pull_request_review`
+- `check_suite`
+- `check_run`
+- `push`
+- `repository`
+- `installation`
+- `installation_repositories`
+
+Minimum permissions:
+
+- Pull requests: read/write
+- Checks: read/write
+- Contents: read
+- Metadata: read
+- Issues: read/write if PR-visible notes are enabled
+- Members: read if team membership validation is enabled
+
+Webhook URL:
+
+```text
+https://<api-host>/webhooks/github
+```
+
+Local development:
+
+```bash
+pnpm dev:api
+ngrok http 4000
+```
+
+Set the webhook URL to the tunnel URL plus `/webhooks/github`. Generate a webhook secret, save it in GitHub, and set `GITHUB_WEBHOOK_SECRET` in `.env`.
+
+Private key setup:
+
+1. Generate a private key in GitHub App settings.
+2. Store the PEM in a secret manager for production.
+3. For local development, place the escaped PEM in `GITHUB_APP_PRIVATE_KEY`.
+
+Do not commit GitHub private keys, webhook secrets, OAuth secrets, tokens, or installation tokens.
