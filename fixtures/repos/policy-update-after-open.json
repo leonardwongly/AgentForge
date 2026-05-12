@@ -1,0 +1,20 @@
+{
+  "repositoryFullName": "acme/payments",
+  "pullRequestNumber": 13,
+  "title": "Policy version preservation fixture",
+  "authorLogin": "lee",
+  "baseBranch": "main",
+  "headBranch": "feature/policy-version-demo",
+  "headSha": "sha_policy_version",
+  "body": "Rollback plan: revert before merge if validation fails.",
+  "labels": [],
+  "commits": [{ "sha": "sha_policy_version", "message": "feat: policy version demo" }],
+  "reviews": [],
+  "changedFiles": [
+    {
+      "filename": "src/checkout/session.ts",
+      "status": "modified",
+      "patch": "@@ -1 +1 @@\n-export const ttl = 300\n+export const ttl = 240"
+    }
+  ]
+}

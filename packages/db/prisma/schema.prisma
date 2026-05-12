@@ -1,0 +1,334 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PolicyMode {
+  observe
+  warn
+  enforce
+}
+
+enum EvaluationStatus {
+  pass
+  warn
+  block
+}
+
+enum FactConfidence {
+  verified
+  observed
+  inferred
+  attested
+}
+
+enum FindingSeverity {
+  critical
+  high
+  medium
+  low
+}
+
+enum LifecycleState {
+  opened
+  evaluated
+  blocked
+  warned
+  passed
+  overridden
+  merged
+  closed
+}
+
+model Organization {
+  id            String               @id @default(uuid())
+  name          String
+  slug          String               @unique
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  installations GitHubInstallation[]
+  repositories  Repository[]
+  policyVersions PolicyVersion[]
+  auditEvents   AuditEvent[]
+  usageEvents   UsageEvent[]
+  retentionSettings RetentionSetting?
+
+  @@index([slug])
+}
+
+model GitHubInstallation {
+  id                   String       @id @default(uuid())
+  organizationId        String
+  githubInstallationId  BigInt       @unique
+  accountLogin          String
+  accountType           String
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  organization          Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+}
+
+model Repository {
+  id                     String       @id @default(uuid())
+  organizationId          String
+  githubRepositoryId      BigInt       @unique
+  fullName                String
+  owner                   String
+  name                    String
+  defaultBranch           String
+  protected               Boolean      @default(false)
+  enabled                 Boolean      @default(true)
+  currentPolicyVersionId  String?
+  mode                    PolicyMode?
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+  organization            Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  currentPolicyVersion    PolicyVersion? @relation("RepositoryCurrentPolicy", fields: [currentPolicyVersionId], references: [id])
+  policyVersions          PolicyVersion[] @relation("RepositoryPolicyVersions")
+  pullRequests            PullRequest[]
+  auditEvents             AuditEvent[]
+  usageEvents             UsageEvent[]
+
+  @@unique([organizationId, fullName])
+  @@index([organizationId, enabled])
+}
+
+model PullRequest {
+  id                   String       @id @default(uuid())
+  repositoryId          String
+  githubPullRequestId   BigInt
+  number                Int
+  title                 String
+  authorLogin           String
+  baseBranch            String
+  headBranch            String
+  headSha               String
+  state                 String
+  mergedAt              DateTime?
+  closedAt              DateTime?
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+  repository            Repository   @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  evaluations           Evaluation[]
+  overrides             OverrideRecord[]
+  changeControlRecord   ChangeControlRecord?
+  auditEvents           AuditEvent[]
+
+  @@unique([repositoryId, number])
+  @@index([repositoryId, headSha])
+}
+
+model PolicyPack {
+  id            String          @id
+  name          String
+  description   String
+  version       String
+  builtIn       Boolean         @default(true)
+  defaultMode   PolicyMode
+  contentYaml   String
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  policyVersions PolicyVersion[]
+}
+
+model PolicyVersion {
+  id             String        @id @default(uuid())
+  organizationId String
+  repositoryId   String?
+  policyPackId   String?
+  version        String
+  mode           PolicyMode
+  contentYaml    String
+  contentHash    String
+  createdBy      String
+  createdAt      DateTime      @default(now())
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository     Repository?   @relation("RepositoryPolicyVersions", fields: [repositoryId], references: [id], onDelete: Cascade)
+  policyPack     PolicyPack?   @relation(fields: [policyPackId], references: [id])
+  evaluations    Evaluation[]
+  currentForRepositories Repository[] @relation("RepositoryCurrentPolicy")
+
+  @@index([organizationId, repositoryId, createdAt])
+  @@unique([organizationId, repositoryId, version])
+}
+
+model Evaluation {
+  id              String        @id @default(uuid())
+  pullRequestId   String
+  policyVersionId String
+  mode            PolicyMode
+  status          EvaluationStatus
+  headSha         String
+  startedAt       DateTime      @default(now())
+  completedAt     DateTime?
+  durationMs      Int?
+  explanationJson Json
+  pullRequest     PullRequest   @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  policyVersion   PolicyVersion @relation(fields: [policyVersionId], references: [id])
+  facts           VerifiedFactRecord[]
+  evidence        EvidenceRequirementRecord[]
+  reviewers       ReviewerRequirementRecord[]
+  overrides       OverrideRecord[]
+  checkRuns       CheckRun[]
+
+  @@index([pullRequestId, headSha])
+}
+
+model VerifiedFactRecord {
+  id           String            @id @default(uuid())
+  evaluationId String
+  type         String
+  source       String
+  path         String?
+  evidence     String
+  confidence   FactConfidence
+  severity     FindingSeverity?
+  metadataJson Json?
+  createdAt    DateTime          @default(now())
+  evaluation   Evaluation        @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  @@index([evaluationId, type])
+}
+
+model EvidenceRequirementRecord {
+  id                   String     @id @default(uuid())
+  evaluationId          String
+  kind                 String
+  status               String
+  source               String?
+  requiredByFindingId   String
+  providedBy            String?
+  providedAt            DateTime?
+  approvedBy            String?
+  approvedAt            DateTime?
+  contentSummary        String?
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+  evaluation            Evaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  @@index([evaluationId, status])
+}
+
+model ReviewerRequirementRecord {
+  id                  String     @id @default(uuid())
+  evaluationId         String
+  reviewer             String
+  reviewerType         String
+  tier                 String
+  reason               String
+  triggeredByFindingId String
+  clearsWhen           String?
+  approved             Boolean    @default(false)
+  approvedBy           String?
+  approvedAt           DateTime?
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+  evaluation           Evaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  @@index([evaluationId, tier, approved])
+}
+
+model OverrideRecord {
+  id             String       @id @default(uuid())
+  pullRequestId  String
+  evaluationId   String?
+  actor          String
+  actorRole      String
+  reason         String
+  scope          String
+  visibleInPr    Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  pullRequest    PullRequest  @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  evaluation     Evaluation?  @relation(fields: [evaluationId], references: [id], onDelete: SetNull)
+
+  @@index([pullRequestId, createdAt])
+}
+
+model CheckRun {
+  id              String      @id @default(uuid())
+  evaluationId    String
+  githubCheckRunId BigInt?
+  conclusion      String
+  outputTitle     String
+  outputSummary   String
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  evaluation      Evaluation  @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  @@index([evaluationId])
+}
+
+model ChangeControlRecord {
+  id                    String       @id @default(uuid())
+  pullRequestId          String       @unique
+  repositoryFullName     String
+  pullRequestNumber      Int
+  headSha                String
+  baseBranch             String
+  mode                   PolicyMode
+  policyVersion          String
+  policyPackId           String?
+  policyPackVersion      String?
+  checkStatus            EvaluationStatus
+  lifecycle              LifecycleState
+  verifiedFindingsJson   Json
+  requiredEvidenceJson   Json
+  requiredReviewersJson  Json
+  decisionJson           Json?
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+  pullRequest            PullRequest  @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+
+  @@index([repositoryFullName, pullRequestNumber])
+  @@index([checkStatus, lifecycle])
+}
+
+model AuditEvent {
+  id             String        @id @default(uuid())
+  organizationId String
+  repositoryId   String?
+  pullRequestId  String?
+  actor          String
+  action         String
+  targetType     String
+  targetId       String
+  metadataJson   Json?
+  createdAt      DateTime      @default(now())
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository     Repository?   @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+  pullRequest    PullRequest?  @relation(fields: [pullRequestId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, action, createdAt])
+}
+
+model UsageEvent {
+  id             String       @id @default(uuid())
+  organizationId String
+  repositoryId   String?
+  eventType      String
+  quantity       Int          @default(1)
+  metadataJson   Json?
+  createdAt      DateTime     @default(now())
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository     Repository?  @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, eventType, createdAt])
+}
+
+model RetentionSetting {
+  id                    String       @id @default(uuid())
+  organizationId         String       @unique
+  sourceCodeStorage      Boolean      @default(false)
+  fullDiffRetention      String       @default("disabled")
+  redactSecrets          Boolean      @default(true)
+  llmFeatures            Boolean      @default(false)
+  auditRecordRetentionDays Int         @default(365)
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+  organization            Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}

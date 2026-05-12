@@ -1,0 +1,20 @@
+{
+  "repositoryFullName": "acme/platform",
+  "pullRequestNumber": 4,
+  "title": "Update deploy workflow",
+  "authorLogin": "lee",
+  "baseBranch": "main",
+  "headBranch": "platform/deploy-flow",
+  "headSha": "sha_ci",
+  "body": "CI change reason: split production deploy from staging.",
+  "labels": [],
+  "commits": [{ "sha": "sha_ci", "message": "ci: update deploy workflow" }],
+  "reviews": [],
+  "changedFiles": [
+    {
+      "filename": ".github/workflows/deploy.yml",
+      "status": "modified",
+      "patch": "@@ -4 +4 @@\n-  deploy:\n+  deploy-production:"
+    }
+  ]
+}

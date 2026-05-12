@@ -1,0 +1,25 @@
+{
+  "name": "@agentforge/worker",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@agentforge/config": "workspace:*",
+    "@agentforge/core": "workspace:*",
+    "@agentforge/detectors": "workspace:*",
+    "@agentforge/github": "workspace:*",
+    "@agentforge/policy": "workspace:*",
+    "@agentforge/records": "workspace:*",
+    "bullmq": "5.76.8",
+    "ioredis": "5.10.1"
+  }
+}

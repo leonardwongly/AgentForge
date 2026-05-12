@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "ignoreDeprecations": "6.0",
+    "types": ["node"],
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "rootDir": ".",
+    "baseUrl": ".",
+    "paths": {
+      "@agentforge/config": ["packages/config/src/index.ts"],
+      "@agentforge/core": ["packages/core/src/index.ts"],
+      "@agentforge/db": ["packages/db/src/index.ts"],
+      "@agentforge/detectors": ["packages/detectors/src/index.ts"],
+      "@agentforge/evidence": ["packages/evidence/src/index.ts"],
+      "@agentforge/github": ["packages/github/src/index.ts"],
+      "@agentforge/policy": ["packages/policy/src/index.ts"],
+      "@agentforge/records": ["packages/records/src/index.ts"],
+      "@agentforge/reviewers": ["packages/reviewers/src/index.ts"],
+      "@agentforge/security": ["packages/security/src/index.ts"],
+      "@agentforge/testing": ["packages/testing/src/index.ts"],
+      "@agentforge/ui": ["packages/ui/src/index.ts"]
+    }
+  }
+}

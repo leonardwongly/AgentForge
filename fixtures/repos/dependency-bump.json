@@ -1,0 +1,22 @@
+{
+  "repositoryFullName": "acme/payments",
+  "pullRequestNumber": 9,
+  "title": "Bump payment SDK",
+  "authorLogin": "lee",
+  "baseBranch": "main",
+  "headBranch": "deps/payment-sdk",
+  "headSha": "sha_dep_bump",
+  "body": "Updates the payment SDK.",
+  "labels": [],
+  "commits": [{ "sha": "sha_dep_bump", "message": "build: bump payment sdk" }],
+  "reviews": [],
+  "changedFiles": [
+    {
+      "filename": "package.json",
+      "status": "modified",
+      "previousContent": "{\"dependencies\":{\"payment-sdk\":\"2.4.1\"}}",
+      "currentContent": "{\"dependencies\":{\"payment-sdk\":\"3.0.0\"}}",
+      "patch": "@@ -3 +3 @@\n-    \"payment-sdk\": \"2.4.1\"\n+    \"payment-sdk\": \"3.0.0\""
+    }
+  ]
+}

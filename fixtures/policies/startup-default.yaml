@@ -1,0 +1,29 @@
+version: 1
+policy_pack_id: startup-default
+policy_pack_version: 1.0.0
+agentforge:
+  mode: warn
+  apply_to:
+    - all_pull_requests
+sensitive_paths:
+  ci_and_deploy:
+    paths:
+      - ".github/workflows/**"
+      - "scripts/deploy/**"
+      - "infra/prod/**"
+    required_evidence:
+      - "ci_change_reason"
+tests:
+  deleted_tests:
+    action: block
+    required_evidence:
+      - "deleted_test_explanation"
+dependencies:
+  new_package:
+    action: require_review
+    required_evidence:
+      - "dependency_justification"
+database:
+  migrations:
+    required_evidence:
+      - "rollback_plan"

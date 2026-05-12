@@ -1,0 +1,29 @@
+{
+  "repositoryFullName": "acme/payments",
+  "pullRequestNumber": 12,
+  "title": "Override fixture for blocked billing PR",
+  "authorLogin": "mira",
+  "baseBranch": "main",
+  "headBranch": "feature/billing-hotfix",
+  "headSha": "sha_override",
+  "body": "Emergency hotfix.",
+  "labels": [],
+  "commits": [{ "sha": "sha_override", "message": "fix: billing hotfix" }],
+  "reviews": [],
+  "manualEvidence": [
+    {
+      "kind": "rollback_plan",
+      "content": "Revert the hotfix commit and restore previous billing limit.",
+      "actor": "mira",
+      "approved": true,
+      "approvedBy": "billing-owner"
+    }
+  ],
+  "changedFiles": [
+    {
+      "filename": "src/billing/hotfix.ts",
+      "status": "modified",
+      "patch": "@@ -1 +1 @@\n-export const enabled = false\n+export const enabled = true"
+    }
+  ]
+}

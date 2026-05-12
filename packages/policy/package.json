@@ -1,0 +1,25 @@
+{
+  "name": "@agentforge/policy",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run src"
+  },
+  "dependencies": {
+    "@agentforge/core": "workspace:*",
+    "@agentforge/evidence": "workspace:*",
+    "@agentforge/reviewers": "workspace:*",
+    "minimatch": "10.2.5",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@agentforge/detectors": "workspace:*"
+  }
+}

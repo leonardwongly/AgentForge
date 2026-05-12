@@ -1,0 +1,20 @@
+{
+  "repositoryFullName": "acme/payments",
+  "pullRequestNumber": 2,
+  "title": "Update checkout billing validation",
+  "authorLogin": "mira",
+  "baseBranch": "main",
+  "headBranch": "feature/billing-validation",
+  "headSha": "sha_billing",
+  "body": "Updates checkout validation.",
+  "labels": [],
+  "commits": [{ "sha": "sha_billing", "message": "fix: update checkout validation" }],
+  "reviews": [],
+  "changedFiles": [
+    {
+      "filename": "src/billing/checkout.ts",
+      "status": "modified",
+      "patch": "@@ -1 +1 @@\n-export const limit = 10\n+export const limit = 20"
+    }
+  ]
+}

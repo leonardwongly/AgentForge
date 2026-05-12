@@ -1,0 +1,23 @@
+{
+  "name": "@agentforge/db",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prisma:validate": "DATABASE_URL=${DATABASE_URL:-postgresql://agentforge:agentforge@localhost:15432/agentforge} prisma validate --schema prisma/schema.prisma",
+    "prisma:migrate": "DATABASE_URL=${DATABASE_URL:-postgresql://agentforge:agentforge@localhost:15432/agentforge} prisma migrate dev --schema prisma/schema.prisma",
+    "prisma:seed": "DATABASE_URL=${DATABASE_URL:-postgresql://agentforge:agentforge@localhost:15432/agentforge} tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@agentforge/policy": "workspace:*",
+    "@prisma/client": "6.19.3"
+  },
+  "devDependencies": {
+    "prisma": "6.19.3"
+  }
+}

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+**/dist/
+.next/
+**/.next/
+coverage/
+.turbo/
+pnpm-lock.yaml
+playwright-report/
+test-results/
+.playwright-mcp/

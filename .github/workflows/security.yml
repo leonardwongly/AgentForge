@@ -1,0 +1,25 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+          cache: "pnpm"
+      - run: corepack enable
+      - run: corepack prepare pnpm@11.1.1 --activate
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level high
+      - name: Secret scan
+        run: |
+          ! git grep -nE 'ghp_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN .*PRIVATE KEY-----' -- . ':!fixtures/repos/secret-like-token.json'
+      - run: pnpm --filter @agentforge/security test

@@ -1,0 +1,20 @@
+{
+  "repositoryFullName": "acme/payments",
+  "pullRequestNumber": 1,
+  "title": "Update README",
+  "authorLogin": "sam",
+  "baseBranch": "main",
+  "headBranch": "docs/readme",
+  "headSha": "sha_readme",
+  "body": "Updates documentation only.",
+  "labels": [],
+  "commits": [{ "sha": "sha_readme", "message": "docs: update readme" }],
+  "reviews": [],
+  "changedFiles": [
+    {
+      "filename": "README.md",
+      "status": "modified",
+      "patch": "@@ -1 +1 @@\n-Hello\n+Hello AgentForge"
+    }
+  ]
+}

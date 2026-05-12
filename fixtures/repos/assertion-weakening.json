@@ -1,0 +1,20 @@
+{
+  "repositoryFullName": "acme/payments",
+  "pullRequestNumber": 7,
+  "title": "Relax checkout assertion",
+  "authorLogin": "mira",
+  "baseBranch": "main",
+  "headBranch": "test/relax-assertion",
+  "headSha": "sha_assertion",
+  "body": "Test change only.",
+  "labels": [],
+  "commits": [{ "sha": "sha_assertion", "message": "test: relax assertion" }],
+  "reviews": [],
+  "changedFiles": [
+    {
+      "filename": "tests/checkout.test.ts",
+      "status": "modified",
+      "patch": "@@ -8 +8 @@\n-  expect(total).toBe(100)\n+  expect(total).not.toBe(0)"
+    }
+  ]
+}

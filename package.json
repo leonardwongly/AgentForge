@@ -1,0 +1,59 @@
+{
+  "name": "agentforge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AgentForge Merge Guard is a deterministic, evidence-based GitHub pull request change-control system.",
+  "packageManager": "pnpm@11.1.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "dev:api": "pnpm --filter @agentforge/api dev",
+    "dev:web": "pnpm --filter @agentforge/web dev",
+    "dev:worker": "pnpm --filter @agentforge/worker dev",
+    "build": "turbo run build",
+    "db:migrate": "pnpm --filter @agentforge/db prisma:migrate",
+    "db:seed": "pnpm --filter @agentforge/db prisma:seed",
+    "test": "vitest run",
+    "test:unit": "vitest run packages",
+    "test:integration": "vitest run apps/api/test",
+    "test:e2e": "playwright test",
+    "lint": "eslint .",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "fixtures:run": "tsx scripts/run-fixtures.ts",
+    "policy:validate": "tsx scripts/validate-policy.ts",
+    "policy:preview": "tsx scripts/preview-policy.ts",
+    "prisma:validate": "pnpm --filter @agentforge/db prisma:validate"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.60.0",
+    "@types/node": "25.7.0",
+    "@types/semver": "7.7.1",
+    "@types/supertest": "7.2.0",
+    "@typescript-eslint/eslint-plugin": "8.59.3",
+    "@typescript-eslint/parser": "8.59.3",
+    "eslint": "10.3.0",
+    "eslint-config-prettier": "10.1.8",
+    "prettier": "3.8.3",
+    "prisma": "6.19.3",
+    "supertest": "7.2.2",
+    "tsx": "4.21.0",
+    "turbo": "2.9.12",
+    "typescript": "6.0.3",
+    "vitest": "4.1.6"
+  },
+  "pnpm": {
+    "allowBuilds": {
+      "@prisma/client": true,
+      "@prisma/engines": true,
+      "esbuild": true,
+      "msgpackr-extract": true,
+      "prisma": true,
+      "sharp": true
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "action": "opened",
+  "installation": { "id": 12345 },
+  "repository": {
+    "id": 987,
+    "full_name": "acme/payments",
+    "default_branch": "main"
+  },
+  "pull_request": {
+    "id": 456,
+    "number": 2,
+    "title": "Update checkout billing validation",
+    "body": "Updates checkout validation.",
+    "state": "open",
+    "merged": false,
+    "user": { "login": "mira" },
+    "base": { "ref": "main" },
+    "head": { "ref": "feature/billing-validation", "sha": "sha_billing" }
+  }
+}
