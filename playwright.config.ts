@@ -14,7 +14,7 @@ export default defineConfig({
     }
   ],
   webServer: {
-    command: "pnpm dev:web",
+    command: "DEMO_MODE=true pnpm dev:web",
     url: process.env.APP_BASE_URL ?? "http://localhost:3000",
     reuseExistingServer: true,
     timeout: 120_000

@@ -113,6 +113,11 @@ describe("security and audit hardening", () => {
     const dashboard = await app.inject({ method: "GET", url: "/api/dashboard/blocked-prs" });
     expect(dashboard.body).not.toContain(rawGithubToken);
     expect(dashboard.body).not.toContain(rawSource);
+    const records = await app.inject({ method: "GET", url: "/api/dashboard/records" });
+    expect(records.statusCode).toBe(200);
+    expect(records.body).toContain("records");
+    expect(records.body).not.toContain(rawGithubToken);
+    expect(records.body).not.toContain(rawSource);
     await app.close();
   });
 

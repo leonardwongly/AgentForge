@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Save, ShieldCheck, WandSparkles } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
-import { policyYaml } from "../../../data";
+import { loadPolicyYaml } from "../../../data";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -9,6 +9,7 @@ type PageProps = {
 
 export default async function PolicyEditorPage({ params }: PageProps) {
   const { id } = await params;
+  const policy = await loadPolicyYaml(id);
 
   return (
     <>
@@ -30,6 +31,18 @@ export default async function PolicyEditorPage({ params }: PageProps) {
       </header>
 
       <section className="page">
+        {policy.source !== "api" ? (
+          <section className={`notice notice--${policy.source}`}>
+            <ShieldCheck size={18} aria-hidden="true" />
+            <div>
+              <h2>
+                {policy.source === "demo" ? "Bundled policy shown" : "Policy API unavailable"}
+              </h2>
+              <p>{policy.message}</p>
+            </div>
+          </section>
+        ) : null}
+
         <div className="summary-strip">
           <div>
             <span>Repository</span>
@@ -60,7 +73,7 @@ export default async function PolicyEditorPage({ params }: PageProps) {
                 <WandSparkles size={16} aria-hidden="true" /> Preview
               </Link>
             </div>
-            <pre className="code-pane">{policyYaml}</pre>
+            <pre className="code-pane">{policy.policy}</pre>
           </section>
 
           <div className="bar-list">

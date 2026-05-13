@@ -577,6 +577,11 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   });
 
   app.get("/api/dashboard/summary", async () => safe(dashboardSummary(await listRecords())));
+  app.get("/api/dashboard/records", async () => ({
+    records: safe(
+      (await listRecords()).map((record) => sanitizeChangeControlRecord(record, storagePolicy))
+    )
+  }));
   app.get("/api/dashboard/blocked-prs", async () => ({
     blockedPullRequests: safe(
       (await listRecords()).filter(

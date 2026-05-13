@@ -1,18 +1,20 @@
 import Link from "next/link";
 import { CheckCircle2, FileWarning, Filter } from "lucide-react";
 import { MetricCard, ProgressBar, StatusBadge } from "@agentforge/ui";
+import { DataSourceNotice } from "../../data-source-notice";
 import {
-  dashboardRecords,
   evidenceByKind,
   getDashboardSummary,
   humanize,
+  loadDashboardData,
   missingEvidence
 } from "../../data";
 
-export default function EvidenceCompletionPage() {
-  const summary = getDashboardSummary();
-  const evidenceGroups = evidenceByKind();
-  const evidenceItems = dashboardRecords.flatMap((item) => item.record.requiredEvidence);
+export default async function EvidenceCompletionPage() {
+  const data = await loadDashboardData();
+  const summary = getDashboardSummary(data.records);
+  const evidenceGroups = evidenceByKind(data.records);
+  const evidenceItems = data.records.flatMap((item) => item.record.requiredEvidence);
   const approved = evidenceItems.filter((item) => item.status === "approved").length;
   const provided = evidenceItems.filter((item) => item.status === "provided").length;
 
@@ -29,6 +31,8 @@ export default function EvidenceCompletionPage() {
       </header>
 
       <section className="page">
+        <DataSourceNotice {...data} />
+
         <div className="metrics-grid">
           <MetricCard
             label="Completion"
@@ -66,6 +70,9 @@ export default function EvidenceCompletionPage() {
               <CheckCircle2 size={18} aria-hidden="true" />
             </div>
             <div className="panel-body bar-list">
+              {evidenceGroups.length === 0 ? (
+                <p className="muted">No evidence requirements are stored yet.</p>
+              ) : null}
               {evidenceGroups.map((group) => {
                 const complete =
                   group.total === 0
@@ -95,7 +102,11 @@ export default function EvidenceCompletionPage() {
               <FileWarning size={18} aria-hidden="true" />
             </div>
             <ul className="compact-list">
-              {dashboardRecords
+              {data.records.filter((item) => missingEvidence(item.record).length > 0).length ===
+              0 ? (
+                <li>No required evidence is missing in the current data set.</li>
+              ) : null}
+              {data.records
                 .filter((item) => missingEvidence(item.record).length > 0)
                 .map((item) => (
                   <li key={item.record.id}>
@@ -135,7 +146,14 @@ export default function EvidenceCompletionPage() {
               </tr>
             </thead>
             <tbody>
-              {dashboardRecords.flatMap((item) =>
+              {evidenceItems.length === 0 ? (
+                <tr>
+                  <td className="empty-row" colSpan={6}>
+                    No evidence requirements are stored yet.
+                  </td>
+                </tr>
+              ) : null}
+              {data.records.flatMap((item) =>
                 item.record.requiredEvidence.map((evidence) => (
                   <tr key={`${item.record.id}:${evidence.id}`}>
                     <td>{item.record.repositoryFullName}</td>

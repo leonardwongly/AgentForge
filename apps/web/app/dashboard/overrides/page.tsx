@@ -1,11 +1,13 @@
 import Link from "next/link";
 import { ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { MetricCard, ProgressBar, StatusBadge } from "@agentforge/ui";
-import { dashboardRecords, formatDate, getDashboardSummary } from "../../data";
+import { DataSourceNotice } from "../../data-source-notice";
+import { formatDate, getDashboardSummary, loadDashboardData } from "../../data";
 
-export default function OverridesPage() {
-  const summary = getDashboardSummary();
-  const overrides = dashboardRecords.filter((item) => item.record.lifecycle === "overridden");
+export default async function OverridesPage() {
+  const data = await loadDashboardData();
+  const summary = getDashboardSummary(data.records);
+  const overrides = data.records.filter((item) => item.record.lifecycle === "overridden");
   const topReason = overrides[0]?.override?.reason ?? "No override reason recorded in this window.";
 
   return (
@@ -23,6 +25,8 @@ export default function OverridesPage() {
       </header>
 
       <section className="page">
+        <DataSourceNotice {...data} />
+
         <div className="metrics-grid">
           <MetricCard
             label="Override count"
@@ -133,6 +137,13 @@ export default function OverridesPage() {
               </tr>
             </thead>
             <tbody>
+              {overrides.length === 0 ? (
+                <tr>
+                  <td className="empty-row" colSpan={7}>
+                    No authorized overrides are recorded in the current data set.
+                  </td>
+                </tr>
+              ) : null}
               {overrides.map((item) => (
                 <tr key={item.record.id}>
                   <td>{item.record.repositoryFullName}</td>

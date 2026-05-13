@@ -28,7 +28,7 @@ const navigation = [
   { href: "/dashboard/policy-violations", label: "Policy Findings", icon: ListChecks },
   { href: "/dashboard/overrides", label: "Overrides", icon: ShieldCheck },
   { href: "/dashboard/evidence-completion", label: "Evidence", icon: PieChart },
-  { href: "/records/ccr_demo", label: "Records", icon: FileCheck },
+  { href: "/records", label: "Records", icon: FileCheck },
   { href: "/repositories/repo_local/policy", label: "Policy", icon: SlidersHorizontal },
   { href: "/repositories/repo_local/policy-preview", label: "Preview", icon: Gauge },
   { href: "/onboarding", label: "Onboarding", icon: ClipboardCheck },

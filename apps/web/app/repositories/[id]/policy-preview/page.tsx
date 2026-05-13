@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { Play, ShieldCheck } from "lucide-react";
 import { MetricCard, StatusBadge } from "@agentforge/ui";
+import { DataSourceNotice } from "../../../data-source-notice";
 import {
-  dashboardRecords,
   hasAgentSignal,
   humanize,
+  loadDashboardData,
   missingEvidence,
   pendingRequiredReviewers
 } from "../../../data";
@@ -15,7 +16,8 @@ type PageProps = {
 
 export default async function PolicyPreviewPage({ params }: PageProps) {
   const { id } = await params;
-  const wouldBlock = dashboardRecords.filter(
+  const data = await loadDashboardData();
+  const wouldBlock = data.records.filter(
     (item) =>
       item.record.checkStatus === "block" ||
       missingEvidence(item.record).length > 0 ||
@@ -35,6 +37,8 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
       </header>
 
       <section className="page">
+        <DataSourceNotice {...data} />
+
         <div className="metrics-grid">
           <MetricCard
             label="Would block"
@@ -44,17 +48,13 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
           />
           <MetricCard
             label="Would warn"
-            value={String(
-              dashboardRecords.filter((item) => item.record.checkStatus === "warn").length
-            )}
+            value={String(data.records.filter((item) => item.record.checkStatus === "warn").length)}
             detail="Non-blocking warnings in the selected policy mode."
             tone="warn"
           />
           <MetricCard
             label="Would pass"
-            value={String(
-              dashboardRecords.filter((item) => item.record.checkStatus === "pass").length
-            )}
+            value={String(data.records.filter((item) => item.record.checkStatus === "pass").length)}
             detail="Configured policy requirements are satisfied."
             tone="pass"
           />
@@ -88,7 +88,15 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
               </tr>
             </thead>
             <tbody>
-              {dashboardRecords.map((item) => {
+              {data.records.length === 0 ? (
+                <tr>
+                  <td className="empty-row" colSpan={6}>
+                    No recent PR records are available for preview. Run fixture evaluation or send a
+                    webhook first.
+                  </td>
+                </tr>
+              ) : null}
+              {data.records.map((item) => {
                 const record = item.record;
                 const blockers =
                   missingEvidence(record).length + pendingRequiredReviewers(record).length;

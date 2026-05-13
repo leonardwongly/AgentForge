@@ -1,16 +1,19 @@
 import Link from "next/link";
 import { ExternalLink, Filter, GitBranch, UserCheck } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
+import { DataSourceNotice } from "../../data-source-notice";
 import {
   actionRequiredRecords,
   hasAgentSignal,
   humanize,
+  loadDashboardData,
   missingEvidence,
   pendingRequiredReviewers
 } from "../../data";
 
-export default function BlockedPrsPage() {
-  const actionRequired = actionRequiredRecords();
+export default async function BlockedPrsPage() {
+  const data = await loadDashboardData();
+  const actionRequired = actionRequiredRecords(data.records);
 
   return (
     <>
@@ -25,6 +28,8 @@ export default function BlockedPrsPage() {
       </header>
 
       <section className="page">
+        <DataSourceNotice {...data} />
+
         <section className="panel">
           <div className="panel-header">
             <div>
@@ -46,6 +51,13 @@ export default function BlockedPrsPage() {
               </tr>
             </thead>
             <tbody>
+              {actionRequired.length === 0 ? (
+                <tr>
+                  <td className="empty-row" colSpan={7}>
+                    No blocked or action-required PRs are stored yet.
+                  </td>
+                </tr>
+              ) : null}
               {actionRequired.map((item) => {
                 const record = item.record;
                 const missing = missingEvidence(record);

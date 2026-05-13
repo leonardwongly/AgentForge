@@ -1,7 +1,11 @@
 import { Download, GitBranch, Save, ShieldCheck } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
+import { loadRepositories } from "../data";
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
+  const repositories = await loadRepositories();
+  const enabledRepositories = repositories.repositories.filter((repository) => repository.enabled);
+
   return (
     <>
       <header className="topbar">
@@ -17,6 +21,16 @@ export default function SettingsPage() {
       </header>
 
       <section className="page">
+        {repositories.source !== "api" ? (
+          <section className={`notice notice--${repositories.source}`}>
+            <GitBranch size={18} aria-hidden="true" />
+            <div>
+              <h2>Repository settings unavailable</h2>
+              <p>{repositories.message}</p>
+            </div>
+          </section>
+        ) : null}
+
         <div className="two-column">
           <section className="panel">
             <div className="panel-header">
@@ -37,14 +51,25 @@ export default function SettingsPage() {
               <li>
                 <div className="list-row">
                   <span>Protected repositories</span>
-                  <strong>3 enabled</strong>
+                  <strong>{enabledRepositories.length} enabled</strong>
                 </div>
-                <p>acme/payments, acme/platform, acme/identity</p>
+                <p>
+                  {enabledRepositories.map((repository) => repository.fullName).join(", ") ||
+                    "No repositories enabled yet."}
+                </p>
               </li>
               <li>
                 <div className="list-row">
                   <span>Default mode</span>
-                  <StatusBadge status="warn" />
+                  <StatusBadge
+                    status={
+                      enabledRepositories[0]?.mode === "enforce"
+                        ? "enforce"
+                        : enabledRepositories[0]?.mode === "observe"
+                          ? "observe"
+                          : "warn"
+                    }
+                  />
                 </div>
                 <p>Repository and rule-level modes can override this setting.</p>
               </li>

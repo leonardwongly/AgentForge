@@ -1,8 +1,14 @@
 import { CheckCircle2, GitBranch, Play, ShieldCheck } from "lucide-react";
 import { ProgressBar, StatusBadge } from "@agentforge/ui";
-import { onboardingSteps } from "../data";
+import { loadRepositories, onboardingSteps } from "../data";
 
-export default function OnboardingPage() {
+export default async function OnboardingPage() {
+  const repositories = await loadRepositories();
+  const repositoryLabel =
+    repositories.repositories
+      .map((repository) => repository.fullName.split("/").at(-1))
+      .join(", ") || "Select repositories after connecting GitHub";
+
   return (
     <>
       <header className="topbar">
@@ -16,6 +22,16 @@ export default function OnboardingPage() {
       </header>
 
       <section className="page">
+        {repositories.source !== "api" ? (
+          <section className={`notice notice--${repositories.source}`}>
+            <GitBranch size={18} aria-hidden="true" />
+            <div>
+              <h2>GitHub setup data unavailable</h2>
+              <p>{repositories.message}</p>
+            </div>
+          </section>
+        ) : null}
+
         <section className="panel">
           <div className="panel-header">
             <div>
@@ -70,8 +86,8 @@ export default function OnboardingPage() {
               </div>
               <div className="field">
                 <label htmlFor="repositories">Repositories</label>
-                <select className="select" id="repositories" defaultValue="payments-platform">
-                  <option value="payments-platform">payments, platform, identity</option>
+                <select className="select" id="repositories" defaultValue={repositoryLabel}>
+                  <option value={repositoryLabel}>{repositoryLabel}</option>
                 </select>
               </div>
               <div className="field">

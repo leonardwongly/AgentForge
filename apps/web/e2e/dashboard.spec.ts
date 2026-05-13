@@ -12,13 +12,18 @@ test("dashboard shows action-required pull requests first", async ({ page }) => 
 });
 
 test("governance drill-down routes render careful change-control language", async ({ page }) => {
+  await page.goto("/dashboard/blocked-prs");
+  const recordHref =
+    (await page.getByRole("link", { name: "Record", exact: true }).first().getAttribute("href")) ??
+    "/records/ccr_demo";
   const routes = [
     ["/onboarding", "Onboarding", "Connect GitHub App"],
     ["/dashboard/blocked-prs", "Blocked PRs", "Action-required pull requests"],
     ["/dashboard/policy-violations", "Policy Violations", "policy findings"],
     ["/dashboard/overrides", "Overrides", "Authorized override activity"],
     ["/dashboard/evidence-completion", "Evidence Completion", "Required evidence missing"],
-    ["/records/ccr_demo", "Change Control Record", "Verified findings"],
+    ["/records", "Change Control Records", "Record index"],
+    [recordHref, "Change Control Record", "Verified findings"],
     ["/repositories/repo_local/policy", "Policy Editor", "Fintech policy pack fork"],
     ["/repositories/repo_local/policy-preview", "Policy Preview", "Recent PR preview"],
     ["/settings", "Settings", "Data handling"]

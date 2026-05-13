@@ -28,6 +28,25 @@ export type DashboardRecord = {
   }>;
 };
 
+export type DashboardDataSource = "api" | "empty" | "demo" | "unavailable";
+
+export type DashboardData = {
+  records: DashboardRecord[];
+  source: DashboardDataSource;
+  message: string;
+};
+
+export type RepositoryOption = {
+  id: string;
+  fullName: string;
+  enabled: boolean;
+  mode: string;
+  currentPolicyPack: string;
+};
+
+const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:4000";
+const demoMode = process.env.DEMO_MODE === "true" || process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+
 const now = "2026-05-13T09:00:00.000Z";
 
 export const dashboardRecords: DashboardRecord[] = [
@@ -544,6 +563,116 @@ export const onboardingSteps = [
   }
 ] as const;
 
+export async function loadDashboardData(): Promise<DashboardData> {
+  try {
+    const payload = await fetchApiJson<{ records: ChangeControlRecord[] }>(
+      "/api/dashboard/records"
+    );
+    const records = decorateRecords(payload.records ?? []);
+    if (records.length === 0) {
+      if (demoMode) {
+        return {
+          records: dashboardRecords,
+          source: "demo",
+          message:
+            "Demo data is shown because DEMO_MODE is enabled and no evaluated PRs are stored yet."
+        };
+      }
+      return {
+        records: [],
+        source: "empty",
+        message:
+          "No evaluated PRs are stored yet. Send a GitHub webhook or run a policy preview to create Change Control Records."
+      };
+    }
+    return {
+      records,
+      source: "api",
+      message: `Loaded ${records.length} Change Control Record${records.length === 1 ? "" : "s"} from the API.`
+    };
+  } catch (error) {
+    if (demoMode) {
+      return {
+        records: dashboardRecords,
+        source: "demo",
+        message: "Demo data is shown because DEMO_MODE is enabled and the API could not be reached."
+      };
+    }
+    return {
+      records: [],
+      source: "unavailable",
+      message:
+        error instanceof Error
+          ? `Dashboard API unavailable: ${error.message}. Start the API with pnpm dev:api.`
+          : "Dashboard API unavailable. Start the API with pnpm dev:api."
+    };
+  }
+}
+
+export async function loadRecord(
+  id: string
+): Promise<DashboardData & { item: DashboardRecord | undefined }> {
+  const data = await loadDashboardData();
+  return {
+    ...data,
+    item: data.records.find((record) => record.record.id === id)
+  };
+}
+
+export async function loadPolicyYaml(repositoryId: string): Promise<{
+  repositoryId: string;
+  policy: string;
+  source: DashboardDataSource;
+  message: string;
+}> {
+  try {
+    const payload = await fetchApiJson<{ repositoryId: string; policy?: string }>(
+      `/api/repositories/${encodeURIComponent(repositoryId)}/policy`
+    );
+    return {
+      repositoryId: payload.repositoryId,
+      policy: payload.policy ?? "",
+      source: "api",
+      message: "Loaded the active repository policy from the API."
+    };
+  } catch (error) {
+    return {
+      repositoryId,
+      policy: policyYaml,
+      source: demoMode ? "demo" : "unavailable",
+      message:
+        error instanceof Error
+          ? `Policy API unavailable: ${error.message}. Showing the bundled Fintech policy pack.`
+          : "Policy API unavailable. Showing the bundled Fintech policy pack."
+    };
+  }
+}
+
+export async function loadRepositories(): Promise<{
+  repositories: RepositoryOption[];
+  source: DashboardDataSource;
+  message: string;
+}> {
+  try {
+    const payload = await fetchApiJson<{ repositories: RepositoryOption[] }>("/api/repositories");
+    return {
+      repositories: payload.repositories ?? [],
+      source: "api",
+      message: "Loaded repository configuration from the API."
+    };
+  } catch (error) {
+    const fallback = inferRepositories(dashboardRecords);
+    return {
+      repositories: demoMode ? fallback : [],
+      source: demoMode ? "demo" : "unavailable",
+      message:
+        error instanceof Error
+          ? `Repository API unavailable: ${error.message}.`
+          : "Repository API unavailable."
+    };
+  }
+}
+
 export function getDashboardSummary(records = dashboardRecords) {
   const evidenceItems = records.flatMap((item) => item.record.requiredEvidence);
   const providedEvidence = evidenceItems.filter((item) => item.status !== "missing").length;
@@ -661,6 +790,125 @@ export function formatDate(value: string): string {
     hour: "2-digit",
     minute: "2-digit"
   }).format(new Date(value));
+}
+
+async function fetchApiJson<T>(path: string): Promise<T> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    cache: "no-store",
+    headers: {
+      accept: "application/json"
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText}`);
+  }
+  return (await response.json()) as T;
+}
+
+function decorateRecords(records: ChangeControlRecord[]): DashboardRecord[] {
+  return records.map((record) => {
+    const item: DashboardRecord = {
+      record,
+      title: `PR #${record.pullRequestNumber}`,
+      author: record.decision?.decidedBy ?? "unknown",
+      githubUrl: `https://github.com/${record.repositoryFullName}/pull/${record.pullRequestNumber}`,
+      team: inferTeam(record),
+      age: relativeAge(record.updatedAt),
+      checkHistory: [
+        {
+          status: record.checkStatus,
+          conclusion:
+            record.checkStatus === "block"
+              ? "failure"
+              : record.checkStatus === "warn"
+                ? "neutral"
+                : "success",
+          publishedAt: record.updatedAt,
+          message: checkMessage(record)
+        }
+      ]
+    };
+    if (record.decision?.status === "merged_after_override") {
+      item.override = {
+        actor: record.decision.overrideBy ?? record.decision.decidedBy ?? "unknown",
+        actorRole: "authorized",
+        reason: record.decision.overrideReason ?? "Override reason not recorded.",
+        scope: "pr",
+        createdAt: record.decision.decidedAt ?? record.updatedAt,
+        visibleInPr: true
+      };
+    }
+    return item;
+  });
+}
+
+function inferRepositories(records: DashboardRecord[]): RepositoryOption[] {
+  const repositories = new Map<string, RepositoryOption>();
+  for (const item of records) {
+    repositories.set(item.record.repositoryId, {
+      id: item.record.repositoryId,
+      fullName: item.record.repositoryFullName,
+      enabled: true,
+      mode: item.record.mode,
+      currentPolicyPack: item.record.policyPackId ?? "custom"
+    });
+  }
+  return [...repositories.values()];
+}
+
+function inferTeam(record: ChangeControlRecord): DashboardRecord["team"] {
+  if (record.verifiedFindings.some((finding) => finding.type === "migration_added")) {
+    return "Database";
+  }
+  if (record.verifiedFindings.some((finding) => finding.type === "ci_workflow_changed")) {
+    return "Platform";
+  }
+  if (
+    record.requiredReviewers.some((reviewer) => reviewer.reviewer.includes("security")) ||
+    record.verifiedFindings.some((finding) =>
+      String(finding.metadata?.ruleId ?? "").includes("auth")
+    )
+  ) {
+    return "Security";
+  }
+  if (
+    record.requiredReviewers.some((reviewer) => reviewer.reviewer.includes("billing")) ||
+    record.verifiedFindings.some((finding) =>
+      String(finding.metadata?.ruleId ?? "").includes("billing")
+    )
+  ) {
+    return "Billing";
+  }
+  return "Maintainers";
+}
+
+function relativeAge(value: string): string {
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) {
+    return "unknown";
+  }
+  const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60_000));
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) {
+    return `${hours}h`;
+  }
+  return `${Math.round(hours / 24)}d`;
+}
+
+function checkMessage(record: ChangeControlRecord): string {
+  if (record.lifecycle === "overridden") {
+    return "Authorized override recorded.";
+  }
+  if (record.checkStatus === "block") {
+    return "Merge Guard blocked merge because required policy evidence or approvals are missing.";
+  }
+  if (record.checkStatus === "warn") {
+    return "Non-blocking warning; this shows what would block in enforce mode.";
+  }
+  return "Configured policy requirements are satisfied.";
 }
 
 function fact(input: Partial<VerifiedFact> & Pick<VerifiedFact, "id" | "type" | "evidence">) {

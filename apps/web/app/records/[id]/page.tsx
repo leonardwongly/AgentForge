@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { Download, GitBranch, ShieldCheck } from "lucide-react";
 import { MetricCard, StatusBadge } from "@agentforge/ui";
+import { DataSourceNotice } from "../../data-source-notice";
 import {
   formatDate,
-  getRecord,
   hasAgentSignal,
   humanize,
+  loadRecord,
   missingEvidence,
   pendingRequiredReviewers
 } from "../../data";
@@ -16,7 +17,34 @@ type PageProps = {
 
 export default async function RecordDetailPage({ params }: PageProps) {
   const { id } = await params;
-  const item = getRecord(id);
+  const data = await loadRecord(id);
+  const item = data.item;
+  if (!item) {
+    return (
+      <>
+        <header className="topbar">
+          <div>
+            <h1>Change Control Record</h1>
+            <p>Record {id} was not found in the current data set.</p>
+          </div>
+        </header>
+        <section className="page">
+          <DataSourceNotice {...data} />
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>Record not found</h2>
+                <p>
+                  Create a Change Control Record by sending a GitHub webhook or running a policy
+                  preview.
+                </p>
+              </div>
+            </div>
+          </section>
+        </section>
+      </>
+    );
+  }
   const record = item.record;
   const missing = missingEvidence(record);
   const pendingReviewers = pendingRequiredReviewers(record);
@@ -42,6 +70,8 @@ export default async function RecordDetailPage({ params }: PageProps) {
       </header>
 
       <section className="page">
+        <DataSourceNotice {...data} />
+
         <div className="metrics-grid">
           <MetricCard
             label="Check status"
