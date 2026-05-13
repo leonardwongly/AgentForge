@@ -57,12 +57,25 @@ type ExportJob = {
   createdAt: string;
 };
 
+type RepositoryPolicyState = {
+  repositoryId: string;
+  version: string;
+  mode: ChangeControlRecord["mode"];
+  contentYaml: string;
+  contentHash: string;
+  createdBy: string;
+  createdAt: string;
+  policyPackId?: string | undefined;
+  policyPackVersion?: string | undefined;
+};
+
 export type AppState = {
   deliveries: Set<string>;
   queuedEvaluations: QueuedEvaluation[];
   records: ChangeControlRecord[];
   auditEvents: AuditEventRecord[];
   exports: ExportJob[];
+  repositoryPolicies: Map<string, RepositoryPolicyState>;
 };
 
 type RawBodyRequest = {
@@ -92,6 +105,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   const getRecord = (id: string) => getChangeControlRecord(state, prisma, id);
   const saveRecord = (record: ChangeControlRecord, pr?: PullRequestInput) =>
     saveChangeControlRecord(state, prisma, record, pr);
+  const listRepositories = () => listRepositorySummaries(state, prisma, config.defaultPolicyMode);
+  const getRepositoryPolicy = (id: string) => getActiveRepositoryPolicy(state, prisma, id);
+  const saveRepositoryPolicy = (
+    repositoryId: string,
+    contentYaml: string,
+    actor: string,
+    parsed: ReturnType<typeof parsePolicyYaml>
+  ) => saveActiveRepositoryPolicy(state, prisma, repositoryId, contentYaml, actor, parsed);
   const audit = (input: Parameters<typeof createAuditEvent>[0]) =>
     recordAuditEvent(state, prisma, input);
   const app = Fastify({
@@ -145,7 +166,6 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     database: config.databaseUrl ? "configured" : "not_configured",
     workerQueue: config.redisUrl ? "configured" : "in_memory",
     runtimeStore: prisma ? "postgres" : "in_memory",
-    demoMode: config.demoMode,
     unsignedWebhookMode:
       !config.github.webhookSecret && config.github.allowUnsignedWebhooks ? "enabled" : "disabled",
     version: "0.1.0"
@@ -212,16 +232,48 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   });
 
   app.get("/api/repositories", async () => ({
-    repositories: [
-      {
-        id: "repo_local",
-        fullName: "acme/payments",
-        enabled: true,
-        mode: config.defaultPolicyMode,
-        currentPolicyPack: "fintech"
-      }
-    ]
+    repositories: safe(await listRepositories())
   }));
+
+  app.get("/api/settings", async () => {
+    const repositories = await listRepositories();
+    const records = await listRecords();
+    return safe({
+      githubInstallation: await githubInstallationSummary(prisma, config),
+      repositories,
+      dataHandling: {
+        sourceCodeStorage: config.sourceCodeStorage,
+        fullDiffRetention: config.fullDiffRetention,
+        redactSecrets: config.redactSecrets,
+        llmFeatures: config.llmFeatures,
+        auditRecordRetentionDays: config.auditRecordRetentionDays
+      },
+      ownerMappings: ownerMappingsFromRecords(records),
+      exports: {
+        json: true,
+        csv: true,
+        storageBucketConfigured: Boolean(config.exportStorageBucket),
+        storageRegion: config.exportStorageRegion
+      }
+    });
+  });
+
+  app.get("/api/onboarding/status", async () => {
+    const repositories = await listRepositories();
+    const records = await listRecords();
+    const settings = {
+      githubInstallation: await githubInstallationSummary(prisma, config),
+      ownerMappings: ownerMappingsFromRecords(records)
+    };
+    return safe({
+      steps: onboardingStepsFromRuntime({
+        repositories,
+        records,
+        githubConnected: settings.githubInstallation.connected,
+        ownerMappingsConfigured: settings.ownerMappings.length > 0
+      })
+    });
+  });
 
   app.patch("/api/repositories/:id/settings", async (request, reply) => {
     const actor = requireApiActor(request);
@@ -285,10 +337,22 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     });
   });
 
-  app.get("/api/repositories/:id/policy", async (request) => ({
-    repositoryId: (request.params as { id: string }).id,
-    policy: getPolicyPack("fintech")?.contentYaml
-  }));
+  app.get("/api/repositories/:id/policy", async (request, reply) => {
+    const repositoryId = (request.params as { id: string }).id;
+    const policy = await getRepositoryPolicy(repositoryId);
+    if (!policy) {
+      return reply.code(404).send({ error: "Active policy is not configured for this repository" });
+    }
+    return {
+      repositoryId,
+      policy: policy.contentYaml,
+      contentHash: policy.contentHash,
+      mode: policy.mode,
+      version: policy.version,
+      policyPackId: policy.policyPackId,
+      policyPackVersion: policy.policyPackVersion
+    };
+  });
 
   app.put("/api/repositories/:id/policy", async (request, reply) => {
     const actor = requireApiActor(request);
@@ -305,18 +369,32 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       return reply.code(400).send(validation);
     }
     const parsed = parsePolicyYaml(body.contentYaml ?? "");
+    let policy: RepositoryPolicyState;
+    try {
+      policy = await saveRepositoryPolicy(
+        (request.params as { id: string }).id,
+        body.contentYaml ?? "",
+        actor.login,
+        parsed
+      );
+    } catch (error) {
+      return reply.code(404).send({
+        error: error instanceof Error ? error.message : "Repository policy could not be updated"
+      });
+    }
     await audit({
       organizationId: "org_local",
       repositoryId: (request.params as { id: string }).id,
       actor: actor.login,
       action: "policy_changed",
       targetType: "policy",
-      targetId: parsed.contentHash,
+      targetId: policy.contentHash,
       metadataJson: { contentHash: parsed.contentHash, actorRole: actor.role }
     });
     return {
       repositoryId: (request.params as { id: string }).id,
-      contentHash: parsed.contentHash,
+      contentHash: policy.contentHash,
+      version: policy.version,
       valid: true
     };
   });
@@ -328,11 +406,32 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
 
   app.post("/api/policies/preview", async (request, reply) => {
     const body = request.body as { contentYaml?: string; pr?: PullRequestInput };
-    const contentYaml = body.contentYaml ?? getPolicyPack("fintech")?.contentYaml ?? "";
+    const repositoryId = body.pr
+      ? await findRepositoryIdByFullName(state, prisma, body.pr.repositoryFullName)
+      : undefined;
+    const activePolicy = body.pr
+      ? await getRepositoryPolicy(
+          repositoryId ?? repositoryIdFromFullName(body.pr.repositoryFullName)
+        )
+      : undefined;
+    const contentYaml = body.contentYaml ?? activePolicy?.contentYaml;
     if (!body.pr) {
-      return reply.code(400).send({ error: "pr fixture is required" });
+      return reply.code(400).send({ error: "pull request input is required" });
     }
-    const output = evaluateFixturePr({ pr: body.pr, policyYaml: contentYaml, storagePolicy });
+    if (!contentYaml) {
+      return reply
+        .code(400)
+        .send({ error: "contentYaml is required when the repository has no active policy" });
+    }
+    const evaluationInput: Parameters<typeof evaluateFixturePr>[0] = {
+      pr: body.pr,
+      policyYaml: contentYaml,
+      storagePolicy
+    };
+    if (repositoryId) {
+      evaluationInput.repositoryId = repositoryId;
+    }
+    const output = evaluateFixturePr(evaluationInput);
     const record = await saveRecord(
       sanitizeChangeControlRecord(output.record, storagePolicy),
       body.pr
@@ -713,7 +812,173 @@ export function createInitialState(): AppState {
     queuedEvaluations: [],
     records: [],
     auditEvents: [],
-    exports: []
+    exports: [],
+    repositoryPolicies: new Map()
+  };
+}
+
+async function listRepositorySummaries(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  defaultMode: ChangeControlRecord["mode"]
+) {
+  if (prisma) {
+    const rows = await prisma.repository.findMany({
+      include: { currentPolicyVersion: true },
+      orderBy: { fullName: "asc" }
+    });
+    return rows.map((row) => {
+      const parsedPolicy = row.currentPolicyVersion
+        ? parsePolicyYaml(row.currentPolicyVersion.contentYaml)
+        : undefined;
+      return {
+        id: row.id,
+        fullName: row.fullName,
+        enabled: row.enabled,
+        mode: row.mode ?? row.currentPolicyVersion?.mode ?? defaultMode,
+        currentPolicyPack: parsedPolicy?.config.policy_pack_id,
+        currentPolicyVersion: row.currentPolicyVersion?.version,
+        protected: row.protected,
+        defaultBranch: row.defaultBranch
+      };
+    });
+  }
+
+  const repositories = new Map<
+    string,
+    {
+      id: string;
+      fullName: string;
+      enabled: boolean;
+      mode: ChangeControlRecord["mode"];
+      currentPolicyPack?: string | undefined;
+      currentPolicyVersion?: string | undefined;
+      protected: boolean;
+      defaultBranch: string;
+    }
+  >();
+
+  for (const record of state.records) {
+    const policy = state.repositoryPolicies.get(record.repositoryId);
+    repositories.set(record.repositoryId, {
+      id: record.repositoryId,
+      fullName: record.repositoryFullName,
+      enabled: true,
+      mode: policy?.mode ?? record.mode,
+      currentPolicyPack: policy?.policyPackId ?? record.policyPackId,
+      currentPolicyVersion: policy?.version ?? record.policyVersion,
+      protected: false,
+      defaultBranch: record.baseBranch
+    });
+  }
+
+  for (const policy of state.repositoryPolicies.values()) {
+    if (!repositories.has(policy.repositoryId)) {
+      repositories.set(policy.repositoryId, {
+        id: policy.repositoryId,
+        fullName: policy.repositoryId,
+        enabled: true,
+        mode: policy.mode,
+        currentPolicyPack: policy.policyPackId,
+        currentPolicyVersion: policy.version,
+        protected: false,
+        defaultBranch: "main"
+      });
+    }
+  }
+
+  return [...repositories.values()].sort((a, b) => a.fullName.localeCompare(b.fullName));
+}
+
+async function getActiveRepositoryPolicy(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  repositoryId: string
+): Promise<RepositoryPolicyState | undefined> {
+  const cached = state.repositoryPolicies.get(repositoryId);
+  if (cached) {
+    return cached;
+  }
+  if (!prisma) {
+    return undefined;
+  }
+  const repository = await prisma.repository.findUnique({
+    where: { id: repositoryId },
+    include: { currentPolicyVersion: true }
+  });
+  const version = repository?.currentPolicyVersion;
+  if (!version) {
+    return undefined;
+  }
+  const parsed = parsePolicyYaml(version.contentYaml);
+  return {
+    repositoryId,
+    version: version.version,
+    mode: version.mode,
+    contentYaml: version.contentYaml,
+    contentHash: version.contentHash,
+    createdBy: version.createdBy,
+    createdAt: version.createdAt.toISOString(),
+    policyPackId: parsed.config.policy_pack_id,
+    policyPackVersion: parsed.config.policy_pack_version
+  };
+}
+
+async function saveActiveRepositoryPolicy(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  repositoryId: string,
+  contentYaml: string,
+  actor: string,
+  parsed: ReturnType<typeof parsePolicyYaml>
+): Promise<RepositoryPolicyState> {
+  const policy: RepositoryPolicyState = {
+    repositoryId,
+    version: `${parsed.config.policy_pack_id ?? "custom"}@${parsed.config.policy_pack_version ?? parsed.config.version}+${parsed.contentHash.slice(0, 8)}`,
+    mode: parsed.config.agentforge.mode,
+    contentYaml,
+    contentHash: parsed.contentHash,
+    createdBy: actor,
+    createdAt: new Date().toISOString(),
+    policyPackId: parsed.config.policy_pack_id,
+    policyPackVersion: parsed.config.policy_pack_version
+  };
+  state.repositoryPolicies.set(repositoryId, policy);
+
+  if (!prisma) {
+    return policy;
+  }
+
+  const repository = await prisma.repository.findUnique({
+    where: { id: repositoryId },
+    select: { id: true, organizationId: true }
+  });
+  if (!repository) {
+    throw new Error("Repository must exist before assigning an active policy.");
+  }
+  const row = await prisma.policyVersion.create({
+    data: {
+      organizationId: repository.organizationId,
+      repositoryId: repository.id,
+      version: policy.version,
+      mode: policy.mode,
+      contentYaml: policy.contentYaml,
+      contentHash: policy.contentHash,
+      createdBy: actor
+    }
+  });
+  await prisma.repository.update({
+    where: { id: repository.id },
+    data: {
+      currentPolicyVersionId: row.id,
+      mode: policy.mode
+    }
+  });
+
+  return {
+    ...policy,
+    version: row.version,
+    createdAt: row.createdAt.toISOString()
   };
 }
 
@@ -725,6 +990,7 @@ async function listChangeControlRecords(
     return state.records;
   }
   const rows = await prisma.changeControlRecord.findMany({
+    include: { pullRequest: { select: { repositoryId: true } } },
     orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
   });
   return rows.map(changeControlRecordFromRow);
@@ -738,7 +1004,10 @@ async function getChangeControlRecord(
   if (!prisma) {
     return state.records.find((item) => item.id === id);
   }
-  const row = await prisma.changeControlRecord.findUnique({ where: { id } });
+  const row = await prisma.changeControlRecord.findUnique({
+    where: { id },
+    include: { pullRequest: { select: { repositoryId: true } } }
+  });
   return row ? changeControlRecordFromRow(row) : state.records.find((item) => item.id === id);
 }
 
@@ -798,7 +1067,10 @@ async function saveChangeControlRecord(
       ...changeControlRecordData(record)
     }
   });
-  const savedRecord = changeControlRecordFromRow(persisted);
+  const savedRecord = changeControlRecordFromRow({
+    ...persisted,
+    pullRequest: { repositoryId: repository.id }
+  });
   rememberRecord(state, savedRecord);
   return savedRecord;
 }
@@ -1073,11 +1345,12 @@ function changeControlRecordFromRow(row: {
   decisionJson: unknown;
   createdAt: Date;
   updatedAt: Date;
+  pullRequest?: { repositoryId: string } | null;
 }): ChangeControlRecord {
   const output = {
     id: row.id,
     organizationId: "org_local",
-    repositoryId: row.pullRequestId.replace(/^pr_/, "repo_"),
+    repositoryId: row.pullRequest?.repositoryId ?? repositoryIdFromFullName(row.repositoryFullName),
     repositoryFullName: row.repositoryFullName,
     pullRequestNumber: row.pullRequestNumber,
     headSha: row.headSha,
@@ -1106,8 +1379,151 @@ function stableBigInt(value: string): bigint {
   return BigInt(`0x${createHash("sha256").update(value).digest("hex").slice(0, 15)}`);
 }
 
+async function findRepositoryIdByFullName(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  fullName: string
+): Promise<string | undefined> {
+  const inMemory = state.records.find((record) => record.repositoryFullName === fullName);
+  if (inMemory) {
+    return inMemory.repositoryId;
+  }
+  if (!prisma) {
+    return undefined;
+  }
+  const repository = await prisma.repository.findFirst({
+    where: { fullName },
+    select: { id: true }
+  });
+  return repository?.id;
+}
+
+function repositoryIdFromFullName(fullName: string): string {
+  return `repo_${createHash("sha256").update(fullName).digest("hex").slice(0, 12)}`;
+}
+
 function humanizeIdentifier(value: string): string {
   return value.replace(/[_-]+/g, " ").replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+async function githubInstallationSummary(
+  prisma: PrismaClient | undefined,
+  config: ReturnType<typeof loadConfig>
+) {
+  if (prisma) {
+    const installation = await prisma.gitHubInstallation.findFirst({
+      orderBy: { createdAt: "desc" }
+    });
+    if (installation) {
+      return {
+        connected: true,
+        accountLogin: installation.accountLogin,
+        accountType: installation.accountType,
+        githubInstallationId: installation.githubInstallationId.toString()
+      };
+    }
+  }
+  return {
+    connected: Boolean(
+      config.github.appId && config.github.privateKey && config.github.webhookSecret
+    ),
+    accountLogin: undefined,
+    accountType: undefined,
+    githubInstallationId: undefined
+  };
+}
+
+function ownerMappingsFromRecords(records: ChangeControlRecord[]) {
+  const reviewers = new Map<
+    string,
+    { reviewer: string; reviewerType: string; sources: string[] }
+  >();
+  for (const record of records) {
+    for (const reviewer of record.requiredReviewers) {
+      const existing = reviewers.get(reviewer.reviewer) ?? {
+        reviewer: reviewer.reviewer,
+        reviewerType: reviewer.reviewerType,
+        sources: []
+      };
+      if (!existing.sources.includes(record.repositoryFullName)) {
+        existing.sources.push(record.repositoryFullName);
+      }
+      reviewers.set(reviewer.reviewer, existing);
+    }
+  }
+  return [...reviewers.values()].sort((a, b) => a.reviewer.localeCompare(b.reviewer));
+}
+
+function onboardingStepsFromRuntime(input: {
+  repositories: Array<{ currentPolicyPack?: string | undefined }>;
+  records: ChangeControlRecord[];
+  githubConnected: boolean;
+  ownerMappingsConfigured: boolean;
+}) {
+  const hasRepositories = input.repositories.length > 0;
+  const hasPolicyPack = input.repositories.some((repository) => repository.currentPolicyPack);
+  const hasPreviewRecords = input.records.length > 0;
+  const retentionConfigured = true;
+  const completed = (condition: boolean) => (condition ? "complete" : "pending");
+  const active = (condition: boolean, previous: boolean) =>
+    condition ? "complete" : previous ? "active" : "pending";
+
+  return [
+    {
+      id: "connect_github_app",
+      title: "Connect GitHub App",
+      detail: "Install the GitHub App and verify webhook delivery.",
+      status: active(input.githubConnected, true)
+    },
+    {
+      id: "select_organization",
+      title: "Select organization",
+      detail: "Choose the GitHub organization to govern.",
+      status: active(hasRepositories, input.githubConnected)
+    },
+    {
+      id: "select_repositories",
+      title: "Select repositories",
+      detail: "Enable repositories that should publish Merge Guard checks.",
+      status: active(hasRepositories, input.githubConnected)
+    },
+    {
+      id: "choose_policy_pack",
+      title: "Choose policy pack",
+      detail: "Start from a policy pack, then fork it when repository-specific rules are needed.",
+      status: active(hasPolicyPack, hasRepositories)
+    },
+    {
+      id: "choose_mode",
+      title: "Choose mode",
+      detail: "Start in observe, move to warn, then enforce mature rules.",
+      status: active(hasPolicyPack, hasRepositories)
+    },
+    {
+      id: "map_owners",
+      title: "Map owners",
+      detail: "Assign security team, platform team, billing owner, and database owner.",
+      status: active(input.ownerMappingsConfigured, hasPolicyPack)
+    },
+    {
+      id: "configure_retention",
+      title: "Configure retention",
+      detail: "Keep metadata by default and leave full diff retention disabled unless required.",
+      status: completed(retentionConfigured)
+    },
+    {
+      id: "preview_policy",
+      title: "Preview policy",
+      detail: "Run recent PRs through the policy pack before changing required checks.",
+      status: active(hasPreviewRecords, hasPolicyPack)
+    },
+    {
+      id: "finish_setup",
+      title: "Finish setup",
+      detail: "Publish checks and start recording Change Control Records.",
+      status: active(input.githubConnected && hasRepositories && hasPolicyPack, hasPreviewRecords)
+    }
+  ];
 }
 
 function dashboardSummary(records: ChangeControlRecord[]) {

@@ -91,8 +91,8 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
               {data.records.length === 0 ? (
                 <tr>
                   <td className="empty-row" colSpan={6}>
-                    No recent PR records are available for preview. Run fixture evaluation or send a
-                    webhook first.
+                    No recent PR records are available for preview. Run a policy preview or send a
+                    GitHub webhook first.
                   </td>
                 </tr>
               ) : null}

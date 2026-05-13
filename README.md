@@ -82,7 +82,6 @@ Copy `.env.example` to `.env` and fill in values. The defaults are safe for loca
 - `GITHUB_APP_PRIVATE_KEY`: GitHub App private key.
 - `GITHUB_WEBHOOK_SECRET`: Secret used to validate webhook signatures. Webhooks are rejected when this is missing unless explicit local unsigned-webhook mode is enabled.
 - `ALLOW_UNSIGNED_GITHUB_WEBHOOKS`: Local-only escape hatch for fixture webhook testing. Keep `false` for normal development and all deployed environments.
-- `DEMO_MODE`: Enables explicit demo behavior for fixture-only surfaces. Keep `false` for normal development.
 - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`: OAuth values for installation flows.
 - `APP_BASE_URL`: Dashboard URL.
 - `API_BASE_URL`: API URL.

@@ -2,10 +2,16 @@ import Link from "next/link";
 import { AlertTriangle, Filter, ListChecks } from "lucide-react";
 import { MetricCard, ProgressBar, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../data-source-notice";
-import { findingGroups, formatDate, humanize, loadDashboardData } from "../../data";
+import {
+  findingGroups,
+  formatDate,
+  humanize,
+  loadDashboardData,
+  loadPolicyPacks
+} from "../../data";
 
 export default async function PolicyViolationsPage() {
-  const data = await loadDashboardData();
+  const [data, policyPacks] = await Promise.all([loadDashboardData(), loadPolicyPacks()]);
   const groups = findingGroups(data.records);
   const deterministicFindings = data.records.flatMap((item) =>
     item.record.verifiedFindings.filter((finding) => finding.type !== "agent_signal_detected")
@@ -54,8 +60,11 @@ export default async function PolicyViolationsPage() {
           />
           <MetricCard
             label="Policy packs"
-            value="4"
-            detail="Fintech, Platform Engineering, Healthcare / Regulated, Open Source Maintainer."
+            value={String(policyPacks.policyPacks.length)}
+            detail={
+              policyPacks.policyPacks.map((pack) => pack.name).join(", ") ||
+              "No policy packs loaded."
+            }
             tone="pass"
           />
         </div>

@@ -1,13 +1,54 @@
 import { CheckCircle2, GitBranch, Play, ShieldCheck } from "lucide-react";
 import { ProgressBar, StatusBadge } from "@agentforge/ui";
-import { loadRepositories, onboardingSteps } from "../data";
+import {
+  humanize,
+  loadDashboardData,
+  loadOnboardingStatus,
+  loadPolicyPacks,
+  loadRepositories,
+  loadSettings,
+  missingEvidence,
+  pendingRequiredReviewers
+} from "../data";
 
 export default async function OnboardingPage() {
-  const repositories = await loadRepositories();
-  const repositoryLabel =
-    repositories.repositories
-      .map((repository) => repository.fullName.split("/").at(-1))
-      .join(", ") || "Select repositories after connecting GitHub";
+  const [repositories, policyPacks, onboarding, settings, dashboard] = await Promise.all([
+    loadRepositories(),
+    loadPolicyPacks(),
+    loadOnboardingStatus(),
+    loadSettings(),
+    loadDashboardData()
+  ]);
+  const enabledRepositories = repositories.repositories.filter((repository) => repository.enabled);
+  const organizationNames = [
+    ...new Set(
+      [
+        settings.settings?.githubInstallation.accountLogin,
+        ...repositories.repositories.map((repository) => repository.fullName.split("/")[0])
+      ].filter((value): value is string => Boolean(value))
+    )
+  ];
+  const completedSteps = onboarding.steps.filter((step) => step.status === "complete").length;
+  const progress =
+    onboarding.steps.length === 0
+      ? 0
+      : Math.round((completedSteps / onboarding.steps.length) * 100);
+  const selectedMode =
+    enabledRepositories[0]?.mode ?? repositories.repositories[0]?.mode ?? "observe";
+  const retentionRows = settings.settings
+    ? [
+        [
+          "Source code storage",
+          settings.settings.dataHandling.sourceCodeStorage ? "enabled" : "disabled"
+        ],
+        ["Full diff retention", settings.settings.dataHandling.fullDiffRetention],
+        ["Secret redaction", settings.settings.dataHandling.redactSecrets ? "enabled" : "disabled"],
+        [
+          "LLM advisory features",
+          settings.settings.dataHandling.llmFeatures ? "enabled" : "disabled"
+        ]
+      ]
+    : [];
 
   return (
     <>
@@ -22,15 +63,28 @@ export default async function OnboardingPage() {
       </header>
 
       <section className="page">
-        {repositories.source !== "api" ? (
-          <section className={`notice notice--${repositories.source}`}>
-            <GitBranch size={18} aria-hidden="true" />
-            <div>
-              <h2>GitHub setup data unavailable</h2>
-              <p>{repositories.message}</p>
-            </div>
-          </section>
-        ) : null}
+        {[
+          repositories.source !== "api"
+            ? ["GitHub setup data unavailable", repositories.message]
+            : undefined,
+          policyPacks.source !== "api"
+            ? ["Policy pack data unavailable", policyPacks.message]
+            : undefined,
+          onboarding.source !== "api"
+            ? ["Onboarding status unavailable", onboarding.message]
+            : undefined,
+          settings.source !== "api" ? ["Settings data unavailable", settings.message] : undefined
+        ]
+          .filter((notice): notice is [string, string] => Boolean(notice))
+          .map(([title, message]) => (
+            <section className="notice notice--unavailable" key={title}>
+              <GitBranch size={18} aria-hidden="true" />
+              <div>
+                <h2>{title}</h2>
+                <p>{message}</p>
+              </div>
+            </section>
+          ))}
 
         <section className="panel">
           <div className="panel-header">
@@ -38,16 +92,28 @@ export default async function OnboardingPage() {
               <h2>Setup progress</h2>
               <p>Start in observe or warn, then move mature rules to enforce.</p>
             </div>
-            <StatusBadge status="provided" label="step 3 of 9" />
+            <StatusBadge
+              status={progress === 100 ? "approved" : progress > 0 ? "provided" : "low"}
+              label={`${completedSteps} of ${onboarding.steps.length} steps`}
+            />
           </div>
           <div className="panel-body">
-            <ProgressBar value={33} label="Onboarding progress" />
+            <ProgressBar value={progress} label="Onboarding progress" />
           </div>
         </section>
 
         <div className="step-grid">
-          {onboardingSteps.map((step, index) => (
-            <section className={`step step--${step.status}`} key={step.title}>
+          {onboarding.steps.length === 0 ? (
+            <section className="step step--pending">
+              <div className="list-row">
+                <h2>No onboarding status loaded</h2>
+                <StatusBadge status="low" label="pending" />
+              </div>
+              <p>Start the API and connect runtime data to continue setup.</p>
+            </section>
+          ) : null}
+          {onboarding.steps.map((step, index) => (
+            <section className={`step step--${step.status}`} key={step.id}>
               <div className="list-row">
                 <h2>
                   {index + 1}. {step.title}
@@ -80,29 +146,60 @@ export default async function OnboardingPage() {
             <div className="panel-body form-grid">
               <div className="field">
                 <label htmlFor="organization">Organization</label>
-                <select className="select" id="organization" defaultValue="acme">
-                  <option value="acme">acme</option>
+                <select
+                  className="select"
+                  id="organization"
+                  defaultValue={organizationNames[0] ?? ""}
+                >
+                  {organizationNames.length === 0 ? (
+                    <option value="">Connect GitHub App to load organizations</option>
+                  ) : null}
+                  {organizationNames.map((organization) => (
+                    <option key={organization} value={organization}>
+                      {organization}
+                    </option>
+                  ))}
                 </select>
               </div>
               <div className="field">
                 <label htmlFor="repositories">Repositories</label>
-                <select className="select" id="repositories" defaultValue={repositoryLabel}>
-                  <option value={repositoryLabel}>{repositoryLabel}</option>
+                <select
+                  className="select"
+                  id="repositories"
+                  defaultValue={
+                    enabledRepositories[0]?.id ?? repositories.repositories[0]?.id ?? ""
+                  }
+                >
+                  {repositories.repositories.length === 0 ? (
+                    <option value="">No repositories connected</option>
+                  ) : null}
+                  {repositories.repositories.map((repository) => (
+                    <option key={repository.id} value={repository.id}>
+                      {repository.fullName}
+                    </option>
+                  ))}
                 </select>
               </div>
               <div className="field">
                 <label htmlFor="policy-pack">Policy pack</label>
-                <select className="select" id="policy-pack" defaultValue="fintech">
-                  <option value="startup">Startup Default</option>
-                  <option value="platform">Platform Engineering</option>
-                  <option value="fintech">Fintech</option>
-                  <option value="regulated">Healthcare / Regulated</option>
-                  <option value="enterprise">Enterprise Strict</option>
+                <select
+                  className="select"
+                  id="policy-pack"
+                  defaultValue={policyPacks.policyPacks[0]?.id ?? ""}
+                >
+                  {policyPacks.policyPacks.length === 0 ? (
+                    <option value="">No policy packs available</option>
+                  ) : null}
+                  {policyPacks.policyPacks.map((pack) => (
+                    <option key={pack.id} value={pack.id}>
+                      {pack.name}
+                    </option>
+                  ))}
                 </select>
               </div>
               <div className="field">
                 <label htmlFor="mode">Starting mode</label>
-                <select className="select" id="mode" defaultValue="warn">
+                <select className="select" id="mode" defaultValue={selectedMode}>
                   <option value="observe">observe</option>
                   <option value="warn">warn</option>
                   <option value="enforce">enforce</option>
@@ -120,20 +217,19 @@ export default async function OnboardingPage() {
               <ShieldCheck size={18} aria-hidden="true" />
             </div>
             <div className="panel-body form-grid">
-              {(
-                [
-                  ["Security team", "security-team"],
-                  ["Platform team", "platform-team"],
-                  ["Billing owner", "billing-owner"],
-                  ["Database owner", "database-owner"]
-                ] as const
-              ).map(([label, value]) => (
-                <div className="field" key={label}>
-                  <label htmlFor={label.toLowerCase().replace(/\s/g, "-")}>{label}</label>
+              {settings.settings?.ownerMappings.length === 0 ? (
+                <p className="muted">
+                  No owner mappings are available yet. Evaluate a PR or configure policy owners to
+                  populate routing targets.
+                </p>
+              ) : null}
+              {settings.settings?.ownerMappings.map((mapping) => (
+                <div className="field" key={mapping.reviewer}>
+                  <label htmlFor={`owner-${mapping.reviewer}`}>{mapping.reviewer}</label>
                   <input
                     className="input"
-                    id={label.toLowerCase().replace(/\s/g, "-")}
-                    defaultValue={value}
+                    id={`owner-${mapping.reviewer}`}
+                    defaultValue={mapping.sources.join(", ")}
                   />
                 </div>
               ))}
@@ -147,14 +243,10 @@ export default async function OnboardingPage() {
               <h2>Retention and advisory controls</h2>
             </div>
             <div className="panel-body">
-              {(
-                [
-                  ["Source code storage", "disabled"],
-                  ["Full diff retention", "disabled"],
-                  ["Secret redaction", "enabled"],
-                  ["LLM advisory features", "disabled"]
-                ] as const
-              ).map(([label, value]) => (
+              {retentionRows.length === 0 ? (
+                <p className="muted">Data-handling settings are not available.</p>
+              ) : null}
+              {retentionRows.map(([label, value]) => (
                 <div className="toggle-row" key={label}>
                   <div>
                     <strong>{label}</strong>
@@ -182,27 +274,32 @@ export default async function OnboardingPage() {
               </button>
             </div>
             <ul className="compact-list">
-              <li>
-                <div className="list-row">
-                  <span>acme/payments #1842</span>
-                  <StatusBadge status="block" label="would block" />
-                </div>
-                <p>Required evidence missing and billing owner approval pending.</p>
-              </li>
-              <li>
-                <div className="list-row">
-                  <span>acme/platform #913</span>
-                  <StatusBadge status="warn" label="would warn" />
-                </div>
-                <p>Platform owner approval required for workflow change.</p>
-              </li>
-              <li>
-                <div className="list-row">
-                  <span>acme/open-source #88</span>
-                  <StatusBadge status="pass" label="would pass" />
-                </div>
-                <p>No required evidence or reviewer requirement.</p>
-              </li>
+              {dashboard.records.length === 0 ? (
+                <li>No recent PR evaluations are available for preview.</li>
+              ) : null}
+              {dashboard.records.slice(0, 3).map((item) => {
+                const missing = missingEvidence(item.record);
+                const reviewers = pendingRequiredReviewers(item.record);
+                const previewStatus =
+                  missing.length > 0 || reviewers.length > 0 ? "block" : item.record.checkStatus;
+                return (
+                  <li key={item.record.id}>
+                    <div className="list-row">
+                      <span>
+                        {item.record.repositoryFullName} #{item.record.pullRequestNumber}
+                      </span>
+                      <StatusBadge status={previewStatus} label={`would ${previewStatus}`} />
+                    </div>
+                    <p>
+                      {missing.map((evidence) => `${humanize(evidence.kind)} missing`).join(", ") ||
+                        reviewers
+                          .map((reviewer) => `${reviewer.reviewer} approval pending`)
+                          .join(", ") ||
+                        "Configured policy requirements are satisfied."}
+                    </p>
+                  </li>
+                );
+              })}
             </ul>
           </section>
         </div>

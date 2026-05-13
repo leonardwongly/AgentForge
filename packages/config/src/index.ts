@@ -36,7 +36,6 @@ const envSchema = z.object({
   GITHUB_APP_PRIVATE_KEY: optionalStringFromEnv,
   GITHUB_WEBHOOK_SECRET: optionalStringFromEnv,
   ALLOW_UNSIGNED_GITHUB_WEBHOOKS: booleanFromEnv.default(false),
-  DEMO_MODE: booleanFromEnv.default(false),
   GITHUB_CLIENT_ID: optionalStringFromEnv,
   GITHUB_CLIENT_SECRET: optionalStringFromEnv,
   APP_BASE_URL: z.string().url().default("http://localhost:3000"),
@@ -75,7 +74,6 @@ export type AgentForgeConfig = {
   exportStorageBucket: string | undefined;
   exportStorageRegion: string | undefined;
   sessionSecret: string | undefined;
-  demoMode: boolean;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConfig {
@@ -103,8 +101,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConf
     auditRecordRetentionDays: parsed.AUDIT_RECORD_RETENTION_DAYS,
     exportStorageBucket: parsed.EXPORT_STORAGE_BUCKET,
     exportStorageRegion: parsed.EXPORT_STORAGE_REGION,
-    sessionSecret: parsed.SESSION_SECRET,
-    demoMode: parsed.DEMO_MODE ?? false
+    sessionSecret: parsed.SESSION_SECRET
   };
 }
 

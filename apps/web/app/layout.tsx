@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   SlidersHorizontal
 } from "lucide-react";
+import { loadRepositories } from "./data";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -22,20 +23,27 @@ export const metadata: Metadata = {
   }
 };
 
-const navigation = [
-  { href: "/dashboard", label: "Dashboard", icon: Home },
-  { href: "/dashboard/blocked-prs", label: "Blocked PRs", icon: GitPullRequestArrow },
-  { href: "/dashboard/policy-violations", label: "Policy Findings", icon: ListChecks },
-  { href: "/dashboard/overrides", label: "Overrides", icon: ShieldCheck },
-  { href: "/dashboard/evidence-completion", label: "Evidence", icon: PieChart },
-  { href: "/records", label: "Records", icon: FileCheck },
-  { href: "/repositories/repo_local/policy", label: "Policy", icon: SlidersHorizontal },
-  { href: "/repositories/repo_local/policy-preview", label: "Preview", icon: Gauge },
-  { href: "/onboarding", label: "Onboarding", icon: ClipboardCheck },
-  { href: "/settings", label: "Settings", icon: Settings }
-];
+function navigation(repositoryId: string | undefined) {
+  const policyHref = repositoryId ? `/repositories/${repositoryId}/policy` : "/settings";
+  const previewHref = repositoryId ? `/repositories/${repositoryId}/policy-preview` : "/onboarding";
+  return [
+    { href: "/dashboard", label: "Dashboard", icon: Home },
+    { href: "/dashboard/blocked-prs", label: "Blocked PRs", icon: GitPullRequestArrow },
+    { href: "/dashboard/policy-violations", label: "Policy Findings", icon: ListChecks },
+    { href: "/dashboard/overrides", label: "Overrides", icon: ShieldCheck },
+    { href: "/dashboard/evidence-completion", label: "Evidence", icon: PieChart },
+    { href: "/records", label: "Records", icon: FileCheck },
+    { href: policyHref, label: "Policy", icon: SlidersHorizontal },
+    { href: previewHref, label: "Preview", icon: Gauge },
+    { href: "/onboarding", label: "Onboarding", icon: ClipboardCheck },
+    { href: "/settings", label: "Settings", icon: Settings }
+  ];
+}
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const repositories = await loadRepositories();
+  const repositoryId = repositories.repositories[0]?.id;
+
   return (
     <html lang="en">
       <body>
@@ -46,7 +54,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
               <span>AgentForge</span>
             </Link>
             <nav className="nav">
-              {navigation.map((item) => {
+              {navigation(repositoryId).map((item) => {
                 const Icon = item.icon;
                 return (
                   <Link href={item.href} key={item.href}>

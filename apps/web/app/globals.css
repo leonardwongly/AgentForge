@@ -171,11 +171,6 @@ button {
   line-height: 1.45;
 }
 
-.notice--demo {
-  background: #fff7d6;
-  border-color: #f2d477;
-}
-
 .notice--unavailable {
   background: #fff1f0;
   border-color: #ffd3cf;
@@ -184,6 +179,22 @@ button {
 .empty-row {
   color: var(--muted);
   text-align: center;
+}
+
+.empty-state {
+  padding: 22px;
+  color: var(--muted);
+}
+
+.empty-state h3 {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.empty-state p {
+  margin: 0;
+  line-height: 1.45;
 }
 
 .toolbar,

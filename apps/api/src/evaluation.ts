@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ChangeControlRecord, PullRequestInput } from "@agentforge/core";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/detectors";
 import { buildCheckRunPayload } from "@agentforge/github";
@@ -27,7 +28,7 @@ export function evaluateFixturePr(input: {
   const result = evaluateMergeGuard(input.pr, facts, parsed.config);
   const recordInput: Parameters<typeof createChangeControlRecord>[0] = {
     organizationId: input.organizationId ?? "org_local",
-    repositoryId: input.repositoryId ?? "repo_local",
+    repositoryId: input.repositoryId ?? repositoryIdFromFullName(input.pr.repositoryFullName),
     pr: input.pr,
     policyResult: result
   };
@@ -43,4 +44,8 @@ export function evaluateFixturePr(input: {
     record,
     checkRun
   };
+}
+
+function repositoryIdFromFullName(fullName: string): string {
+  return `repo_${createHash("sha256").update(fullName).digest("hex").slice(0, 12)}`;
 }

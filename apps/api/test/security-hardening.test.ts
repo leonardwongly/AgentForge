@@ -300,11 +300,12 @@ describe("security and audit hardening", () => {
   });
 
   it("requires authorized actors for policy, settings, exports, and audit access", async () => {
-    const { app } = await createPreviewRecord();
+    const { app, state } = await createPreviewRecord();
+    const repositoryId = state.records[0]!.repositoryId;
 
     const policyWithoutActor = await app.inject({
       method: "PUT",
-      url: "/api/repositories/repo_local/policy",
+      url: `/api/repositories/${repositoryId}/policy`,
       payload: JSON.stringify({ contentYaml: policyYaml }),
       headers: { "content-type": "application/json" }
     });
@@ -312,7 +313,7 @@ describe("security and audit hardening", () => {
 
     const settingsWrongRole = await app.inject({
       method: "PATCH",
-      url: "/api/repositories/repo_local/settings",
+      url: `/api/repositories/${repositoryId}/settings`,
       payload: JSON.stringify({ fullDiffRetention: "7d" }),
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
     });
@@ -344,13 +345,13 @@ describe("security and audit hardening", () => {
 
     await app.inject({
       method: "PUT",
-      url: "/api/repositories/repo_local/policy",
+      url: `/api/repositories/${record.repositoryId}/policy`,
       payload: JSON.stringify({ contentYaml: policyYaml }),
       headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
     await app.inject({
       method: "PATCH",
-      url: "/api/repositories/repo_local/settings",
+      url: `/api/repositories/${record.repositoryId}/settings`,
       payload: JSON.stringify({ fullDiffRetention: "7d", sourceCodeStorage: false }),
       headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });

@@ -35,9 +35,7 @@ export default async function PolicyEditorPage({ params }: PageProps) {
           <section className={`notice notice--${policy.source}`}>
             <ShieldCheck size={18} aria-hidden="true" />
             <div>
-              <h2>
-                {policy.source === "demo" ? "Bundled policy shown" : "Policy API unavailable"}
-              </h2>
+              <h2>Policy API unavailable</h2>
               <p>{policy.message}</p>
             </div>
           </section>
@@ -50,15 +48,15 @@ export default async function PolicyEditorPage({ params }: PageProps) {
           </div>
           <div>
             <span>Policy pack</span>
-            <strong>fintech</strong>
+            <strong>{policy.policyPackId ?? "not configured"}</strong>
           </div>
           <div>
             <span>Current mode</span>
-            <strong>warn</strong>
+            <strong>{policy.mode ?? "not configured"}</strong>
           </div>
           <div>
             <span>Version</span>
-            <strong>1.4.0</strong>
+            <strong>{policy.version ?? "not configured"}</strong>
           </div>
         </div>
 
@@ -66,14 +64,23 @@ export default async function PolicyEditorPage({ params }: PageProps) {
           <section className="panel">
             <div className="panel-header">
               <div>
-                <h2>Fintech policy pack fork</h2>
+                <h2>Active repository policy</h2>
                 <p>Edits create a new immutable policy version for future evaluations.</p>
               </div>
               <Link className="button" href={`/repositories/${id}/policy-preview`}>
                 <WandSparkles size={16} aria-hidden="true" /> Preview
               </Link>
             </div>
-            <pre className="code-pane">{policy.policy}</pre>
+            {policy.policy ? (
+              <pre className="code-pane">{policy.policy}</pre>
+            ) : (
+              <div className="empty-state">
+                <h3>No active repository policy</h3>
+                <p>
+                  Create or assign a policy version before previewing repository-specific rules.
+                </p>
+              </div>
+            )}
           </section>
 
           <div className="bar-list">
@@ -85,13 +92,20 @@ export default async function PolicyEditorPage({ params }: PageProps) {
                 <li>
                   <div className="list-row">
                     <span>Schema version</span>
-                    <StatusBadge status="approved" label="valid" />
+                    <StatusBadge
+                      status={policy.policy ? "approved" : "low"}
+                      label={policy.policy ? "loaded" : "not loaded"}
+                    />
                   </div>
                 </li>
                 <li>
                   <div className="list-row">
                     <span>Mode</span>
-                    <StatusBadge status="warn" />
+                    {policy.mode ? (
+                      <StatusBadge status={policy.mode as "observe" | "warn" | "enforce"} />
+                    ) : (
+                      <StatusBadge status="low" label="not configured" />
+                    )}
                   </div>
                 </li>
                 <li>
@@ -114,18 +128,14 @@ export default async function PolicyEditorPage({ params }: PageProps) {
                 <h2>Version history</h2>
               </div>
               <ul className="compact-list">
-                <li>
-                  <strong>fintech@1.4.0</strong>
-                  <p>Current repository policy. Dependency and migration evidence required.</p>
-                </li>
-                <li>
-                  <strong>fintech@1.3.0</strong>
-                  <p>Added billing owner routing and rollback plan requirement.</p>
-                </li>
-                <li>
-                  <strong>startup-default@1.0.0</strong>
-                  <p>Initial observe-mode policy pack.</p>
-                </li>
+                {policy.version ? (
+                  <li>
+                    <strong>{policy.version}</strong>
+                    <p>Current repository policy version returned by the API.</p>
+                  </li>
+                ) : (
+                  <li>No policy versions are available for this repository.</li>
+                )}
               </ul>
             </section>
 

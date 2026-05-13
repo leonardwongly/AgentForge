@@ -1,10 +1,21 @@
 import { Download, GitBranch, Save, ShieldCheck } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
-import { loadRepositories } from "../data";
+import { loadSettings } from "../data";
 
 export default async function SettingsPage() {
-  const repositories = await loadRepositories();
-  const enabledRepositories = repositories.repositories.filter((repository) => repository.enabled);
+  const { settings, source, message } = await loadSettings();
+  const enabledRepositories =
+    settings?.repositories.filter((repository) => repository.enabled) ?? [];
+  const defaultMode = enabledRepositories[0]?.mode ?? settings?.repositories[0]?.mode;
+  const dataHandlingRows = settings
+    ? [
+        ["Source code storage", settings.dataHandling.sourceCodeStorage ? "enabled" : "disabled"],
+        ["Full diff retention", settings.dataHandling.fullDiffRetention],
+        ["Secret redaction", settings.dataHandling.redactSecrets ? "enabled" : "disabled"],
+        ["LLM advisory features", settings.dataHandling.llmFeatures ? "enabled" : "disabled"],
+        ["Audit record retention", `${settings.dataHandling.auditRecordRetentionDays} days`]
+      ]
+    : [];
 
   return (
     <>
@@ -21,12 +32,12 @@ export default async function SettingsPage() {
       </header>
 
       <section className="page">
-        {repositories.source !== "api" ? (
-          <section className={`notice notice--${repositories.source}`}>
+        {source !== "api" ? (
+          <section className="notice notice--unavailable">
             <GitBranch size={18} aria-hidden="true" />
             <div>
-              <h2>Repository settings unavailable</h2>
-              <p>{repositories.message}</p>
+              <h2>Settings data unavailable</h2>
+              <p>{message}</p>
             </div>
           </section>
         ) : null}
@@ -44,9 +55,24 @@ export default async function SettingsPage() {
               <li>
                 <div className="list-row">
                   <span>Installation</span>
-                  <StatusBadge status="approved" label="connected" />
+                  <StatusBadge
+                    status={settings?.githubInstallation.connected ? "approved" : "low"}
+                    label={settings?.githubInstallation.connected ? "connected" : "not connected"}
+                  />
                 </div>
-                <p>acme organization · installation 4815162342</p>
+                <p>
+                  {settings?.githubInstallation.connected
+                    ? [
+                        settings.githubInstallation.accountLogin,
+                        settings.githubInstallation.accountType,
+                        settings.githubInstallation.githubInstallationId
+                          ? `installation ${settings.githubInstallation.githubInstallationId}`
+                          : undefined
+                      ]
+                        .filter(Boolean)
+                        .join(" · ") || "GitHub App credentials are configured."
+                    : "No GitHub installation is connected in the runtime data."}
+                </p>
               </li>
               <li>
                 <div className="list-row">
@@ -61,17 +87,15 @@ export default async function SettingsPage() {
               <li>
                 <div className="list-row">
                   <span>Default mode</span>
-                  <StatusBadge
-                    status={
-                      enabledRepositories[0]?.mode === "enforce"
-                        ? "enforce"
-                        : enabledRepositories[0]?.mode === "observe"
-                          ? "observe"
-                          : "warn"
-                    }
-                  />
+                  {defaultMode ? (
+                    <StatusBadge status={defaultMode as "observe" | "warn" | "enforce"} />
+                  ) : null}
                 </div>
-                <p>Repository and rule-level modes can override this setting.</p>
+                <p>
+                  {defaultMode
+                    ? "Repository and rule-level modes can override this setting."
+                    : "No repository mode is available yet."}
+                </p>
               </li>
             </ul>
           </section>
@@ -85,15 +109,10 @@ export default async function SettingsPage() {
               <ShieldCheck size={18} aria-hidden="true" />
             </div>
             <div className="panel-body">
-              {(
-                [
-                  ["Source code storage", "disabled"],
-                  ["Full diff retention", "disabled"],
-                  ["Secret redaction", "enabled"],
-                  ["LLM advisory features", "disabled"],
-                  ["Audit record retention", "365 days"]
-                ] as const
-              ).map(([label, value]) => (
+              {dataHandlingRows.length === 0 ? (
+                <p className="muted">Data-handling settings are not available.</p>
+              ) : null}
+              {dataHandlingRows.map(([label, value]) => (
                 <div className="toggle-row" key={label}>
                   <div>
                     <strong>{label}</strong>
@@ -117,20 +136,18 @@ export default async function SettingsPage() {
               <h2>Owner mappings</h2>
             </div>
             <div className="panel-body form-grid">
-              {(
-                [
-                  ["Security team", "security-team"],
-                  ["Platform team", "platform-team"],
-                  ["Billing owner", "billing-owner"],
-                  ["Database owner", "database-owner"]
-                ] as const
-              ).map(([label, value]) => (
-                <div className="field" key={label}>
-                  <label htmlFor={label.toLowerCase().replace(/\s/g, "-")}>{label}</label>
+              {settings?.ownerMappings.length === 0 ? (
+                <p className="muted">
+                  No owner mappings are available from evaluated PRs or repository configuration.
+                </p>
+              ) : null}
+              {settings?.ownerMappings.map((mapping) => (
+                <div className="field" key={mapping.reviewer}>
+                  <label htmlFor={`mapping-${mapping.reviewer}`}>{mapping.reviewer}</label>
                   <input
                     className="input"
-                    id={label.toLowerCase().replace(/\s/g, "-")}
-                    defaultValue={value}
+                    id={`mapping-${mapping.reviewer}`}
+                    defaultValue={mapping.sources.join(", ")}
                   />
                 </div>
               ))}
@@ -153,17 +170,39 @@ export default async function SettingsPage() {
               <li>
                 <div className="list-row">
                   <span>JSON export</span>
-                  <StatusBadge status="approved" label="enabled" />
+                  <StatusBadge
+                    status={settings?.exports.json ? "approved" : "low"}
+                    label={settings?.exports.json ? "enabled" : "disabled"}
+                  />
                 </div>
                 <p>Structured Change Control Records without source code.</p>
               </li>
               <li>
                 <div className="list-row">
                   <span>CSV export</span>
-                  <StatusBadge status="approved" label="enabled" />
+                  <StatusBadge
+                    status={settings?.exports.csv ? "approved" : "low"}
+                    label={settings?.exports.csv ? "enabled" : "disabled"}
+                  />
                 </div>
                 <p>
                   Audit-friendly rows for repository, PR, policy, findings, evidence, and decision.
+                </p>
+              </li>
+              <li>
+                <div className="list-row">
+                  <span>Export storage</span>
+                  <StatusBadge
+                    status={settings?.exports.storageBucketConfigured ? "approved" : "low"}
+                    label={
+                      settings?.exports.storageBucketConfigured ? "configured" : "not configured"
+                    }
+                  />
+                </div>
+                <p>
+                  {settings?.exports.storageRegion
+                    ? `Region: ${settings.exports.storageRegion}`
+                    : "Exports are available through API jobs when no bucket is configured."}
                 </p>
               </li>
             </ul>

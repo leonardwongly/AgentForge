@@ -1,6 +1,37 @@
-import { expect, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { expect, test, type APIRequestContext } from "@playwright/test";
+import type { ChangeControlRecord, PullRequestInput } from "@agentforge/core";
 
-test("dashboard shows action-required pull requests first", async ({ page }) => {
+const apiBaseUrl = process.env.API_BASE_URL ?? "http://127.0.0.1:4100";
+
+async function seedMergeGuardRecord(request: APIRequestContext): Promise<ChangeControlRecord> {
+  const [rawPr, contentYaml] = await Promise.all([
+    readFile(path.resolve(process.cwd(), "fixtures", "repos", "billing-path.json"), "utf8"),
+    readFile(path.resolve(process.cwd(), "fixtures", "policies", "fintech.yaml"), "utf8")
+  ]);
+  const pr = JSON.parse(rawPr) as PullRequestInput;
+  const preview = await request.post(`${apiBaseUrl}/api/policies/preview`, {
+    data: { pr, contentYaml }
+  });
+  expect(preview.ok()).toBeTruthy();
+  const payload = (await preview.json()) as { record: ChangeControlRecord };
+  const policyUpdate = await request.put(
+    `${apiBaseUrl}/api/repositories/${payload.record.repositoryId}/policy`,
+    {
+      data: { contentYaml },
+      headers: {
+        "x-agentforge-actor": "playwright",
+        "x-agentforge-role": "platform_admin"
+      }
+    }
+  );
+  expect(policyUpdate.ok()).toBeTruthy();
+  return payload.record;
+}
+
+test("dashboard shows action-required pull requests first", async ({ page, request }) => {
+  await seedMergeGuardRecord(request);
   await page.goto("/dashboard");
   await expect(page.getByRole("heading", { name: "Merge Guard Dashboard" })).toBeVisible();
   await expect(
@@ -11,11 +42,11 @@ test("dashboard shows action-required pull requests first", async ({ page }) => 
   await expect(page.getByText("required reviewer pending").first()).toBeVisible();
 });
 
-test("governance drill-down routes render careful change-control language", async ({ page }) => {
-  await page.goto("/dashboard/blocked-prs");
-  const recordHref =
-    (await page.getByRole("link", { name: "Record", exact: true }).first().getAttribute("href")) ??
-    "/records/ccr_demo";
+test("governance drill-down routes render careful change-control language", async ({
+  page,
+  request
+}) => {
+  const record = await seedMergeGuardRecord(request);
   const routes = [
     ["/onboarding", "Onboarding", "Connect GitHub App"],
     ["/dashboard/blocked-prs", "Blocked PRs", "Action-required pull requests"],
@@ -23,9 +54,9 @@ test("governance drill-down routes render careful change-control language", asyn
     ["/dashboard/overrides", "Overrides", "Authorized override activity"],
     ["/dashboard/evidence-completion", "Evidence Completion", "Required evidence missing"],
     ["/records", "Change Control Records", "Record index"],
-    [recordHref, "Change Control Record", "Verified findings"],
-    ["/repositories/repo_local/policy", "Policy Editor", "Fintech policy pack fork"],
-    ["/repositories/repo_local/policy-preview", "Policy Preview", "Recent PR preview"],
+    [`/records/${record.id}`, "Change Control Record", "Verified findings"],
+    [`/repositories/${record.repositoryId}/policy`, "Policy Editor", "Active repository policy"],
+    [`/repositories/${record.repositoryId}/policy-preview`, "Policy Preview", "Recent PR preview"],
     ["/settings", "Settings", "Data handling"]
   ] as const;
 
