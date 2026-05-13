@@ -1,1 +1,1 @@
-export { MetricCard, StatusBadge } from "./primitives";
+export { MetricCard, ProgressBar, StatusBadge } from "./primitives";

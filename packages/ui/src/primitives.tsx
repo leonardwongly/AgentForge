@@ -18,9 +18,46 @@ export function MetricCard({ label, value, detail, tone = "neutral" }: MetricCar
 }
 
 type StatusBadgeProps = {
-  status: "pass" | "warn" | "block" | "missing" | "provided" | "approved" | "enforce" | "observe";
+  status:
+    | "pass"
+    | "warn"
+    | "block"
+    | "missing"
+    | "provided"
+    | "approved"
+    | "required"
+    | "enforce"
+    | "observe"
+    | "conditional"
+    | "suggested"
+    | "critical"
+    | "high"
+    | "medium"
+    | "low"
+    | "overridden";
+  label?: string | undefined;
 };
 
-export function StatusBadge({ status }: StatusBadgeProps): ReactNode {
-  return <span className={`status-badge status-badge--${status}`}>{status}</span>;
+export function StatusBadge({ status, label }: StatusBadgeProps): ReactNode {
+  return <span className={`status-badge status-badge--${status}`}>{label ?? status}</span>;
+}
+
+type ProgressBarProps = {
+  value: number;
+  label: string;
+};
+
+export function ProgressBar({ value, label }: ProgressBarProps): ReactNode {
+  const bounded = Math.max(0, Math.min(100, value));
+  return (
+    <div
+      className="progress"
+      aria-label={label}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={bounded}
+    >
+      <span style={{ width: `${bounded}%` }} />
+    </div>
+  );
 }

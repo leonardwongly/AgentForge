@@ -6,6 +6,8 @@ import {
   Gauge,
   GitPullRequestArrow,
   Home,
+  ListChecks,
+  PieChart,
   Settings,
   ShieldCheck,
   SlidersHorizontal
@@ -23,7 +25,9 @@ export const metadata: Metadata = {
 const navigation = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
   { href: "/dashboard/blocked-prs", label: "Blocked PRs", icon: GitPullRequestArrow },
+  { href: "/dashboard/policy-violations", label: "Policy Findings", icon: ListChecks },
   { href: "/dashboard/overrides", label: "Overrides", icon: ShieldCheck },
+  { href: "/dashboard/evidence-completion", label: "Evidence", icon: PieChart },
   { href: "/records/ccr_demo", label: "Records", icon: FileCheck },
   { href: "/repositories/repo_local/policy", label: "Policy", icon: SlidersHorizontal },
   { href: "/repositories/repo_local/policy-preview", label: "Preview", icon: Gauge },

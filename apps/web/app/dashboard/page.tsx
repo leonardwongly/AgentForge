@@ -1,19 +1,40 @@
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, Download, Filter, GitPullRequestArrow } from "lucide-react";
-import { MetricCard, StatusBadge } from "@agentforge/ui";
-import { demoRecords } from "../data";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  FileWarning,
+  Filter,
+  GitPullRequestArrow,
+  ShieldCheck,
+  UserCheck
+} from "lucide-react";
+import { MetricCard, ProgressBar, StatusBadge } from "@agentforge/ui";
+import {
+  actionRequiredRecords,
+  evidenceByKind,
+  findingGroups,
+  getDashboardSummary,
+  hasAgentSignal,
+  humanize,
+  missingEvidence,
+  pendingRequiredReviewers
+} from "../data";
 
 export default function DashboardPage() {
-  const evidence = demoRecords.flatMap((record) => record.requiredEvidence);
-  const completedEvidence = evidence.filter((item) => item.status !== "missing").length;
-  const blocked = demoRecords.filter((record) => record.checkStatus === "block");
+  const summary = getDashboardSummary();
+  const actionRequired = actionRequiredRecords();
+  const evidenceGroups = evidenceByKind();
+  const findings = findingGroups();
 
   return (
     <>
       <header className="topbar">
         <div>
           <h1>Merge Guard Dashboard</h1>
-          <p>Action-required pull requests, policy evidence, reviewers, and override trends.</p>
+          <p>
+            Action-first governance for blocked PRs, missing evidence, reviewers, and overrides.
+          </p>
         </div>
         <div className="control-row">
           <button className="button" type="button">
@@ -24,109 +45,200 @@ export default function DashboardPage() {
           </button>
         </div>
       </header>
+
       <section className="page">
-        <div className="metrics-grid">
+        <div className="metrics-grid" aria-label="Governance summary">
           <MetricCard
             label="Blocked PRs"
-            value={String(blocked.length)}
-            detail="Required evidence or reviewer approvals are incomplete."
+            value={String(summary.blockedPrs)}
+            detail="Merge Guard blocked merge while required policy conditions remain open."
             tone="block"
           />
           <MetricCard
-            label="Warnings"
-            value={String(demoRecords.filter((record) => record.checkStatus === "warn").length)}
-            detail="Would block in enforce mode, but current mode is warning."
+            label="Missing evidence"
+            value={String(summary.missingEvidence)}
+            detail="Required evidence missing across action-required pull requests."
             tone="warn"
           />
           <MetricCard
-            label="Evidence completion"
-            value={`${Math.round((completedEvidence / evidence.length) * 100)}%`}
-            detail="Provided or approved evidence across governed PRs."
-            tone="pass"
+            label="Required reviewers"
+            value={String(summary.pendingRequiredReviewers)}
+            detail="Required reviewer approvals still pending."
+            tone="neutral"
           />
           <MetricCard
-            label="Agent signals"
-            value="1"
-            detail="Signals recorded. Governance still applies to high-risk human PRs."
-            tone="neutral"
+            label="Evidence completion"
+            value={`${summary.evidenceCompletion}%`}
+            detail="Provided or approved evidence across evaluated PRs."
+            tone="pass"
           />
         </div>
 
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <h2>Action-required pull requests</h2>
-              <p>Blocked and warning PRs appear before low-risk changes.</p>
-            </div>
-            <Link className="button" href="/dashboard/blocked-prs">
-              <GitPullRequestArrow size={16} aria-hidden="true" /> View all
-            </Link>
-          </div>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Repository</th>
-                <th>PR</th>
-                <th>Mode</th>
-                <th>Status</th>
-                <th>Missing evidence</th>
-                <th>Pending reviewers</th>
-              </tr>
-            </thead>
-            <tbody>
-              {demoRecords.map((record) => (
-                <tr key={record.id}>
-                  <td>{record.repositoryFullName}</td>
-                  <td>
-                    <Link href={`/records/${record.id}`}>#{record.pullRequestNumber}</Link>
-                  </td>
-                  <td>{record.mode}</td>
-                  <td>
-                    <StatusBadge status={record.checkStatus} />
-                  </td>
-                  <td>
-                    {record.requiredEvidence.filter((item) => item.status === "missing").length}
-                  </td>
-                  <td>
-                    {
-                      record.requiredReviewers.filter(
-                        (item) => item.tier === "required" && !item.approved
-                      ).length
-                    }
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-
-        <div className="two-column">
+        <div className="priority-grid">
           <section className="panel">
             <div className="panel-header">
               <div>
-                <h2>Policy violations</h2>
-                <p>Grouped deterministic findings, not AI authorship claims.</p>
+                <h2>Priority queue</h2>
+                <p>Default order: blocked PRs, missing evidence, required reviewers, overrides.</p>
+              </div>
+              <Link className="button" href="/dashboard/blocked-prs">
+                <GitPullRequestArrow size={16} aria-hidden="true" /> Blocked PRs
+              </Link>
+            </div>
+            <ol className="action-list">
+              {actionRequired.map((item) => {
+                const record = item.record;
+                const missing = missingEvidence(record);
+                const pendingReviewers = pendingRequiredReviewers(record);
+                return (
+                  <li key={record.id}>
+                    <div className="record-title">
+                      <div>
+                        <h3>
+                          {item.title}{" "}
+                          <Link href={`/records/${record.id}`}>#{record.pullRequestNumber}</Link>
+                        </h3>
+                        <p>
+                          {record.repositoryFullName} · {item.team} · {item.age}
+                        </p>
+                      </div>
+                      <StatusBadge status={record.checkStatus} />
+                    </div>
+                    <div className="inline-list" aria-label="Open requirements">
+                      {missing.length > 0 ? (
+                        <span className="status-badge status-badge--missing">
+                          {missing.length} required evidence missing
+                        </span>
+                      ) : null}
+                      {pendingReviewers.length > 0 ? (
+                        <span className="status-badge status-badge--suggested">
+                          {pendingReviewers.length} required reviewer pending
+                        </span>
+                      ) : null}
+                      {record.lifecycle === "overridden" ? (
+                        <span className="status-badge status-badge--overridden">
+                          authorized override recorded
+                        </span>
+                      ) : null}
+                      {hasAgentSignal(record) ? (
+                        <span className="status-badge status-badge--low">
+                          agent signal recorded
+                        </span>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>Governance signals</h2>
+                <p>Trends are based on deterministic policy findings and recorded decisions.</p>
               </div>
               <AlertTriangle size={18} aria-hidden="true" />
             </div>
-            <ul className="checklist">
-              <li>Sensitive path changed: 1</li>
-              <li>CI or deployment workflow changed: 1</li>
-              <li>Agent-assistance signal recorded: 1</li>
-            </ul>
+            <div className="panel-body bar-list">
+              <div className="bar-row">
+                <header>
+                  <span>Policy violation trends</span>
+                  <strong>{summary.policyFindings}</strong>
+                </header>
+                <ProgressBar value={76} label="Policy violation trend volume" />
+              </div>
+              <div className="bar-row">
+                <header>
+                  <span>Agent-assisted change volume</span>
+                  <strong>{summary.agentAssisted}</strong>
+                </header>
+                <ProgressBar value={34} label="Agent-assisted change volume" />
+              </div>
+              <div className="bar-row">
+                <header>
+                  <span>Override rate</span>
+                  <strong>{summary.overrideRate}%</strong>
+                </header>
+                <ProgressBar value={summary.overrideRate} label="Override rate" />
+              </div>
+              <div className="trend-line" aria-label="Evidence completion trend">
+                {[32, 45, 51, 62, 58, 71, 76, summary.evidenceCompletion].map((value, index) => (
+                  <span key={index} style={{ height: `${Math.max(10, value)}%` }} />
+                ))}
+              </div>
+            </div>
           </section>
+        </div>
+
+        <div className="three-column">
           <section className="panel">
             <div className="panel-header">
               <div>
-                <h2>Evidence completion</h2>
-                <p>Missing evidence is shown before broad summaries.</p>
+                <h2>Missing evidence</h2>
+                <p>Open evidence requirements by type.</p>
               </div>
-              <CheckCircle2 size={18} aria-hidden="true" />
+              <FileWarning size={18} aria-hidden="true" />
             </div>
-            <ul className="checklist">
-              {evidence.map((item) => (
-                <li key={item.id}>
-                  {item.kind.replace(/_/g, " ")} <StatusBadge status={item.status} />
+            <ul className="compact-list">
+              {evidenceGroups.slice(0, 4).map((item) => (
+                <li key={item.kind}>
+                  <div className="list-row">
+                    <span>{humanize(item.kind)}</span>
+                    <StatusBadge
+                      status={item.missing > 0 ? "missing" : "approved"}
+                      label={`${item.missing} missing`}
+                    />
+                  </div>
+                  <p>{item.approved} approved or accepted.</p>
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>Required reviewers</h2>
+                <p>Pending owners by policy finding.</p>
+              </div>
+              <UserCheck size={18} aria-hidden="true" />
+            </div>
+            <ul className="compact-list">
+              {actionRequired.slice(0, 4).map((item) => (
+                <li key={item.record.id}>
+                  <div className="list-row">
+                    <span>{item.record.repositoryFullName}</span>
+                    <StatusBadge status={item.record.mode === "enforce" ? "enforce" : "warn"} />
+                  </div>
+                  <p>
+                    {pendingRequiredReviewers(item.record)
+                      .map((reviewer) => reviewer.reviewer)
+                      .join(", ") || "No required reviewer pending."}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>Policy findings</h2>
+                <p>Most frequent deterministic finding groups.</p>
+              </div>
+              <ShieldCheck size={18} aria-hidden="true" />
+            </div>
+            <ul className="compact-list">
+              {findings.slice(0, 4).map((item) => (
+                <li key={item.type}>
+                  <div className="list-row">
+                    <span>{humanize(item.type)}</span>
+                    <StatusBadge status={item.severity as "critical" | "high" | "medium" | "low"} />
+                  </div>
+                  <p>
+                    {item.count} policy finding{item.count === 1 ? "" : "s"} recorded.
+                  </p>
                 </li>
               ))}
             </ul>
