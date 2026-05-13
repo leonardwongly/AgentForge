@@ -26,3 +26,10 @@ LLM controls:
 - Customer code is not used for model training by this V1 implementation.
 
 Exports exclude full source code by default and are redacted before output.
+
+Audit readiness:
+
+- Every evaluated PR has an exportable Change Control Record with policy version, findings, evidence, reviewers, decision, and lifecycle state.
+- Override records include actor, role, reason, timestamp, scope, policy version, and PR-visible setting.
+- Audit events are emitted for policy changes, overrides, evidence updates, reviewer approvals, check publishing, exports, and retention changes.
+- JSON and CSV exports are sanitized through the same metadata-only storage policy used for dashboard/API output.

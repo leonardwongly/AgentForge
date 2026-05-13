@@ -3,6 +3,7 @@ import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/dete
 import { buildCheckRunPayload } from "@agentforge/github";
 import { evaluateMergeGuard, parsePolicyYaml, type PolicyConfig } from "@agentforge/policy";
 import { createChangeControlRecord } from "@agentforge/records";
+import type { MetadataStoragePolicy } from "@agentforge/security";
 
 export type EvaluationOutput = {
   policy: PolicyConfig;
@@ -16,6 +17,7 @@ export function evaluateFixturePr(input: {
   policyYaml: string;
   organizationId?: string;
   repositoryId?: string;
+  storagePolicy?: MetadataStoragePolicy;
 }): EvaluationOutput {
   const parsed = parsePolicyYaml(input.policyYaml);
   if (parsed.errors.length > 0) {
@@ -23,12 +25,16 @@ export function evaluateFixturePr(input: {
   }
   const facts = extractVerifiedFacts(input.pr, detectorConfigFromPolicy(parsed.config));
   const result = evaluateMergeGuard(input.pr, facts, parsed.config);
-  const record = createChangeControlRecord({
+  const recordInput: Parameters<typeof createChangeControlRecord>[0] = {
     organizationId: input.organizationId ?? "org_local",
     repositoryId: input.repositoryId ?? "repo_local",
     pr: input.pr,
     policyResult: result
-  });
+  };
+  if (input.storagePolicy) {
+    recordInput.storagePolicy = input.storagePolicy;
+  }
+  const record = createChangeControlRecord(recordInput);
   const checkRun = buildCheckRunPayload(input.pr, result);
 
   return {

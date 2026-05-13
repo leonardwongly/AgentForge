@@ -204,6 +204,29 @@ export type DataRetentionSettings = {
   auditRecordRetention: string;
 };
 
+export type AuditEventAction =
+  | "policy_changed"
+  | "override_created"
+  | "evidence_provided"
+  | "evidence_approved"
+  | "reviewer_approved"
+  | "check_published"
+  | "record_exported"
+  | "retention_changed";
+
+export type AuditEventRecord = {
+  id: string;
+  organizationId: string;
+  repositoryId?: string | undefined;
+  pullRequestId?: string | undefined;
+  actor: string;
+  action: AuditEventAction;
+  targetType: string;
+  targetId: string;
+  metadataJson?: Record<string, unknown> | undefined;
+  createdAt: string;
+};
+
 export type OverridePolicy = {
   allowedRoles: string[];
   requireReason: boolean;
@@ -240,6 +263,14 @@ export type AdvisoryFinding = {
   createdAt: string;
   source: "llm";
   blocking: false;
+};
+
+export type AdvisoryResult = {
+  enabled: boolean;
+  advisoryOnly: true;
+  promptGenerated: boolean;
+  deterministicFindingIds: string[];
+  findings: AdvisoryFinding[];
 };
 
 export const BLOCKABLE_CONFIDENCES: ReadonlySet<FactConfidence> = new Set(["verified", "observed"]);

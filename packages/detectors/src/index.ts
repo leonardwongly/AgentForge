@@ -334,7 +334,7 @@ export function detectSecretLikeValues(
           evidence: `Secret-like ${match.kind} detected in ${file.filename}: ${redactSecrets(match.value)}`,
           confidence: "observed",
           severity: "critical",
-          metadata: { kind: match.kind }
+          metadata: { kind: match.kind, patch: redactSecrets(additions) }
         })
       );
     }

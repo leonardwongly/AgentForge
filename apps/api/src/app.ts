@@ -3,7 +3,12 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { loadConfig } from "@agentforge/config";
-import type { ChangeControlRecord, EvidenceRequirement, PullRequestInput } from "@agentforge/core";
+import type {
+  AuditEventRecord,
+  ChangeControlRecord,
+  EvidenceRequirement,
+  PullRequestInput
+} from "@agentforge/core";
 import {
   formatMergeGuardCheck,
   normalizeGithubWebhook,
@@ -19,9 +24,17 @@ import {
 } from "@agentforge/policy";
 import {
   applyOverride,
+  createAuditEvent,
   exportChangeControlRecordsCsv,
-  exportChangeControlRecordsJson
+  exportChangeControlRecordsJson,
+  explainChangeControlRecord,
+  sanitizeChangeControlRecord
 } from "@agentforge/records";
+import {
+  sanitizeForMetadataStorage,
+  summarizeSafeSnippet,
+  type MetadataStoragePolicy
+} from "@agentforge/security";
 import { evaluateFixturePr } from "./evaluation.js";
 
 type QueuedEvaluation = {
@@ -44,6 +57,7 @@ export type AppState = {
   deliveries: Set<string>;
   queuedEvaluations: QueuedEvaluation[];
   records: ChangeControlRecord[];
+  auditEvents: AuditEventRecord[];
   exports: ExportJob[];
 };
 
@@ -53,10 +67,28 @@ type RawBodyRequest = {
 
 export function createApp(state: AppState = createInitialState()): FastifyInstance {
   const config = loadConfig();
+  const storagePolicy: MetadataStoragePolicy = {
+    sourceCodeStorage: config.sourceCodeStorage,
+    fullDiffRetention: config.fullDiffRetention,
+    redactSecrets: config.redactSecrets
+  };
+  const safe = <T>(value: T): T => sanitizeForMetadataStorage(value, storagePolicy);
   const app = Fastify({
     logger: {
       level: config.nodeEnv === "test" ? "silent" : "info",
-      redact: ["req.headers.authorization", "req.headers.cookie", "body.GITHUB_APP_PRIVATE_KEY"]
+      redact: [
+        "req.headers.authorization",
+        "req.headers.cookie",
+        "req.headers.x-hub-signature-256",
+        "req.body.token",
+        "req.body.secret",
+        "req.body.password",
+        "req.body.content",
+        "body.GITHUB_APP_PRIVATE_KEY",
+        "body.GITHUB_WEBHOOK_SECRET",
+        "body.GITHUB_CLIENT_SECRET",
+        "body.SESSION_SECRET"
+      ]
     },
     bodyLimit: 1024 * 1024
   });
@@ -149,7 +181,16 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   app.patch("/api/repositories/:id/settings", async (request) => ({
     id: (request.params as { id: string }).id,
     updated: true,
-    settings: request.body
+    settings: safe(request.body),
+    auditEvent: recordAuditEvent(state, {
+      organizationId: "org_local",
+      repositoryId: (request.params as { id: string }).id,
+      actor: "system",
+      action: "retention_changed",
+      targetType: "repository",
+      targetId: (request.params as { id: string }).id,
+      metadataJson: safe(request.body as Record<string, unknown>)
+    })
   }));
 
   app.get("/api/policy-packs", async () => ({ policyPacks: builtinPolicyPacks }));
@@ -185,6 +226,15 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       return reply.code(400).send(validation);
     }
     const parsed = parsePolicyYaml(body.contentYaml ?? "");
+    recordAuditEvent(state, {
+      organizationId: "org_local",
+      repositoryId: (request.params as { id: string }).id,
+      actor: "system",
+      action: "policy_changed",
+      targetType: "policy",
+      targetId: parsed.contentHash,
+      metadataJson: { contentHash: parsed.contentHash }
+    });
     return {
       repositoryId: (request.params as { id: string }).id,
       contentHash: parsed.contentHash,
@@ -203,9 +253,25 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (!body.pr) {
       return reply.code(400).send({ error: "pr fixture is required" });
     }
-    const output = evaluateFixturePr({ pr: body.pr, policyYaml: contentYaml });
-    state.records.push(output.record);
-    return output;
+    const output = evaluateFixturePr({ pr: body.pr, policyYaml: contentYaml, storagePolicy });
+    const record = sanitizeChangeControlRecord(output.record, storagePolicy);
+    state.records.push(record);
+    recordAuditEvent(state, {
+      organizationId: record.organizationId,
+      repositoryId: record.repositoryId,
+      pullRequestId: record.id,
+      actor: "system",
+      action: "check_published",
+      targetType: "change_control_record",
+      targetId: record.id,
+      metadataJson: {
+        conclusion: output.checkRun.conclusion,
+        status: output.result.status,
+        mode: output.result.mode,
+        policyVersion: output.result.policyVersion
+      }
+    });
+    return safe({ ...output, record });
   });
 
   app.get("/api/pull-requests", async () => ({
@@ -228,7 +294,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (!record) {
       return reply.code(404).send({ error: "Change Control Record not found" });
     }
-    return record;
+    return {
+      record: sanitizeChangeControlRecord(record, storagePolicy),
+      explanation: explainChangeControlRecord(record)
+    };
   });
 
   app.get(
@@ -239,7 +308,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       if (!record) {
         return reply.code(404).send({ error: "Change Control Record not found" });
       }
-      return record;
+      return {
+        record: sanitizeChangeControlRecord(record, storagePolicy),
+        explanation: explainChangeControlRecord(record)
+      };
     }
   );
 
@@ -257,6 +329,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (!body.kind || !body.content?.trim() || !body.actor) {
       return reply.code(400).send({ error: "kind, content, and actor are required" });
     }
+    const evidenceContent = body.content;
     record.requiredEvidence = record.requiredEvidence.map((item) =>
       item.kind === body.kind
         ? {
@@ -265,12 +338,22 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
             source: "manual_attestation",
             providedBy: body.actor,
             providedAt: new Date().toISOString(),
-            contentSummary: body.content
+            contentSummary: summarizeSafeSnippet(evidenceContent)
           }
         : item
     );
     record.updatedAt = new Date().toISOString();
-    return { evidence: record.requiredEvidence };
+    recordAuditEvent(state, {
+      organizationId: record.organizationId,
+      repositoryId: record.repositoryId,
+      pullRequestId: record.id,
+      actor: body.actor,
+      action: "evidence_provided",
+      targetType: "evidence_requirement",
+      targetId: body.kind,
+      metadataJson: { kind: body.kind, source: "manual_attestation" }
+    });
+    return { evidence: safe(record.requiredEvidence) };
   });
 
   app.patch("/api/evidence/:id/approve", async (request, reply) => {
@@ -287,10 +370,50 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         evidence.approvedBy = body.actor;
         evidence.approvedAt = new Date().toISOString();
         record.updatedAt = new Date().toISOString();
-        return { evidence };
+        recordAuditEvent(state, {
+          organizationId: record.organizationId,
+          repositoryId: record.repositoryId,
+          pullRequestId: record.id,
+          actor: body.actor,
+          action: "evidence_approved",
+          targetType: "evidence_requirement",
+          targetId: evidence.id,
+          metadataJson: { kind: evidence.kind }
+        });
+        return { evidence: safe(evidence) };
       }
     }
     return reply.code(404).send({ error: "Evidence requirement not found" });
+  });
+
+  app.patch("/api/reviewers/:id/approve", async (request, reply) => {
+    const body = request.body as { actor?: string };
+    if (!body.actor) {
+      return reply.code(400).send({ error: "actor is required" });
+    }
+    for (const record of state.records) {
+      const reviewer = record.requiredReviewers.find(
+        (item) => item.id === (request.params as { id: string }).id
+      );
+      if (reviewer) {
+        reviewer.approved = true;
+        reviewer.approvedBy = body.actor;
+        reviewer.approvedAt = new Date().toISOString();
+        record.updatedAt = new Date().toISOString();
+        recordAuditEvent(state, {
+          organizationId: record.organizationId,
+          repositoryId: record.repositoryId,
+          pullRequestId: record.id,
+          actor: body.actor,
+          action: "reviewer_approved",
+          targetType: "reviewer_requirement",
+          targetId: reviewer.id,
+          metadataJson: { reviewer: reviewer.reviewer, tier: reviewer.tier }
+        });
+        return { reviewer: safe(reviewer) };
+      }
+    }
+    return reply.code(404).send({ error: "Reviewer requirement not found" });
   });
 
   app.post("/api/pull-requests/:id/override", async (request, reply) => {
@@ -323,9 +446,13 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         pullRequestId: record.id
       });
       state.records = state.records.map((item) => (item.id === record.id ? output.record : item));
+      if (output.auditEvent) {
+        state.auditEvents.push(output.auditEvent);
+      }
       return reply.code(201).send({
-        override: output.overrideRecord,
-        record: output.record,
+        override: safe(output.overrideRecord),
+        record: sanitizeChangeControlRecord(output.record, storagePolicy),
+        auditEvent: output.auditEvent,
         prVisibleMessage:
           "Merge Guard override recorded. Merge was allowed after authorized override with reason."
       });
@@ -336,23 +463,27 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     }
   });
 
-  app.get("/api/dashboard/summary", async () => dashboardSummary(state.records));
+  app.get("/api/dashboard/summary", async () => safe(dashboardSummary(state.records)));
   app.get("/api/dashboard/blocked-prs", async () => ({
-    blockedPullRequests: state.records.filter(
-      (record) =>
-        record.checkStatus === "block" ||
-        record.requiredEvidence.some((item) => item.status === "missing") ||
-        record.requiredReviewers.some((item) => item.tier === "required" && !item.approved)
+    blockedPullRequests: safe(
+      state.records.filter(
+        (record) =>
+          record.checkStatus === "block" ||
+          record.requiredEvidence.some((item) => item.status === "missing") ||
+          record.requiredReviewers.some((item) => item.tier === "required" && !item.approved)
+      )
     )
   }));
   app.get("/api/dashboard/policy-violations", async () => ({
-    violations: groupBy(
-      state.records.flatMap((record) => record.verifiedFindings),
-      (finding) => finding.type
+    violations: safe(
+      groupBy(
+        state.records.flatMap((record) => record.verifiedFindings),
+        (finding) => finding.type
+      )
     )
   }));
   app.get("/api/dashboard/overrides", async () => ({
-    overrides: state.records.filter((record) => record.lifecycle === "overridden")
+    overrides: safe(state.records.filter((record) => record.lifecycle === "overridden"))
   }));
   app.get("/api/dashboard/evidence-completion", async () => {
     const evidence = state.records.flatMap((record) => record.requiredEvidence);
@@ -369,8 +500,8 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     const format = body.format ?? "json";
     const content =
       format === "csv"
-        ? exportChangeControlRecordsCsv(state.records)
-        : exportChangeControlRecordsJson(state.records);
+        ? exportChangeControlRecordsCsv(state.records, storagePolicy)
+        : exportChangeControlRecordsJson(state.records, storagePolicy);
     const job: ExportJob = {
       id: randomUUID(),
       status: "completed",
@@ -380,6 +511,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       createdAt: new Date().toISOString()
     };
     state.exports.push(job);
+    recordAuditEvent(state, {
+      organizationId: "org_local",
+      actor: "system",
+      action: "record_exported",
+      targetType: "change_control_records_export",
+      targetId: job.id,
+      metadataJson: { format, recordCount: job.recordCount }
+    });
     return reply.code(201).send({ id: job.id, status: job.status, recordCount: job.recordCount });
   });
   app.get("/api/exports/:id", async (request, reply) => {
@@ -389,6 +528,8 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     }
     return job;
   });
+
+  app.get("/api/audit-events", async () => ({ auditEvents: safe(state.auditEvents) }));
 
   app.get("/api/check-output/:recordId", async (request, reply) => {
     const record = state.records.find(
@@ -419,8 +560,18 @@ export function createInitialState(): AppState {
     deliveries: new Set(),
     queuedEvaluations: [],
     records: [],
+    auditEvents: [],
     exports: []
   };
+}
+
+function recordAuditEvent(
+  state: AppState,
+  input: Parameters<typeof createAuditEvent>[0]
+): AuditEventRecord {
+  const event = createAuditEvent(input);
+  state.auditEvents.push(event);
+  return event;
 }
 
 function dashboardSummary(records: ChangeControlRecord[]) {
