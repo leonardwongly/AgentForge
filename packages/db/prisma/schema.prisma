@@ -56,6 +56,7 @@ model Organization {
   auditEvents       AuditEvent[]
   usageEvents       UsageEvent[]
   retentionSettings RetentionSetting?
+  ownerMappings     OwnerMapping[]
 
   @@index([slug])
 }
@@ -74,25 +75,27 @@ model GitHubInstallation {
 }
 
 model Repository {
-  id                     String          @id @default(uuid())
+  id                     String             @id @default(uuid())
   organizationId         String
-  githubRepositoryId     BigInt          @unique
+  githubRepositoryId     BigInt             @unique
   fullName               String
   owner                  String
   name                   String
   defaultBranch          String
-  protected              Boolean         @default(false)
-  enabled                Boolean         @default(true)
+  protected              Boolean            @default(false)
+  enabled                Boolean            @default(true)
   currentPolicyVersionId String?
   mode                   PolicyMode?
-  createdAt              DateTime        @default(now())
-  updatedAt              DateTime        @updatedAt
-  organization           Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  currentPolicyVersion   PolicyVersion?  @relation("RepositoryCurrentPolicy", fields: [currentPolicyVersionId], references: [id])
-  policyVersions         PolicyVersion[] @relation("RepositoryPolicyVersions")
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+  organization           Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  currentPolicyVersion   PolicyVersion?     @relation("RepositoryCurrentPolicy", fields: [currentPolicyVersionId], references: [id])
+  policyVersions         PolicyVersion[]    @relation("RepositoryPolicyVersions")
   pullRequests           PullRequest[]
   auditEvents            AuditEvent[]
   usageEvents            UsageEvent[]
+  settings               RepositorySetting?
+  ownerMappings          OwnerMapping[]
 
   @@unique([organizationId, fullName])
   @@index([organizationId, enabled])
@@ -362,4 +365,33 @@ model RetentionSetting {
   createdAt                DateTime     @default(now())
   updatedAt                DateTime     @updatedAt
   organization             Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+model RepositorySetting {
+  id                       String     @id @default(uuid())
+  repositoryId             String     @unique
+  sourceCodeStorage        Boolean    @default(false)
+  fullDiffRetention        String     @default("disabled")
+  redactSecrets            Boolean    @default(true)
+  llmFeatures              Boolean    @default(false)
+  auditRecordRetentionDays Int        @default(365)
+  createdAt                DateTime   @default(now())
+  updatedAt                DateTime   @updatedAt
+  repository               Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+}
+
+model OwnerMapping {
+  id             String       @id @default(uuid())
+  organizationId String
+  repositoryId   String?
+  ownerKey       String
+  reviewer       String
+  reviewerType   String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository     Repository?  @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, repositoryId, ownerKey])
+  @@index([organizationId, repositoryId])
 }

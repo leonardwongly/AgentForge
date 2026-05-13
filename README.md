@@ -132,7 +132,7 @@ x-agentforge-actor: <login>
 x-agentforge-role: platform_admin | engineering_manager | auditor | security_reviewer | developer
 ```
 
-Policy/settings changes require `platform_admin` or `engineering_manager`. Change Control Record exports and audit access require `auditor`, `platform_admin`, or `engineering_manager`. Overrides use the role allowlist configured by policy.
+Policy/settings changes require `platform_admin` or `engineering_manager`. Repository settings are persisted as runtime state, including enabled status, repository mode, data-handling overrides, and configured owner mappings. Change Control Record exports and audit access require `auditor`, `platform_admin`, or `engineering_manager`. Overrides use the role allowlist configured by policy.
 
 ## Policy Modes
 

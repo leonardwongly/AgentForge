@@ -225,11 +225,13 @@ export default async function OnboardingPage() {
               ) : null}
               {settings.settings?.ownerMappings.map((mapping) => (
                 <div className="field" key={mapping.reviewer}>
-                  <label htmlFor={`owner-${mapping.reviewer}`}>{mapping.reviewer}</label>
+                  <label htmlFor={`owner-${mapping.reviewer}`}>
+                    {mapping.ownerKey ? humanize(mapping.ownerKey) : mapping.reviewer}
+                  </label>
                   <input
                     className="input"
                     id={`owner-${mapping.reviewer}`}
-                    defaultValue={mapping.sources.join(", ")}
+                    defaultValue={`${mapping.reviewer} (${mapping.reviewerType})`}
                   />
                 </div>
               ))}

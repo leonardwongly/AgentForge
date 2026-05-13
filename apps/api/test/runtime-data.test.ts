@@ -106,4 +106,146 @@ describe("runtime data surfaces", () => {
 
     await app.close();
   });
+
+  it("persists repository settings and configured owner mappings", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest }),
+      headers: { "content-type": "application/json" }
+    });
+    const record = preview.json().record;
+
+    const update = await app.inject({
+      method: "PATCH",
+      url: `/api/repositories/${record.repositoryId}/settings`,
+      payload: JSON.stringify({
+        enabled: false,
+        mode: "enforce",
+        dataHandling: {
+          fullDiffRetention: "7d",
+          llmFeatures: false,
+          auditRecordRetentionDays: 730
+        },
+        ownerMappings: [
+          {
+            ownerKey: "billing_owner",
+            reviewer: "billing-owner",
+            reviewerType: "team"
+          },
+          {
+            ownerKey: "security_team",
+            reviewer: "security-team",
+            reviewerType: "team"
+          }
+        ]
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-agentforge-actor": "alex",
+        "x-agentforge-role": "platform_admin"
+      }
+    });
+    expect(update.statusCode).toBe(200);
+    expect(update.json()).toEqual(
+      expect.objectContaining({
+        repository: expect.objectContaining({
+          enabled: false,
+          mode: "enforce",
+          dataHandling: expect.objectContaining({
+            fullDiffRetention: "7d",
+            auditRecordRetentionDays: 730
+          })
+        }),
+        ownerMappings: expect.arrayContaining([
+          expect.objectContaining({
+            ownerKey: "billing_owner",
+            reviewer: "billing-owner",
+            reviewerType: "team"
+          })
+        ])
+      })
+    );
+
+    const repositories = await app.inject({ method: "GET", url: "/api/repositories" });
+    expect(repositories.json().repositories[0]).toEqual(
+      expect.objectContaining({
+        id: record.repositoryId,
+        enabled: false,
+        mode: "enforce",
+        dataHandling: expect.objectContaining({ fullDiffRetention: "7d" })
+      })
+    );
+
+    const settings = await app.inject({ method: "GET", url: "/api/settings" });
+    expect(settings.json().ownerMappings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ownerKey: "security_team",
+          reviewer: "security-team",
+          sources: [record.repositoryId]
+        })
+      ])
+    );
+
+    const onboarding = await app.inject({ method: "GET", url: "/api/onboarding/status" });
+    expect(onboarding.json().steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "map_owners",
+          status: "complete"
+        })
+      ])
+    );
+
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/audit-events",
+      headers: {
+        "x-agentforge-actor": "alex",
+        "x-agentforge-role": "platform_admin"
+      }
+    });
+    expect(audit.json().auditEvents.map((event: { action: string }) => event.action)).toEqual(
+      expect.arrayContaining([
+        "repository_settings_changed",
+        "retention_changed",
+        "owner_mapping_changed"
+      ])
+    );
+
+    await app.close();
+  });
+
+  it("rejects malformed repository settings without mutating runtime state", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest }),
+      headers: { "content-type": "application/json" }
+    });
+    const record = preview.json().record;
+
+    const invalid = await app.inject({
+      method: "PATCH",
+      url: `/api/repositories/${record.repositoryId}/settings`,
+      payload: JSON.stringify({
+        dataHandling: { fullDiffRetention: "forever" },
+        ownerMappings: [{ ownerKey: "../billing", reviewer: "billing-owner", reviewerType: "team" }]
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-agentforge-actor": "alex",
+        "x-agentforge-role": "platform_admin"
+      }
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(state.ownerMappings).toEqual([]);
+
+    await app.close();
+  });
 });

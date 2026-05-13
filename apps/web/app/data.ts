@@ -45,6 +45,15 @@ export type RepositoryOption = {
   currentPolicyVersion?: string | undefined;
   protected?: boolean | undefined;
   defaultBranch?: string | undefined;
+  dataHandling?:
+    | {
+        sourceCodeStorage: boolean;
+        fullDiffRetention: string;
+        redactSecrets: boolean;
+        llmFeatures: boolean;
+        auditRecordRetentionDays: number;
+      }
+    | undefined;
 };
 
 export type PolicyPackOption = {
@@ -80,6 +89,7 @@ export type SettingsData = {
     auditRecordRetentionDays: number;
   };
   ownerMappings: Array<{
+    ownerKey?: string | undefined;
     reviewer: string;
     reviewerType: string;
     sources: string[];

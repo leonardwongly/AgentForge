@@ -35,5 +35,5 @@ Audit readiness:
 - Policy and repository settings changes require `platform_admin` or `engineering_manager`.
 - Change Control Record exports and audit-event access require `auditor`, `platform_admin`, or `engineering_manager`.
 - GitHub webhooks fail closed when `GITHUB_WEBHOOK_SECRET` is not configured. Unsigned fixture replay requires explicit local-only `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=true`.
-- Audit events are emitted for policy changes, overrides, evidence updates, reviewer approvals, check publishing, exports, and retention changes.
+- Audit events are emitted for policy changes, repository settings changes, owner mapping changes, overrides, evidence updates, reviewer approvals, check publishing, exports, and retention changes.
 - JSON and CSV exports are sanitized through the same metadata-only storage policy used for dashboard/API output.

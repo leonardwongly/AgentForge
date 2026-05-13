@@ -212,7 +212,9 @@ export type AuditEventAction =
   | "reviewer_approved"
   | "check_published"
   | "record_exported"
-  | "retention_changed";
+  | "retention_changed"
+  | "repository_settings_changed"
+  | "owner_mapping_changed";
 
 export type AuditEventRecord = {
   id: string;

@@ -143,11 +143,13 @@ export default async function SettingsPage() {
               ) : null}
               {settings?.ownerMappings.map((mapping) => (
                 <div className="field" key={mapping.reviewer}>
-                  <label htmlFor={`mapping-${mapping.reviewer}`}>{mapping.reviewer}</label>
+                  <label htmlFor={`mapping-${mapping.reviewer}`}>
+                    {mapping.ownerKey ? mapping.ownerKey.replace(/_/g, " ") : mapping.reviewer}
+                  </label>
                   <input
                     className="input"
                     id={`mapping-${mapping.reviewer}`}
-                    defaultValue={mapping.sources.join(", ")}
+                    defaultValue={`${mapping.reviewer} (${mapping.reviewerType})`}
                   />
                 </div>
               ))}

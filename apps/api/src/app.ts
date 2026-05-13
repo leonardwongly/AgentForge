@@ -4,6 +4,7 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
+import { z } from "zod";
 import { loadConfig } from "@agentforge/config";
 import type {
   AuditEventRecord,
@@ -69,6 +70,33 @@ type RepositoryPolicyState = {
   policyPackVersion?: string | undefined;
 };
 
+type RepositoryDataHandlingState = {
+  sourceCodeStorage: boolean;
+  fullDiffRetention: "disabled" | "7d" | "30d" | "custom";
+  redactSecrets: boolean;
+  llmFeatures: boolean;
+  auditRecordRetentionDays: number;
+};
+
+type RepositorySettingsState = {
+  repositoryId: string;
+  enabled: boolean;
+  mode?: ChangeControlRecord["mode"] | undefined;
+  dataHandling?: RepositoryDataHandlingState | undefined;
+  updatedAt: string;
+};
+
+type OwnerMappingState = {
+  id: string;
+  organizationId: string;
+  repositoryId?: string | undefined;
+  ownerKey: string;
+  reviewer: string;
+  reviewerType: "user" | "team";
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AppState = {
   deliveries: Set<string>;
   queuedEvaluations: QueuedEvaluation[];
@@ -76,11 +104,56 @@ export type AppState = {
   auditEvents: AuditEventRecord[];
   exports: ExportJob[];
   repositoryPolicies: Map<string, RepositoryPolicyState>;
+  repositorySettings: Map<string, RepositorySettingsState>;
+  ownerMappings: OwnerMappingState[];
 };
 
 type RawBodyRequest = {
   rawBody?: Buffer;
 };
+
+const policyModeSchema = z.enum(["observe", "warn", "enforce"]);
+const diffRetentionSchema = z.enum(["disabled", "7d", "30d", "custom"]);
+const dataHandlingPatchSchema = z
+  .object({
+    sourceCodeStorage: z.boolean().optional(),
+    fullDiffRetention: diffRetentionSchema.optional(),
+    redactSecrets: z.boolean().optional(),
+    llmFeatures: z.boolean().optional(),
+    auditRecordRetentionDays: z.number().int().positive().max(3650).optional()
+  })
+  .strict();
+const ownerMappingPatchSchema = z
+  .object({
+    ownerKey: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9_-]+$/u),
+    reviewer: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .regex(/^@?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?$/u),
+    reviewerType: z.enum(["user", "team"])
+  })
+  .strict();
+const repositorySettingsPatchSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    mode: policyModeSchema.optional(),
+    policyVersion: z.string().trim().min(1).max(160).optional(),
+    dataHandling: dataHandlingPatchSchema.optional(),
+    ownerMappings: z.array(ownerMappingPatchSchema).max(20).optional(),
+    sourceCodeStorage: z.boolean().optional(),
+    fullDiffRetention: diffRetentionSchema.optional(),
+    redactSecrets: z.boolean().optional(),
+    llmFeatures: z.boolean().optional(),
+    auditRecordRetentionDays: z.number().int().positive().max(3650).optional()
+  })
+  .strict();
 
 export function createApp(state: AppState = createInitialState()): FastifyInstance {
   const config = loadConfig();
@@ -113,6 +186,11 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     actor: string,
     parsed: ReturnType<typeof parsePolicyYaml>
   ) => saveActiveRepositoryPolicy(state, prisma, repositoryId, contentYaml, actor, parsed);
+  const listOwnerMappings = () => listConfiguredOwnerMappings(state, prisma);
+  const saveRepositorySettings = (
+    repositoryId: string,
+    body: z.infer<typeof repositorySettingsPatchSchema>
+  ) => updateRepositorySettings(state, prisma, repositoryId, body, config);
   const audit = (input: Parameters<typeof createAuditEvent>[0]) =>
     recordAuditEvent(state, prisma, input);
   const app = Fastify({
@@ -237,18 +315,12 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
 
   app.get("/api/settings", async () => {
     const repositories = await listRepositories();
-    const records = await listRecords();
+    const ownerMappings = await listOwnerMappings();
     return safe({
       githubInstallation: await githubInstallationSummary(prisma, config),
       repositories,
-      dataHandling: {
-        sourceCodeStorage: config.sourceCodeStorage,
-        fullDiffRetention: config.fullDiffRetention,
-        redactSecrets: config.redactSecrets,
-        llmFeatures: config.llmFeatures,
-        auditRecordRetentionDays: config.auditRecordRetentionDays
-      },
-      ownerMappings: ownerMappingsFromRecords(records),
+      dataHandling: await defaultDataHandlingSettings(prisma, config),
+      ownerMappings: ownerMappings.map(ownerMappingForApi),
       exports: {
         json: true,
         csv: true,
@@ -263,7 +335,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     const records = await listRecords();
     const settings = {
       githubInstallation: await githubInstallationSummary(prisma, config),
-      ownerMappings: ownerMappingsFromRecords(records)
+      ownerMappings: await listOwnerMappings()
     };
     return safe({
       steps: onboardingStepsFromRuntime({
@@ -288,20 +360,94 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (!allowed.ok) {
       return reply.code(allowed.statusCode).send({ error: allowed.reason });
     }
-    return {
-      id: (request.params as { id: string }).id,
-      updated: true,
-      settings: safe(request.body),
-      auditEvent: await audit({
-        organizationId: "org_local",
-        repositoryId: (request.params as { id: string }).id,
-        actor: actor.login,
-        action: "retention_changed",
-        targetType: "repository",
-        targetId: (request.params as { id: string }).id,
-        metadataJson: { ...safe(request.body as Record<string, unknown>), actorRole: actor.role }
-      })
-    };
+    const repositoryId = (request.params as { id: string }).id;
+    const parsed = repositorySettingsPatchSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: "Invalid repository settings",
+        details: parsed.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message
+        }))
+      });
+    }
+    try {
+      const settings = await saveRepositorySettings(repositoryId, parsed.data);
+      const auditEvents = [];
+      const changedRepositoryState =
+        parsed.data.enabled !== undefined ||
+        parsed.data.mode !== undefined ||
+        parsed.data.policyVersion !== undefined;
+      const changedRetention = Boolean(
+        parsed.data.dataHandling ||
+        parsed.data.sourceCodeStorage !== undefined ||
+        parsed.data.fullDiffRetention !== undefined ||
+        parsed.data.redactSecrets !== undefined ||
+        parsed.data.llmFeatures !== undefined ||
+        parsed.data.auditRecordRetentionDays !== undefined
+      );
+      if (changedRepositoryState) {
+        auditEvents.push(
+          await audit({
+            organizationId: settings.organizationId,
+            repositoryId,
+            actor: actor.login,
+            action: "repository_settings_changed",
+            targetType: "repository",
+            targetId: repositoryId,
+            metadataJson: {
+              enabled: settings.repository.enabled,
+              mode: settings.repository.mode,
+              policyVersion: parsed.data.policyVersion,
+              actorRole: actor.role
+            }
+          })
+        );
+      }
+      if (changedRetention) {
+        auditEvents.push(
+          await audit({
+            organizationId: settings.organizationId,
+            repositoryId,
+            actor: actor.login,
+            action: "retention_changed",
+            targetType: "repository_setting",
+            targetId: repositoryId,
+            metadataJson: {
+              dataHandling: settings.repository.dataHandling,
+              actorRole: actor.role
+            }
+          })
+        );
+      }
+      if (parsed.data.ownerMappings) {
+        auditEvents.push(
+          await audit({
+            organizationId: settings.organizationId,
+            repositoryId,
+            actor: actor.login,
+            action: "owner_mapping_changed",
+            targetType: "owner_mapping",
+            targetId: repositoryId,
+            metadataJson: {
+              ownerMappings: settings.ownerMappings.map(ownerMappingForApi),
+              actorRole: actor.role
+            }
+          })
+        );
+      }
+      return {
+        id: repositoryId,
+        updated: true,
+        repository: safe(settings.repository),
+        ownerMappings: safe(settings.ownerMappings.map(ownerMappingForApi)),
+        auditEvents: safe(auditEvents)
+      };
+    } catch (error) {
+      return reply.code(404).send({
+        error: error instanceof Error ? error.message : "Repository settings could not be updated"
+      });
+    }
   });
 
   app.get("/api/policy-packs", async () => ({ policyPacks: builtinPolicyPacks }));
@@ -813,7 +959,9 @@ export function createInitialState(): AppState {
     records: [],
     auditEvents: [],
     exports: [],
-    repositoryPolicies: new Map()
+    repositoryPolicies: new Map(),
+    repositorySettings: new Map(),
+    ownerMappings: []
   };
 }
 
@@ -824,7 +972,7 @@ async function listRepositorySummaries(
 ) {
   if (prisma) {
     const rows = await prisma.repository.findMany({
-      include: { currentPolicyVersion: true },
+      include: { currentPolicyVersion: true, settings: true },
       orderBy: { fullName: "asc" }
     });
     return rows.map((row) => {
@@ -839,7 +987,8 @@ async function listRepositorySummaries(
         currentPolicyPack: parsedPolicy?.config.policy_pack_id,
         currentPolicyVersion: row.currentPolicyVersion?.version,
         protected: row.protected,
-        defaultBranch: row.defaultBranch
+        defaultBranch: row.defaultBranch,
+        dataHandling: row.settings ? dataHandlingFromRepositorySetting(row.settings) : undefined
       };
     });
   }
@@ -855,34 +1004,53 @@ async function listRepositorySummaries(
       currentPolicyVersion?: string | undefined;
       protected: boolean;
       defaultBranch: string;
+      dataHandling?: RepositoryDataHandlingState | undefined;
     }
   >();
 
   for (const record of state.records) {
     const policy = state.repositoryPolicies.get(record.repositoryId);
+    const settings = state.repositorySettings.get(record.repositoryId);
     repositories.set(record.repositoryId, {
       id: record.repositoryId,
       fullName: record.repositoryFullName,
-      enabled: true,
-      mode: policy?.mode ?? record.mode,
+      enabled: settings?.enabled ?? true,
+      mode: settings?.mode ?? policy?.mode ?? record.mode,
       currentPolicyPack: policy?.policyPackId ?? record.policyPackId,
       currentPolicyVersion: policy?.version ?? record.policyVersion,
       protected: false,
-      defaultBranch: record.baseBranch
+      defaultBranch: record.baseBranch,
+      dataHandling: settings?.dataHandling
     });
   }
 
   for (const policy of state.repositoryPolicies.values()) {
     if (!repositories.has(policy.repositoryId)) {
+      const settings = state.repositorySettings.get(policy.repositoryId);
       repositories.set(policy.repositoryId, {
         id: policy.repositoryId,
         fullName: policy.repositoryId,
-        enabled: true,
-        mode: policy.mode,
+        enabled: settings?.enabled ?? true,
+        mode: settings?.mode ?? policy.mode,
         currentPolicyPack: policy.policyPackId,
         currentPolicyVersion: policy.version,
         protected: false,
-        defaultBranch: "main"
+        defaultBranch: "main",
+        dataHandling: settings?.dataHandling
+      });
+    }
+  }
+
+  for (const settings of state.repositorySettings.values()) {
+    if (!repositories.has(settings.repositoryId)) {
+      repositories.set(settings.repositoryId, {
+        id: settings.repositoryId,
+        fullName: settings.repositoryId,
+        enabled: settings.enabled,
+        mode: settings.mode ?? defaultMode,
+        protected: false,
+        defaultBranch: "main",
+        dataHandling: settings.dataHandling
       });
     }
   }
@@ -979,6 +1147,288 @@ async function saveActiveRepositoryPolicy(
     ...policy,
     version: row.version,
     createdAt: row.createdAt.toISOString()
+  };
+}
+
+async function updateRepositorySettings(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  repositoryId: string,
+  patch: z.infer<typeof repositorySettingsPatchSchema>,
+  config: ReturnType<typeof loadConfig>
+): Promise<{
+  organizationId: string;
+  repository: {
+    id: string;
+    enabled: boolean;
+    mode: ChangeControlRecord["mode"];
+    dataHandling: RepositoryDataHandlingState;
+  };
+  ownerMappings: OwnerMappingState[];
+}> {
+  const dataHandlingPatch = extractDataHandlingPatch(patch);
+  if (prisma) {
+    const repository = await prisma.repository.findUnique({
+      where: { id: repositoryId },
+      include: { currentPolicyVersion: true, settings: true }
+    });
+    if (!repository) {
+      throw new Error("Repository must exist before updating settings.");
+    }
+    let policyVersionId: string | null | undefined;
+    let policyMode: ChangeControlRecord["mode"] | undefined;
+    if (patch.policyVersion) {
+      const version = await prisma.policyVersion.findFirst({
+        where: {
+          repositoryId: repository.id,
+          version: patch.policyVersion
+        },
+        select: { id: true, mode: true }
+      });
+      if (!version) {
+        throw new Error("Requested policy version is not available for this repository.");
+      }
+      policyVersionId = version.id;
+      policyMode = version.mode;
+    }
+    const updatedRepository = await prisma.repository.update({
+      where: { id: repository.id },
+      data: {
+        enabled: patch.enabled ?? repository.enabled,
+        mode: patch.mode ?? policyMode ?? repository.mode,
+        ...(policyVersionId ? { currentPolicyVersionId: policyVersionId } : {})
+      }
+    });
+    let dataHandling = repository.settings
+      ? dataHandlingFromRepositorySetting(repository.settings)
+      : dataHandlingDefaults(config);
+    if (dataHandlingPatch) {
+      const savedSetting = await prisma.repositorySetting.upsert({
+        where: { repositoryId: repository.id },
+        update: dataHandlingPatch,
+        create: {
+          repositoryId: repository.id,
+          ...dataHandlingDefaults(config),
+          ...dataHandlingPatch
+        }
+      });
+      dataHandling = dataHandlingFromRepositorySetting(savedSetting);
+    }
+    if (patch.ownerMappings) {
+      await prisma.ownerMapping.deleteMany({ where: { repositoryId: repository.id } });
+      if (patch.ownerMappings.length > 0) {
+        await prisma.ownerMapping.createMany({
+          data: patch.ownerMappings.map((mapping) => ({
+            organizationId: repository.organizationId,
+            repositoryId: repository.id,
+            ownerKey: mapping.ownerKey,
+            reviewer: mapping.reviewer,
+            reviewerType: mapping.reviewerType
+          }))
+        });
+      }
+    }
+    const ownerMappings = await listConfiguredOwnerMappings(state, prisma, repository.id);
+    return {
+      organizationId: repository.organizationId,
+      repository: {
+        id: repository.id,
+        enabled: updatedRepository.enabled,
+        mode:
+          updatedRepository.mode ??
+          repository.currentPolicyVersion?.mode ??
+          config.defaultPolicyMode,
+        dataHandling
+      },
+      ownerMappings
+    };
+  }
+
+  const existingRecord = state.records.find((record) => record.repositoryId === repositoryId);
+  const existingPolicy = state.repositoryPolicies.get(repositoryId);
+  const existingSettings = state.repositorySettings.get(repositoryId);
+  if (!existingRecord && !existingPolicy && !existingSettings) {
+    throw new Error("Repository must exist before updating settings.");
+  }
+  if (patch.policyVersion && existingPolicy?.version !== patch.policyVersion) {
+    throw new Error("Requested policy version is not available for this repository.");
+  }
+  const dataHandling = {
+    ...(existingSettings?.dataHandling ?? dataHandlingDefaults(config)),
+    ...(dataHandlingPatch ?? {})
+  };
+  const nextSettings: RepositorySettingsState = {
+    repositoryId,
+    enabled: patch.enabled ?? existingSettings?.enabled ?? true,
+    mode: patch.mode ?? existingSettings?.mode ?? existingPolicy?.mode ?? existingRecord?.mode,
+    dataHandling,
+    updatedAt: new Date().toISOString()
+  };
+  state.repositorySettings.set(repositoryId, nextSettings);
+  if (patch.ownerMappings) {
+    state.ownerMappings = [
+      ...state.ownerMappings.filter((mapping) => mapping.repositoryId !== repositoryId),
+      ...patch.ownerMappings.map((mapping) => {
+        const now = new Date().toISOString();
+        return {
+          id: `owner_mapping:${repositoryId}:${mapping.ownerKey}`,
+          organizationId: existingRecord?.organizationId ?? "org_local",
+          repositoryId,
+          ownerKey: mapping.ownerKey,
+          reviewer: mapping.reviewer,
+          reviewerType: mapping.reviewerType,
+          createdAt: now,
+          updatedAt: now
+        } satisfies OwnerMappingState;
+      })
+    ];
+  }
+  const ownerMappings = await listConfiguredOwnerMappings(state, prisma, repositoryId);
+  return {
+    organizationId: existingRecord?.organizationId ?? "org_local",
+    repository: {
+      id: repositoryId,
+      enabled: nextSettings.enabled,
+      mode: nextSettings.mode ?? config.defaultPolicyMode,
+      dataHandling
+    },
+    ownerMappings
+  };
+}
+
+async function listConfiguredOwnerMappings(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  repositoryId?: string
+): Promise<OwnerMappingState[]> {
+  if (prisma) {
+    const findArgs: Parameters<typeof prisma.ownerMapping.findMany>[0] = {
+      orderBy: [{ repositoryId: "asc" }, { ownerKey: "asc" }]
+    };
+    if (repositoryId) {
+      findArgs.where = { repositoryId };
+    }
+    const rows = await prisma.ownerMapping.findMany(findArgs);
+    return rows.map((row) => {
+      const output: OwnerMappingState = {
+        id: row.id,
+        organizationId: row.organizationId,
+        ownerKey: row.ownerKey,
+        reviewer: row.reviewer,
+        reviewerType: row.reviewerType === "user" ? "user" : "team",
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString()
+      };
+      if (row.repositoryId) {
+        output.repositoryId = row.repositoryId;
+      }
+      return output;
+    });
+  }
+  return state.ownerMappings
+    .filter((mapping) => !repositoryId || mapping.repositoryId === repositoryId)
+    .sort((a, b) =>
+      `${a.repositoryId ?? ""}:${a.ownerKey}`.localeCompare(`${b.repositoryId ?? ""}:${b.ownerKey}`)
+    );
+}
+
+async function defaultDataHandlingSettings(
+  prisma: PrismaClient | undefined,
+  config: ReturnType<typeof loadConfig>
+): Promise<RepositoryDataHandlingState> {
+  if (prisma) {
+    const retention = await prisma.retentionSetting.findFirst({
+      orderBy: { createdAt: "desc" }
+    });
+    if (retention) {
+      return {
+        sourceCodeStorage: retention.sourceCodeStorage,
+        fullDiffRetention: normalizeFullDiffRetention(retention.fullDiffRetention),
+        redactSecrets: retention.redactSecrets,
+        llmFeatures: retention.llmFeatures,
+        auditRecordRetentionDays: retention.auditRecordRetentionDays
+      };
+    }
+  }
+  return dataHandlingDefaults(config);
+}
+
+function dataHandlingDefaults(config: ReturnType<typeof loadConfig>): RepositoryDataHandlingState {
+  return {
+    sourceCodeStorage: config.sourceCodeStorage,
+    fullDiffRetention: config.fullDiffRetention,
+    redactSecrets: config.redactSecrets,
+    llmFeatures: config.llmFeatures,
+    auditRecordRetentionDays: config.auditRecordRetentionDays
+  };
+}
+
+function extractDataHandlingPatch(
+  patch: z.infer<typeof repositorySettingsPatchSchema>
+): Partial<RepositoryDataHandlingState> | undefined {
+  const output: Partial<RepositoryDataHandlingState> = {};
+  const nested = patch.dataHandling;
+  if (nested?.sourceCodeStorage !== undefined) {
+    output.sourceCodeStorage = nested.sourceCodeStorage;
+  }
+  if (nested?.fullDiffRetention !== undefined) {
+    output.fullDiffRetention = nested.fullDiffRetention;
+  }
+  if (nested?.redactSecrets !== undefined) {
+    output.redactSecrets = nested.redactSecrets;
+  }
+  if (nested?.llmFeatures !== undefined) {
+    output.llmFeatures = nested.llmFeatures;
+  }
+  if (nested?.auditRecordRetentionDays !== undefined) {
+    output.auditRecordRetentionDays = nested.auditRecordRetentionDays;
+  }
+  if (patch.sourceCodeStorage !== undefined) {
+    output.sourceCodeStorage = patch.sourceCodeStorage;
+  }
+  if (patch.fullDiffRetention !== undefined) {
+    output.fullDiffRetention = patch.fullDiffRetention;
+  }
+  if (patch.redactSecrets !== undefined) {
+    output.redactSecrets = patch.redactSecrets;
+  }
+  if (patch.llmFeatures !== undefined) {
+    output.llmFeatures = patch.llmFeatures;
+  }
+  if (patch.auditRecordRetentionDays !== undefined) {
+    output.auditRecordRetentionDays = patch.auditRecordRetentionDays;
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+}
+
+function dataHandlingFromRepositorySetting(row: {
+  sourceCodeStorage: boolean;
+  fullDiffRetention: string;
+  redactSecrets: boolean;
+  llmFeatures: boolean;
+  auditRecordRetentionDays: number;
+}): RepositoryDataHandlingState {
+  return {
+    sourceCodeStorage: row.sourceCodeStorage,
+    fullDiffRetention: normalizeFullDiffRetention(row.fullDiffRetention),
+    redactSecrets: row.redactSecrets,
+    llmFeatures: row.llmFeatures,
+    auditRecordRetentionDays: row.auditRecordRetentionDays
+  };
+}
+
+function normalizeFullDiffRetention(
+  value: string
+): RepositoryDataHandlingState["fullDiffRetention"] {
+  return value === "7d" || value === "30d" || value === "custom" ? value : "disabled";
+}
+
+function ownerMappingForApi(mapping: OwnerMappingState) {
+  return {
+    ownerKey: mapping.ownerKey,
+    reviewer: mapping.reviewer,
+    reviewerType: mapping.reviewerType,
+    sources: [mapping.repositoryId ?? "organization"]
   };
 }
 
