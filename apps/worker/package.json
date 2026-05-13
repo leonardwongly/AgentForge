@@ -15,10 +15,12 @@
   "dependencies": {
     "@agentforge/config": "workspace:*",
     "@agentforge/core": "workspace:*",
+    "@agentforge/db": "workspace:*",
     "@agentforge/detectors": "workspace:*",
     "@agentforge/github": "workspace:*",
     "@agentforge/policy": "workspace:*",
     "@agentforge/records": "workspace:*",
+    "@agentforge/security": "workspace:*",
     "bullmq": "5.76.8",
     "ioredis": "5.10.1"
   }
