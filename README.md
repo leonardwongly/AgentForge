@@ -51,6 +51,7 @@ pnpm dev
 ```
 
 The local Compose Postgres service is exposed on `localhost:15432` to avoid common conflicts with a developer workstation Postgres on `5432`. The Prisma scripts use `postgresql://agentforge:agentforge@localhost:15432/agentforge` unless `DATABASE_URL` is set.
+The local Redis service is exposed on `localhost:6379`; `.env.example` includes both local service URLs so the API and worker start connected after a fresh copy.
 
 Useful commands:
 
@@ -75,11 +76,13 @@ pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.
 Copy `.env.example` to `.env` and fill in values. The defaults are safe for local development, but production must set secrets explicitly.
 
 - `DATABASE_URL`: PostgreSQL connection string. Local default: `postgresql://agentforge:agentforge@localhost:15432/agentforge`.
-- `REDIS_URL`: Redis connection string for BullMQ.
+- `REDIS_URL`: Redis connection string for BullMQ. Local default: `redis://localhost:6379`.
 - `NODE_ENV`: Runtime environment.
 - `GITHUB_APP_ID`: GitHub App numeric ID.
 - `GITHUB_APP_PRIVATE_KEY`: GitHub App private key.
-- `GITHUB_WEBHOOK_SECRET`: Secret used to validate webhook signatures.
+- `GITHUB_WEBHOOK_SECRET`: Secret used to validate webhook signatures. Webhooks are rejected when this is missing unless explicit local unsigned-webhook mode is enabled.
+- `ALLOW_UNSIGNED_GITHUB_WEBHOOKS`: Local-only escape hatch for fixture webhook testing. Keep `false` for normal development and all deployed environments.
+- `DEMO_MODE`: Enables explicit demo behavior for fixture-only surfaces. Keep `false` for normal development.
 - `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`: OAuth values for installation flows.
 - `APP_BASE_URL`: Dashboard URL.
 - `API_BASE_URL`: API URL.
@@ -121,6 +124,16 @@ https://your-api-domain.example/webhooks/github
 ```
 
 For local development, expose `http://localhost:4000/webhooks/github` through a tunnel and set `GITHUB_WEBHOOK_SECRET` to the same secret configured in GitHub.
+Unsigned webhook delivery is disabled by default. If you need to replay local fixture payloads without a GitHub secret, set `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=true` only for that local process.
+
+State-changing API calls require server-resolved actor context in local V1:
+
+```text
+x-agentforge-actor: <login>
+x-agentforge-role: platform_admin | engineering_manager | auditor | security_reviewer | developer
+```
+
+Policy/settings changes require `platform_admin` or `engineering_manager`. Change Control Record exports and audit access require `auditor`, `platform_admin`, or `engineering_manager`. Overrides use the role allowlist configured by policy.
 
 ## Policy Modes
 

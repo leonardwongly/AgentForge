@@ -71,6 +71,7 @@ afterEach(() => {
   delete process.env.FULL_DIFF_RETENTION;
   delete process.env.REDACT_SECRETS;
   delete process.env.LLM_FEATURES;
+  delete process.env.ALLOW_UNSIGNED_GITHUB_WEBHOOKS;
 });
 
 describe("security and audit hardening", () => {
@@ -222,11 +223,12 @@ describe("security and audit hardening", () => {
         method: "POST",
         url: "/api/exports/change-control-records",
         payload: JSON.stringify({ format }),
-        headers: { "content-type": "application/json" }
+        headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
       });
       const job = await app.inject({
         method: "GET",
-        url: `/api/exports/${created.json().id}`
+        url: `/api/exports/${created.json().id}`,
+        headers: actorHeaders("alex", "platform_admin")
       });
 
       expect(job.statusCode).toBe(200);
@@ -236,6 +238,43 @@ describe("security and audit hardening", () => {
       expect(job.body).not.toContain("currentContent");
       expect(job.body).not.toContain("previousContent");
     }
+
+    await app.close();
+  });
+
+  it("requires authorized actors for policy, settings, exports, and audit access", async () => {
+    const { app } = await createPreviewRecord();
+
+    const policyWithoutActor = await app.inject({
+      method: "PUT",
+      url: "/api/repositories/repo_local/policy",
+      payload: JSON.stringify({ contentYaml: policyYaml }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(policyWithoutActor.statusCode).toBe(401);
+
+    const settingsWrongRole = await app.inject({
+      method: "PATCH",
+      url: "/api/repositories/repo_local/settings",
+      payload: JSON.stringify({ fullDiffRetention: "7d" }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(settingsWrongRole.statusCode).toBe(403);
+
+    const exportWithoutActor = await app.inject({
+      method: "POST",
+      url: "/api/exports/change-control-records",
+      payload: JSON.stringify({ format: "json" }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(exportWithoutActor.statusCode).toBe(401);
+
+    const auditWrongRole = await app.inject({
+      method: "GET",
+      url: "/api/audit-events",
+      headers: actorHeaders("sam", "developer")
+    });
+    expect(auditWrongRole.statusCode).toBe(403);
 
     await app.close();
   });
@@ -290,7 +329,11 @@ describe("security and audit hardening", () => {
       headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
 
-    const audit = await app.inject({ method: "GET", url: "/api/audit-events" });
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/audit-events",
+      headers: actorHeaders("alex", "platform_admin")
+    });
     const actions = audit.json().auditEvents.map((event: { action: string }) => event.action);
     expect(actions).toEqual(
       expect.arrayContaining([

@@ -32,5 +32,8 @@ Audit readiness:
 - Every evaluated PR has an exportable Change Control Record with policy version, findings, evidence, reviewers, decision, and lifecycle state.
 - Override records include actor, role, reason, timestamp, scope, policy version, and PR-visible setting.
 - State-changing governance routes resolve actors from server-side request context headers in local V1 (`x-agentforge-actor` and `x-agentforge-role`), not from request-body role claims.
+- Policy and repository settings changes require `platform_admin` or `engineering_manager`.
+- Change Control Record exports and audit-event access require `auditor`, `platform_admin`, or `engineering_manager`.
+- GitHub webhooks fail closed when `GITHUB_WEBHOOK_SECRET` is not configured. Unsigned fixture replay requires explicit local-only `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=true`.
 - Audit events are emitted for policy changes, overrides, evidence updates, reviewer approvals, check publishing, exports, and retention changes.
 - JSON and CSV exports are sanitized through the same metadata-only storage policy used for dashboard/API output.

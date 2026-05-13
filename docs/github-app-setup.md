@@ -37,6 +37,8 @@ ngrok http 4000
 
 Set the webhook URL to the tunnel URL plus `/webhooks/github`. Generate a webhook secret, save it in GitHub, and set `GITHUB_WEBHOOK_SECRET` in `.env`.
 
+Webhook signature verification fails closed by default. If `GITHUB_WEBHOOK_SECRET` is missing, AgentForge rejects webhook deliveries unless `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=true` is explicitly set for local fixture replay. Do not enable unsigned webhook mode on shared or deployed endpoints.
+
 Private key setup:
 
 1. Generate a private key in GitHub App settings.

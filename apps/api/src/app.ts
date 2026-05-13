@@ -35,7 +35,7 @@ import {
   summarizeSafeSnippet,
   type MetadataStoragePolicy
 } from "@agentforge/security";
-import { actorOrSystem, isAuthzFailure, requireApiActor, requireRole } from "./auth.js";
+import { isAuthzFailure, requireApiActor, requireRole } from "./auth.js";
 import { evaluateFixturePr } from "./evaluation.js";
 
 type QueuedEvaluation = {
@@ -118,6 +118,9 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     status: "ok",
     database: config.databaseUrl ? "configured" : "not_configured",
     workerQueue: config.redisUrl ? "configured" : "in_memory",
+    demoMode: config.demoMode,
+    unsignedWebhookMode:
+      !config.github.webhookSecret && config.github.allowUnsignedWebhooks ? "enabled" : "disabled",
     version: "0.1.0"
   }));
 
@@ -140,6 +143,8 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       if (!valid) {
         return reply.code(401).send({ error: "Invalid GitHub webhook signature" });
       }
+    } else if (!config.github.allowUnsignedWebhooks) {
+      return reply.code(401).send({ error: "GitHub webhook secret is required" });
     }
     if (state.deliveries.has(deliveryId)) {
       return reply.code(202).send({ accepted: true, duplicate: true });
@@ -179,8 +184,19 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     ]
   }));
 
-  app.patch("/api/repositories/:id/settings", async (request) => {
-    const actor = actorOrSystem(request);
+  app.patch("/api/repositories/:id/settings", async (request, reply) => {
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const allowed = requireRole(
+      actor,
+      ["platform_admin", "engineering_manager"],
+      "Repository settings update"
+    );
+    if (!allowed.ok) {
+      return reply.code(allowed.statusCode).send({ error: allowed.reason });
+    }
     return {
       id: (request.params as { id: string }).id,
       updated: true,
@@ -206,6 +222,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     return pack;
   });
   app.post("/api/policy-packs/:id/fork", async (request, reply) => {
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const allowed = requireRole(actor, ["platform_admin", "engineering_manager"], "Policy pack fork");
+    if (!allowed.ok) {
+      return reply.code(allowed.statusCode).send({ error: allowed.reason });
+    }
     const pack = getPolicyPack((request.params as { id: string }).id);
     if (!pack) {
       return reply.code(404).send({ error: "Policy pack not found" });
@@ -224,13 +248,20 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   }));
 
   app.put("/api/repositories/:id/policy", async (request, reply) => {
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const allowed = requireRole(actor, ["platform_admin", "engineering_manager"], "Policy update");
+    if (!allowed.ok) {
+      return reply.code(allowed.statusCode).send({ error: allowed.reason });
+    }
     const body = request.body as { contentYaml?: string };
     const validation = validatePolicyYaml(body.contentYaml ?? "");
     if (!validation.valid) {
       return reply.code(400).send(validation);
     }
     const parsed = parsePolicyYaml(body.contentYaml ?? "");
-    const actor = actorOrSystem(request);
     recordAuditEvent(state, {
       organizationId: "org_local",
       repositoryId: (request.params as { id: string }).id,
@@ -524,13 +555,24 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   });
 
   app.post("/api/exports/change-control-records", async (request, reply) => {
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const allowed = requireRole(
+      actor,
+      ["auditor", "platform_admin", "engineering_manager"],
+      "Change Control Record export"
+    );
+    if (!allowed.ok) {
+      return reply.code(allowed.statusCode).send({ error: allowed.reason });
+    }
     const body = request.body as { format?: "json" | "csv" };
     const format = body.format ?? "json";
     const content =
       format === "csv"
         ? exportChangeControlRecordsCsv(state.records, storagePolicy)
         : exportChangeControlRecordsJson(state.records, storagePolicy);
-    const actor = actorOrSystem(request);
     const job: ExportJob = {
       id: randomUUID(),
       status: "completed",
@@ -551,6 +593,18 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     return reply.code(201).send({ id: job.id, status: job.status, recordCount: job.recordCount });
   });
   app.get("/api/exports/:id", async (request, reply) => {
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const allowed = requireRole(
+      actor,
+      ["auditor", "platform_admin", "engineering_manager"],
+      "Change Control Record export"
+    );
+    if (!allowed.ok) {
+      return reply.code(allowed.statusCode).send({ error: allowed.reason });
+    }
     const job = state.exports.find((item) => item.id === (request.params as { id: string }).id);
     if (!job) {
       return reply.code(404).send({ error: "Export job not found" });
@@ -558,7 +612,21 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     return job;
   });
 
-  app.get("/api/audit-events", async () => ({ auditEvents: safe(state.auditEvents) }));
+  app.get("/api/audit-events", async (request, reply) => {
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const allowed = requireRole(
+      actor,
+      ["auditor", "platform_admin", "engineering_manager"],
+      "Audit event access"
+    );
+    if (!allowed.ok) {
+      return reply.code(allowed.statusCode).send({ error: allowed.reason });
+    }
+    return { auditEvents: safe(state.auditEvents) };
+  });
 
   app.get("/api/check-output/:recordId", async (request, reply) => {
     const record = state.records.find(
