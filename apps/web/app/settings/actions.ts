@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { resolveDashboardActor } from "./actor";
 import type { DashboardActorContext } from "./actor-context";
 
-type PolicyModeChoice = "observe" | "warn" | "enforce";
+type PolicyModeChoice = "observe" | "warn" | "enforce" | "optimize";
 type FullDiffRetentionChoice = "disabled" | "7d" | "30d" | "custom";
 
 type RepositorySettingsPatch = {
@@ -29,7 +29,7 @@ type RepositoryDataHandlingPatch = NonNullable<RepositorySettingsPatch["dataHand
 
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:4000";
 const allowedReturnPaths = new Set(["/settings", "/onboarding"]);
-const policyModes = new Set(["observe", "warn", "enforce"]);
+const policyModes = new Set(["observe", "warn", "enforce", "optimize"]);
 const diffRetentionModes = new Set(["disabled", "7d", "30d", "custom"]);
 const reviewerTypes = new Set(["user", "team"]);
 const ownerKeyPattern = /^[a-z0-9_-]+$/u;
@@ -145,8 +145,7 @@ async function requestJson<T = unknown>(
     headers: {
       accept: "application/json",
       "content-type": "application/json",
-      "x-agentforge-actor": actor.login,
-      "x-agentforge-role": actor.role,
+      ...actorHeaders(actor),
       ...(init.headers ?? {})
     }
   });
@@ -154,6 +153,19 @@ async function requestJson<T = unknown>(
     throw new Error(await responseError(response));
   }
   return (await response.json()) as T;
+}
+
+function actorHeaders(actor: DashboardActorContext): Record<string, string> {
+  if (actor.source === "trusted_headers") {
+    return {
+      "x-agentforge-authenticated-actor": actor.login,
+      "x-agentforge-authenticated-role": actor.role
+    };
+  }
+  return {
+    "x-agentforge-actor": actor.login,
+    "x-agentforge-role": actor.role
+  };
 }
 
 async function responseError(response: Response): Promise<string> {

@@ -114,7 +114,7 @@ export default async function RecordDetailPage({ params }: PageProps) {
               </p>
             </div>
             <div className="inline-list">
-              <StatusBadge status={record.mode === "enforce" ? "enforce" : record.mode} />
+              <StatusBadge status={record.mode} />
               <StatusBadge
                 status={record.lifecycle === "overridden" ? "overridden" : record.checkStatus}
               />

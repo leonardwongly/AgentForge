@@ -45,7 +45,8 @@ describe("deterministic evaluation pipeline modes", () => {
   it.each([
     ["observe" as const, "pass" as const, "success" as const],
     ["warn" as const, "warn" as const, "neutral" as const],
-    ["enforce" as const, "block" as const, "failure" as const]
+    ["enforce" as const, "block" as const, "failure" as const],
+    ["optimize" as const, "block" as const, "failure" as const]
   ])(
     "maps %s mode without changing deterministic requirements",
     async (mode, status, conclusion) => {

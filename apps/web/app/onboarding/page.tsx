@@ -119,7 +119,7 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
           <div className="panel-header">
             <div>
               <h2>Setup progress</h2>
-              <p>Start in observe or warn, then move mature rules to enforce.</p>
+              <p>Start in observe or warn, move mature rules to enforce, then optimize.</p>
             </div>
             <StatusBadge
               status={progress === 100 ? "approved" : progress > 0 ? "provided" : "low"}
@@ -246,6 +246,7 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
                     <option value="observe">observe</option>
                     <option value="warn">warn</option>
                     <option value="enforce">enforce</option>
+                    <option value="optimize">optimize</option>
                   </select>
                 </div>
               </div>

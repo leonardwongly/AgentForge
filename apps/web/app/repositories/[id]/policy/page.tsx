@@ -102,7 +102,9 @@ export default async function PolicyEditorPage({ params }: PageProps) {
                   <div className="list-row">
                     <span>Mode</span>
                     {policy.mode ? (
-                      <StatusBadge status={policy.mode as "observe" | "warn" | "enforce"} />
+                      <StatusBadge
+                        status={policy.mode as "observe" | "warn" | "enforce" | "optimize"}
+                      />
                     ) : (
                       <StatusBadge status="low" label="not configured" />
                     )}
@@ -155,6 +157,10 @@ export default async function PolicyEditorPage({ params }: PageProps) {
                 <div className="mode-card">
                   <h3>enforce</h3>
                   <p>Blocks when configured evidence or required approvals are missing.</p>
+                </div>
+                <div className="mode-card">
+                  <h3>optimize</h3>
+                  <p>Keeps enforce controls active while surfacing governance tuning work.</p>
                 </div>
               </div>
             </section>

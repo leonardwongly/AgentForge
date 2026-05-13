@@ -94,7 +94,10 @@ export default async function OverridesPage() {
             <div className="panel-header">
               <div>
                 <h2>Override trend</h2>
-                <p>Override rate should stay visible as teams move rules toward enforce mode.</p>
+                <p>
+                  Override rate should stay visible as teams move rules toward enforce and optimize
+                  modes.
+                </p>
               </div>
               <ShieldCheck size={18} aria-hidden="true" />
             </div>

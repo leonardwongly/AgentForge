@@ -17,6 +17,7 @@ Modes:
 - `observe`: records findings and always passes.
 - `warn`: records what would block but does not block.
 - `enforce`: blocks when required policy evidence, required reviewers, or blocking findings are unmet.
+- `optimize`: preserves enforce-mode blocking while teams tune evidence quality, routing, overrides, and operational metrics.
 
 Supported V1 rule groups:
 

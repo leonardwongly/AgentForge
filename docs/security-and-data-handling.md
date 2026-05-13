@@ -31,7 +31,8 @@ Audit readiness:
 
 - Every evaluated PR has an exportable Change Control Record with policy version, findings, evidence, reviewers, decision, and lifecycle state.
 - Override records include actor, role, reason, timestamp, scope, policy version, and PR-visible setting.
-- State-changing governance routes resolve actors from server-side request context headers in local V1 (`x-agentforge-actor` and `x-agentforge-role`), not from request-body role claims.
+- State-changing governance routes resolve actors from server-side request context headers, not from request-body role claims.
+- In production, the API accepts trusted proxy identity headers (`x-agentforge-authenticated-actor` and `x-agentforge-authenticated-role`) only when `AGENTFORGE_API_TRUST_PROXY_HEADERS=true`. Raw local actor headers (`x-agentforge-actor` and `x-agentforge-role`) are rejected in production unless `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=true` is explicitly set for local testing.
 - Policy and repository settings changes require `platform_admin` or `engineering_manager`.
 - Dashboard onboarding and settings forms submit through Next.js server actions. Development/test can use `AGENTFORGE_DASHBOARD_ACTOR` and `AGENTFORGE_DASHBOARD_ROLE` as a local actor fallback. Deployed environments should set `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true` only behind a trusted auth proxy that injects `x-agentforge-authenticated-actor` and `x-agentforge-authenticated-role`; otherwise dashboard mutations fail closed.
 - Change Control Record exports and audit-event access require `auditor`, `platform_admin`, or `engineering_manager`.

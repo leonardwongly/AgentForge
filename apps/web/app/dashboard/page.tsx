@@ -13,6 +13,7 @@ import { MetricCard, ProgressBar, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../data-source-notice";
 import {
   actionRequiredRecords,
+  blockingModeBadge,
   evidenceByKind,
   findingGroups,
   getDashboardSummary,
@@ -220,7 +221,7 @@ export default async function DashboardPage() {
                 <li key={item.record.id}>
                   <div className="list-row">
                     <span>{item.record.repositoryFullName}</span>
-                    <StatusBadge status={item.record.mode === "enforce" ? "enforce" : "warn"} />
+                    <StatusBadge status={blockingModeBadge(item.record.mode)} />
                   </div>
                   <p>
                     {pendingRequiredReviewers(item.record)

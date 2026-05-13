@@ -150,6 +150,12 @@ export function buildHumanReadableReasons(
     lines.push("Observe mode records findings and does not block merge.");
   } else if (mode === "warn") {
     lines.push("Warn mode records what would block in enforce mode and does not block merge.");
+  } else if (mode === "optimize") {
+    lines.push(
+      missingEvidence.length > 0 || pendingReviewers.length > 0
+        ? "Optimize mode keeps enforce controls active and highlights governance tuning work."
+        : "Optimize mode keeps enforce controls active while surfacing improvement opportunities."
+    );
   } else if (missingEvidence.length > 0 || pendingReviewers.length > 0) {
     lines.push("Enforce mode blocks merge until required evidence and approvals are complete.");
   }

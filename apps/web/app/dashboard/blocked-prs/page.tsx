@@ -4,6 +4,7 @@ import { StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../data-source-notice";
 import {
   actionRequiredRecords,
+  blockingModeBadge,
   hasAgentSignal,
   humanize,
   loadDashboardData,
@@ -106,7 +107,7 @@ export default async function BlockedPrsPage() {
                       )}
                     </td>
                     <td>
-                      <StatusBadge status={record.mode === "enforce" ? "enforce" : "warn"} />
+                      <StatusBadge status={blockingModeBadge(record.mode)} />
                     </td>
                     <td>
                       <div className="control-row">

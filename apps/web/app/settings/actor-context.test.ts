@@ -40,6 +40,19 @@ describe("dashboard actor context", () => {
     ).toBeUndefined();
   });
 
+  it("does not treat raw actor headers as trusted proxy identity", () => {
+    expect(
+      resolveDashboardActorContext({
+        env: { AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true" },
+        headers: headers({
+          "x-agentforge-actor": "alex",
+          "x-agentforge-role": "platform_admin"
+        }),
+        nodeEnv: "production"
+      })
+    ).toBeUndefined();
+  });
+
   it("uses local actor fallback outside production", () => {
     expect(
       resolveDashboardActorContext({

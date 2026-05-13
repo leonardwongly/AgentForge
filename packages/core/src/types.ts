@@ -1,4 +1,4 @@
-export type PolicyMode = "observe" | "warn" | "enforce";
+export type PolicyMode = "observe" | "warn" | "enforce" | "optimize";
 
 export type FindingSeverity = "critical" | "high" | "medium" | "low";
 
@@ -282,5 +282,5 @@ export function confidenceCanBlock(confidence: FactConfidence): boolean {
 }
 
 export function policyModeAllowsBlocking(mode: PolicyMode): boolean {
-  return mode === "enforce";
+  return mode === "enforce" || mode === "optimize";
 }

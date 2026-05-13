@@ -112,7 +112,7 @@ type RawBodyRequest = {
   rawBody?: Buffer;
 };
 
-const policyModeSchema = z.enum(["observe", "warn", "enforce"]);
+const policyModeSchema = z.enum(["observe", "warn", "enforce", "optimize"]);
 const diffRetentionSchema = z.enum(["disabled", "7d", "30d", "custom"]);
 const dataHandlingPatchSchema = z
   .object({
@@ -180,6 +180,21 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     saveChangeControlRecord(state, prisma, record, pr);
   const listRepositories = () => listRepositorySummaries(state, prisma, config.defaultPolicyMode);
   const getRepositoryPolicy = (id: string) => getActiveRepositoryPolicy(state, prisma, id);
+  const getRecordPolicyConfig = async (record: ChangeControlRecord) => {
+    const activePolicy = await getRepositoryPolicy(record.repositoryId);
+    const contentYaml =
+      activePolicy?.contentYaml ??
+      getPolicyPack(record.policyPackId ?? "")?.contentYaml ??
+      getPolicyPack("fintech")?.contentYaml;
+    if (!contentYaml) {
+      throw new Error("Policy configuration is unavailable for this Change Control Record.");
+    }
+    const parsed = parsePolicyYaml(contentYaml);
+    if (parsed.errors.length > 0) {
+      throw new Error(`Policy validation failed: ${parsed.errors.join("; ")}`);
+    }
+    return parsed.config;
+  };
   const saveRepositoryPolicy = (
     repositoryId: string,
     contentYaml: string,
@@ -635,7 +650,8 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     async (request, reply) => {
       const params = request.params as { id: string; number: string };
       const record = (await listRecords()).find(
-        (item) => item.pullRequestNumber === Number(params.number)
+        (item) =>
+          item.repositoryId === params.id && item.pullRequestNumber === Number(params.number)
       );
       if (!record) {
         return reply.code(404).send({ error: "Change Control Record not found" });
@@ -777,7 +793,6 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (!record) {
       return reply.code(404).send({ error: "Change Control Record not found" });
     }
-    const policy = parsePolicyYaml(getPolicyPack("fintech")?.contentYaml ?? "").config;
     const body = request.body as {
       actorRole?: string;
       reason?: string;
@@ -788,6 +803,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       return reply.code(actor.statusCode).send({ error: actor.reason });
     }
     try {
+      const policy = await getRecordPolicyConfig(record);
       const output = applyOverride({
         record,
         policy: {
@@ -1969,7 +1985,7 @@ function onboardingStepsFromRuntime(input: {
     {
       id: "choose_mode",
       title: "Choose mode",
-      detail: "Start in observe, move to warn, then enforce mature rules.",
+      detail: "Start in observe, move to warn, enforce mature rules, then optimize governance.",
       status: active(hasPolicyPack, hasRepositories)
     },
     {

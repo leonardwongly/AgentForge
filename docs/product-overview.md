@@ -16,3 +16,5 @@ V1 is centered on evidence-based merge control:
 Deterministic checks decide. LLM output, when enabled later, is advisory only. Human reviewers approve or override risk.
 
 Merge Guard does not claim a PR is safe or unsafe. It reports whether configured policy requirements are satisfied.
+
+Teams can adopt Merge Guard gradually: `observe` for visibility, `warn` for non-blocking readiness, `enforce` for merge protection, and `optimize` for mature teams that keep enforce controls active while improving evidence quality, reviewer routing, overrides, and operational metrics.

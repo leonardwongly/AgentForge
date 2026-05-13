@@ -5,16 +5,40 @@ import { loadConfig } from "@agentforge/config";
 import type { ChangeControlRecord, PullRequestInput } from "@agentforge/core";
 import { PrismaClient } from "@agentforge/db";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/detectors";
-import { buildCheckRunPayload, type GithubWebhookEnvelope } from "@agentforge/github";
-import { evaluateMergeGuard, getPolicyPack, parsePolicyYaml } from "@agentforge/policy";
+import {
+  buildCheckRunPayload,
+  createGithubClient,
+  createGithubInstallationToken,
+  fetchPullRequestInputFromGithub,
+  publishMergeGuardCheckWithClient,
+  type CheckRunPayload,
+  type GithubAdapterClient,
+  type GithubCheckPublisherClient,
+  type GithubWebhookEnvelope
+} from "@agentforge/github";
+import {
+  evaluateMergeGuard,
+  getPolicyPack,
+  parsePolicyYaml,
+  type PolicyConfig
+} from "@agentforge/policy";
 import { createAuditEvent, createChangeControlRecord } from "@agentforge/records";
 import { sanitizeForMetadataStorage, type MetadataStoragePolicy } from "@agentforge/security";
+
+type CheckPublisher = (input: {
+  owner: string;
+  repo: string;
+  pr: Pick<PullRequestInput, "headSha">;
+  result: ReturnType<typeof evaluateMergeGuard>;
+}) => Promise<{ id?: number | undefined; conclusion: CheckRunPayload["conclusion"] }>;
 
 export type MergeGuardEvaluationJobData = {
   deliveryId: string;
   envelope?: GithubWebhookEnvelope | undefined;
   pr?: PullRequestInput | undefined;
   policyYaml?: string | undefined;
+  githubClient?: GithubAdapterClient | undefined;
+  githubCheckPublisher?: CheckPublisher | undefined;
 };
 
 export type MergeGuardEvaluationJobResult = {
@@ -23,65 +47,88 @@ export type MergeGuardEvaluationJobResult = {
   repositoryFullName: string;
   pullRequestNumber: number;
   status: ChangeControlRecord["checkStatus"];
+  lifecycle: ChangeControlRecord["lifecycle"];
   checkConclusion: ReturnType<typeof buildCheckRunPayload>["conclusion"];
+  checkPublished: boolean;
+  publishedCheckRunId?: number | undefined;
 };
 
 export async function processMergeGuardEvaluationJob(
   data: MergeGuardEvaluationJobData
 ): Promise<MergeGuardEvaluationJobResult> {
   const config = loadConfig();
-  const storagePolicy: MetadataStoragePolicy = {
-    sourceCodeStorage: config.sourceCodeStorage,
-    fullDiffRetention: config.fullDiffRetention,
-    redactSecrets: config.redactSecrets
-  };
-  const pr = data.pr ?? pullRequestInputFromEnvelope(data.envelope);
-  if (!pr) {
-    throw new Error("Merge Guard evaluation job requires a pull request payload.");
-  }
-
-  const policyYaml = data.policyYaml ?? getPolicyPack("fintech")?.contentYaml;
-  if (!policyYaml) {
-    throw new Error("Merge Guard evaluation job could not resolve a policy.");
-  }
-
-  const parsed = parsePolicyYaml(policyYaml);
-  if (parsed.errors.length > 0) {
-    throw new Error(`Policy validation failed: ${parsed.errors.join("; ")}`);
-  }
-
-  const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(parsed.config));
-  const result = evaluateMergeGuard(pr, facts, parsed.config);
-  const record = sanitizeForMetadataStorage(
-    createChangeControlRecord({
-      organizationId: "org_local",
-      repositoryId: repositoryIdFromFullName(pr.repositoryFullName),
-      pr,
-      policyResult: result,
-      storagePolicy
-    }),
-    storagePolicy
-  );
-  const checkRun = buildCheckRunPayload(pr, result);
-
+  const prisma = config.databaseUrl && config.nodeEnv !== "test" ? new PrismaClient() : undefined;
   if (config.databaseUrl && config.nodeEnv !== "test") {
     process.env.DATABASE_URL = config.databaseUrl;
-    const prisma = new PrismaClient();
-    try {
-      await persistWorkerRecord(prisma, record, pr, checkRun.conclusion);
-    } finally {
-      await prisma.$disconnect();
-    }
   }
 
-  return {
-    processedAt: new Date().toISOString(),
-    recordId: record.id,
-    repositoryFullName: record.repositoryFullName,
-    pullRequestNumber: record.pullRequestNumber,
-    status: record.checkStatus,
-    checkConclusion: checkRun.conclusion
-  };
+  try {
+    const githubContext = await resolvePullRequestForJob(data, config);
+    const pr = githubContext.pr;
+    const runtime = await resolveRuntimeEvaluationContext({
+      prisma,
+      pr,
+      config,
+      policyYaml: data.policyYaml
+    });
+
+    const parsed = parsePolicyYaml(runtime.policyYaml);
+    if (parsed.errors.length > 0) {
+      throw new Error(`Policy validation failed: ${parsed.errors.join("; ")}`);
+    }
+
+    const policy = applyRuntimePolicyAdjustments(parsed.config, {
+      modeOverride: runtime.modeOverride,
+      ownerMappings: runtime.ownerMappings
+    });
+    const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(policy));
+    const result = evaluateMergeGuard(pr, facts, policy);
+    const record = applyEnvelopeLifecycle(
+      sanitizeForMetadataStorage(
+        createChangeControlRecord({
+          organizationId: runtime.organizationId,
+          repositoryId: runtime.repositoryId,
+          pr,
+          policyResult: result,
+          storagePolicy: runtime.storagePolicy
+        }),
+        runtime.storagePolicy
+      ),
+      data.envelope
+    );
+    const checkRun = buildCheckRunPayload(pr, result);
+    const published = await publishCheckIfConfigured({
+      data,
+      githubContext,
+      result,
+      pr
+    });
+
+    if (prisma) {
+      await persistWorkerRecord({
+        prisma,
+        record,
+        pr,
+        checkConclusion: checkRun.conclusion,
+        publishedCheckRunId: published.id,
+        envelope: data.envelope
+      });
+    }
+
+    return {
+      processedAt: new Date().toISOString(),
+      recordId: record.id,
+      repositoryFullName: record.repositoryFullName,
+      pullRequestNumber: record.pullRequestNumber,
+      status: record.checkStatus,
+      lifecycle: record.lifecycle,
+      checkConclusion: checkRun.conclusion,
+      checkPublished: published.published,
+      publishedCheckRunId: published.id
+    };
+  } finally {
+    await prisma?.$disconnect();
+  }
 }
 
 function startWorker(): void {
@@ -126,32 +173,326 @@ function startWorker(): void {
   });
 }
 
-function pullRequestInputFromEnvelope(
-  envelope: GithubWebhookEnvelope | undefined
-): PullRequestInput | undefined {
-  if (!envelope?.repository || !envelope.pullRequest) {
-    return undefined;
+async function resolvePullRequestForJob(
+  data: MergeGuardEvaluationJobData,
+  config: ReturnType<typeof loadConfig>
+): Promise<{
+  pr: PullRequestInput;
+  owner: string;
+  repo: string;
+  checkPublisherClient?: GithubCheckPublisherClient | undefined;
+}> {
+  if (data.pr) {
+    const [owner = "unknown", repo = data.pr.repositoryFullName] =
+      data.pr.repositoryFullName.split("/");
+    return { pr: data.pr, owner, repo };
   }
+
+  const envelope = data.envelope;
+  if (!envelope?.repository) {
+    throw new Error("Merge Guard evaluation job requires a pull request payload.");
+  }
+  const pullNumber = envelope.pullRequest?.number ?? envelope.checkRun?.pullRequests[0]?.number;
+  if (!pullNumber) {
+    throw new Error("Merge Guard evaluation job requires a pull request number.");
+  }
+
+  const configuredClient = await githubClientForEnvelope(data, config, envelope);
+  if (!configuredClient) {
+    throw new Error(
+      "GitHub App credentials or an injected GitHub client are required to inspect pull request files."
+    );
+  }
+
+  const pr = await fetchPullRequestInputFromGithub({
+    client: configuredClient.client,
+    owner: envelope.repository.owner,
+    repo: envelope.repository.name,
+    pullNumber
+  });
+
   return {
-    repositoryFullName: envelope.repository.fullName,
-    pullRequestNumber: envelope.pullRequest.number,
-    title: envelope.pullRequest.title,
-    authorLogin: envelope.pullRequest.authorLogin,
-    baseBranch: envelope.pullRequest.baseBranch,
-    headBranch: envelope.pullRequest.headBranch,
-    headSha: envelope.pullRequest.headSha,
-    body: envelope.pullRequest.body,
-    reviews: envelope.review ? [envelope.review] : undefined,
-    changedFiles: []
+    pr,
+    owner: envelope.repository.owner,
+    repo: envelope.repository.name,
+    checkPublisherClient: configuredClient.checkPublisherClient
   };
 }
 
-async function persistWorkerRecord(
-  prisma: PrismaClient,
+async function githubClientForEnvelope(
+  data: MergeGuardEvaluationJobData,
+  config: ReturnType<typeof loadConfig>,
+  envelope: GithubWebhookEnvelope
+): Promise<
+  | {
+      client: GithubAdapterClient;
+      checkPublisherClient?: GithubCheckPublisherClient | undefined;
+    }
+  | undefined
+> {
+  if (data.githubClient) {
+    return { client: data.githubClient };
+  }
+  if (!config.github.appId || !config.github.privateKey || !envelope.installationId) {
+    return undefined;
+  }
+  const token = await createGithubInstallationToken({
+    appId: config.github.appId,
+    privateKey: config.github.privateKey,
+    installationId: envelope.installationId
+  });
+  const client = createGithubClient(token);
+  return {
+    client,
+    checkPublisherClient: client
+  };
+}
+
+async function resolveRuntimeEvaluationContext(input: {
+  prisma: PrismaClient | undefined;
+  pr: PullRequestInput;
+  config: ReturnType<typeof loadConfig>;
+  policyYaml?: string | undefined;
+}): Promise<{
+  organizationId: string;
+  repositoryId: string;
+  policyYaml: string;
+  modeOverride?: ChangeControlRecord["mode"] | undefined;
+  storagePolicy: MetadataStoragePolicy;
+  ownerMappings: OwnerMappingRuntime[];
+}> {
+  const defaultPolicyYaml = getPolicyPack("fintech")?.contentYaml;
+  if (!defaultPolicyYaml) {
+    throw new Error("Merge Guard evaluation job could not resolve a policy.");
+  }
+
+  if (!input.prisma) {
+    return {
+      organizationId: "org_local",
+      repositoryId: repositoryIdFromFullName(input.pr.repositoryFullName),
+      policyYaml: input.policyYaml ?? defaultPolicyYaml,
+      modeOverride: input.policyYaml ? undefined : input.config.defaultPolicyMode,
+      storagePolicy: storagePolicyFromConfig(input.config),
+      ownerMappings: []
+    };
+  }
+
+  const repository = await input.prisma.repository.findFirst({
+    where: { fullName: input.pr.repositoryFullName },
+    include: {
+      currentPolicyVersion: true,
+      settings: true,
+      ownerMappings: true
+    }
+  });
+  if (repository && !repository.enabled) {
+    throw new Error(`Repository ${repository.fullName} is disabled for Merge Guard evaluation.`);
+  }
+
+  return {
+    organizationId: repository?.organizationId ?? "org_local",
+    repositoryId: repository?.id ?? repositoryIdFromFullName(input.pr.repositoryFullName),
+    policyYaml:
+      input.policyYaml ?? repository?.currentPolicyVersion?.contentYaml ?? defaultPolicyYaml,
+    modeOverride:
+      repository?.mode ??
+      (input.policyYaml || repository?.currentPolicyVersion
+        ? undefined
+        : input.config.defaultPolicyMode),
+    storagePolicy: repository?.settings
+      ? storagePolicyFromRepositorySetting(repository.settings)
+      : storagePolicyFromConfig(input.config),
+    ownerMappings:
+      repository?.ownerMappings.map((mapping) => ({
+        ownerKey: mapping.ownerKey,
+        reviewer: mapping.reviewer
+      })) ?? []
+  };
+}
+
+type OwnerMappingRuntime = {
+  ownerKey: string;
+  reviewer: string;
+};
+
+function applyRuntimePolicyAdjustments(
+  policy: PolicyConfig,
+  input: {
+    modeOverride?: ChangeControlRecord["mode"] | undefined;
+    ownerMappings: OwnerMappingRuntime[];
+  }
+): PolicyConfig {
+  const mapReviewers = reviewerMapper(input.ownerMappings);
+  return {
+    ...policy,
+    agentforge: {
+      ...policy.agentforge,
+      mode: input.modeOverride ?? policy.agentforge.mode
+    },
+    sensitive_paths: Object.fromEntries(
+      Object.entries(policy.sensitive_paths).map(([key, rule]) => [
+        key,
+        {
+          ...rule,
+          required_reviewers: mapReviewers(rule.required_reviewers)
+        }
+      ])
+    ),
+    tests: {
+      deleted_tests: {
+        ...policy.tests.deleted_tests,
+        required_reviewers: mapReviewers(policy.tests.deleted_tests.required_reviewers)
+      },
+      skipped_tests: {
+        ...policy.tests.skipped_tests,
+        required_reviewers: mapReviewers(policy.tests.skipped_tests.required_reviewers)
+      },
+      coverage_threshold_reduced: {
+        ...policy.tests.coverage_threshold_reduced,
+        required_reviewers: mapReviewers(policy.tests.coverage_threshold_reduced.required_reviewers)
+      },
+      suspicious_test_change: {
+        ...policy.tests.suspicious_test_change,
+        required_reviewers: mapReviewers(policy.tests.suspicious_test_change.required_reviewers)
+      }
+    },
+    dependencies: {
+      new_package: {
+        ...policy.dependencies.new_package,
+        required_reviewers: mapReviewers(policy.dependencies.new_package.required_reviewers)
+      },
+      major_version_bump: {
+        ...policy.dependencies.major_version_bump,
+        required_reviewers: mapReviewers(policy.dependencies.major_version_bump.required_reviewers)
+      }
+    },
+    database: {
+      migrations: {
+        ...policy.database.migrations,
+        required_reviewers: mapReviewers(policy.database.migrations.required_reviewers)
+      }
+    }
+  };
+}
+
+function reviewerMapper(ownerMappings: OwnerMappingRuntime[]): (reviewers: string[]) => string[] {
+  const byOwnerKey = new Map(
+    ownerMappings.map((mapping) => [normalizeOwnerKey(mapping.ownerKey), mapping.reviewer])
+  );
+  return (reviewers) => [
+    ...new Set(reviewers.map((reviewer) => byOwnerKey.get(normalizeOwnerKey(reviewer)) ?? reviewer))
+  ];
+}
+
+function normalizeOwnerKey(value: string): string {
+  return value
+    .trim()
+    .replace(/^@/u, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "_")
+    .replace(/^_+|_+$/gu, "");
+}
+
+function storagePolicyFromConfig(config: ReturnType<typeof loadConfig>): MetadataStoragePolicy {
+  return {
+    sourceCodeStorage: config.sourceCodeStorage,
+    fullDiffRetention: config.fullDiffRetention,
+    redactSecrets: config.redactSecrets
+  };
+}
+
+function storagePolicyFromRepositorySetting(row: {
+  sourceCodeStorage: boolean;
+  fullDiffRetention: string;
+  redactSecrets: boolean;
+}): MetadataStoragePolicy {
+  return {
+    sourceCodeStorage: row.sourceCodeStorage,
+    fullDiffRetention:
+      row.fullDiffRetention === "7d" ||
+      row.fullDiffRetention === "30d" ||
+      row.fullDiffRetention === "custom"
+        ? row.fullDiffRetention
+        : "disabled",
+    redactSecrets: row.redactSecrets
+  };
+}
+
+async function publishCheckIfConfigured(input: {
+  data: MergeGuardEvaluationJobData;
+  githubContext: {
+    owner: string;
+    repo: string;
+    checkPublisherClient?: GithubCheckPublisherClient | undefined;
+  };
+  pr: PullRequestInput;
+  result: ReturnType<typeof evaluateMergeGuard>;
+}): Promise<{ published: boolean; id?: number | undefined }> {
+  if (input.data.githubCheckPublisher) {
+    const published = await input.data.githubCheckPublisher({
+      owner: input.githubContext.owner,
+      repo: input.githubContext.repo,
+      pr: input.pr,
+      result: input.result
+    });
+    return { published: true, id: published.id };
+  }
+  if (input.githubContext.checkPublisherClient) {
+    const published = await publishMergeGuardCheckWithClient({
+      client: input.githubContext.checkPublisherClient,
+      owner: input.githubContext.owner,
+      repo: input.githubContext.repo,
+      pr: input.pr,
+      result: input.result
+    });
+    return { published: true, id: published.id };
+  }
+  return { published: false };
+}
+
+function applyEnvelopeLifecycle(
   record: ChangeControlRecord,
-  pr: PullRequestInput,
-  checkConclusion: string
-): Promise<void> {
+  envelope: GithubWebhookEnvelope | undefined
+): ChangeControlRecord {
+  if (envelope?.event !== "pull_request" || envelope.action !== "closed" || !envelope.pullRequest) {
+    return record;
+  }
+  const now = envelope.receivedAt;
+  if (envelope.pullRequest.merged) {
+    return {
+      ...record,
+      lifecycle: "merged",
+      decision: {
+        ...record.decision,
+        status: "merged",
+        decidedAt: now,
+        decidedBy: "github"
+      },
+      updatedAt: now
+    };
+  }
+  return {
+    ...record,
+    lifecycle: "closed",
+    decision: {
+      ...record.decision,
+      status: "closed_without_merge",
+      decidedAt: now,
+      decidedBy: "github"
+    },
+    updatedAt: now
+  };
+}
+
+async function persistWorkerRecord(input: {
+  prisma: PrismaClient;
+  record: ChangeControlRecord;
+  pr: PullRequestInput;
+  checkConclusion: string;
+  publishedCheckRunId?: number | undefined;
+  envelope?: GithubWebhookEnvelope | undefined;
+}): Promise<void> {
+  const { prisma, record, pr, checkConclusion, publishedCheckRunId, envelope } = input;
   const organization = await prisma.organization.upsert({
     where: { id: record.organizationId },
     update: {},
@@ -198,7 +539,9 @@ async function persistWorkerRecord(
       baseBranch: pr.baseBranch,
       headBranch: pr.headBranch,
       headSha: pr.headSha,
-      state: "open"
+      state: pullRequestState(envelope),
+      closedAt: closedAt(envelope) ?? null,
+      mergedAt: mergedAt(envelope) ?? null
     },
     create: {
       id: `pr_${record.id}`,
@@ -210,7 +553,9 @@ async function persistWorkerRecord(
       baseBranch: pr.baseBranch,
       headBranch: pr.headBranch,
       headSha: pr.headSha,
-      state: "open"
+      state: pullRequestState(envelope),
+      closedAt: closedAt(envelope) ?? null,
+      mergedAt: mergedAt(envelope) ?? null
     }
   });
 
@@ -266,6 +611,7 @@ async function persistWorkerRecord(
     targetId: record.id,
     metadataJson: {
       conclusion: checkConclusion,
+      githubCheckRunId: publishedCheckRunId,
       status: record.checkStatus,
       mode: record.mode,
       policyVersion: record.policyVersion
@@ -287,6 +633,27 @@ async function persistWorkerRecord(
       createdAt: new Date(audit.createdAt)
     }
   });
+}
+
+function pullRequestState(envelope: GithubWebhookEnvelope | undefined): string {
+  if (envelope?.event === "pull_request" && envelope.action === "closed") {
+    return envelope.pullRequest?.merged ? "merged" : "closed";
+  }
+  return envelope?.pullRequest?.state ?? "open";
+}
+
+function closedAt(envelope: GithubWebhookEnvelope | undefined): Date | undefined {
+  return envelope?.event === "pull_request" && envelope.action === "closed"
+    ? new Date(envelope.receivedAt)
+    : undefined;
+}
+
+function mergedAt(envelope: GithubWebhookEnvelope | undefined): Date | undefined {
+  return envelope?.event === "pull_request" &&
+    envelope.action === "closed" &&
+    envelope.pullRequest?.merged
+    ? new Date(envelope.receivedAt)
+    : undefined;
 }
 
 function repositoryIdFromFullName(fullName: string): string {

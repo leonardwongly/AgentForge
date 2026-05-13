@@ -125,7 +125,9 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                 <div className="list-row">
                   <span>Default mode</span>
                   {defaultMode ? (
-                    <StatusBadge status={defaultMode as "observe" | "warn" | "enforce"} />
+                    <StatusBadge
+                      status={defaultMode as "observe" | "warn" | "enforce" | "optimize"}
+                    />
                   ) : null}
                 </div>
                 <p>
@@ -223,6 +225,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                   <option value="observe">observe</option>
                   <option value="warn">warn</option>
                   <option value="enforce">enforce</option>
+                  <option value="optimize">optimize</option>
                 </select>
               </div>
               <div className="field">

@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import type {
   ChangedFile,
@@ -87,6 +88,12 @@ export type GithubAdapterClient = {
     method: GithubRequest<Array<TData>>,
     params: Record<string, unknown>
   ) => Promise<TData[]>;
+};
+
+export type GithubCheckPublisherClient = {
+  checks: {
+    create: GithubRequest<Record<string, unknown>>;
+  };
 };
 
 export function verifyGithubSignature(input: {
@@ -273,9 +280,13 @@ export function formatMergeGuardCheck(result: PolicyResult): CheckRunPayload["ou
       ? "Findings recorded; observe mode does not block merge."
       : result.mode === "warn"
         ? "Non-blocking warning; this shows what would block in enforce mode."
-        : result.status === "block"
-          ? "This check blocks merge because required policy evidence or approvals are missing."
-          : "Configured policy requirements are satisfied.";
+        : result.mode === "optimize"
+          ? result.status === "block"
+            ? "Optimize mode keeps enforce controls active; this check blocks because required policy evidence or approvals are missing."
+            : "Optimize mode keeps enforce controls active while surfacing improvement opportunities."
+          : result.status === "block"
+            ? "This check blocks merge because required policy evidence or approvals are missing."
+            : "Configured policy requirements are satisfied.";
 
   return {
     title,
@@ -317,6 +328,30 @@ export function buildCheckRunPayload(
   };
 }
 
+export function createGithubClient(
+  token: string
+): GithubAdapterClient & GithubCheckPublisherClient {
+  return new Octokit({ auth: token }) as unknown as GithubAdapterClient &
+    GithubCheckPublisherClient;
+}
+
+export async function createGithubInstallationToken(input: {
+  appId: string | number;
+  privateKey: string;
+  installationId: string | number;
+}): Promise<string> {
+  const auth = createAppAuth({
+    appId: input.appId,
+    privateKey: normalizePrivateKey(input.privateKey),
+    installationId: input.installationId
+  });
+  const installationAuth = await auth({
+    type: "installation",
+    installationId: input.installationId
+  });
+  return installationAuth.token;
+}
+
 export async function publishMergeGuardCheck(input: {
   token: string;
   owner: string;
@@ -324,9 +359,24 @@ export async function publishMergeGuardCheck(input: {
   pr: Pick<PullRequestInput, "headSha">;
   result: PolicyResult;
 }): Promise<{ id: number | undefined; conclusion: CheckRunPayload["conclusion"] }> {
-  const octokit = new Octokit({ auth: input.token });
+  return publishMergeGuardCheckWithClient({
+    client: createGithubClient(input.token),
+    owner: input.owner,
+    repo: input.repo,
+    pr: input.pr,
+    result: input.result
+  });
+}
+
+export async function publishMergeGuardCheckWithClient(input: {
+  client: GithubCheckPublisherClient;
+  owner: string;
+  repo: string;
+  pr: Pick<PullRequestInput, "headSha">;
+  result: PolicyResult;
+}): Promise<{ id: number | undefined; conclusion: CheckRunPayload["conclusion"] }> {
   const payload = buildCheckRunPayload(input.pr, input.result);
-  const response = await octokit.checks.create({
+  const response = await input.client.checks.create({
     owner: input.owner,
     repo: input.repo,
     name: payload.name,
@@ -335,7 +385,7 @@ export async function publishMergeGuardCheck(input: {
     conclusion: payload.conclusion,
     output: payload.output
   });
-  return { id: response.data.id, conclusion: payload.conclusion };
+  return { id: numberValue(response.data.id), conclusion: payload.conclusion };
 }
 
 function readRepository(value: unknown): GithubWebhookEnvelope["repository"] {
@@ -597,4 +647,8 @@ function humanize(value: string): string {
 
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function normalizePrivateKey(value: string): string {
+  return value.includes("\\n") ? value.replace(/\\n/g, "\n") : value;
 }

@@ -40,7 +40,7 @@ const envSchema = z.object({
   GITHUB_CLIENT_SECRET: optionalStringFromEnv,
   APP_BASE_URL: z.string().url().default("http://localhost:3000"),
   API_BASE_URL: z.string().url().default("http://localhost:4000"),
-  DEFAULT_POLICY_MODE: z.enum(["observe", "warn", "enforce"]).default("observe"),
+  DEFAULT_POLICY_MODE: z.enum(["observe", "warn", "enforce", "optimize"]).default("observe"),
   SOURCE_CODE_STORAGE: booleanFromEnv.default(false),
   FULL_DIFF_RETENTION: z.enum(["disabled", "7d", "30d", "custom"]).default("disabled"),
   REDACT_SECRETS: booleanFromEnv.default(true),

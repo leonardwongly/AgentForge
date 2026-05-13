@@ -84,7 +84,7 @@ test("settings form persists repository mode, retention, and owner mappings", as
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
 
-  await page.getByLabel("Mode").selectOption("enforce");
+  await page.getByLabel("Mode").selectOption("optimize");
   await page.getByLabel("Full diff retention").selectOption("7d");
   await page.getByLabel("Owner key 1").fill("runtime_owner");
   await page.getByLabel("Reviewer 1").fill("runtime-team");
@@ -92,7 +92,7 @@ test("settings form persists repository mode, retention, and owner mappings", as
   await page.getByRole("button", { name: "Save settings" }).click();
 
   await expect(page.getByText("Repository settings saved")).toBeVisible();
-  await expect(page.getByLabel("Mode")).toHaveValue("enforce");
+  await expect(page.getByLabel("Mode")).toHaveValue("optimize");
   await expect(page.getByLabel("Full diff retention")).toHaveValue("7d");
   await expect(page.getByLabel("Owner key 1")).toHaveValue("runtime_owner");
   await expect(page.getByLabel("Reviewer 1")).toHaveValue("runtime-team");
@@ -104,7 +104,7 @@ test("settings form persists repository mode, retention, and owner mappings", as
   const previewPayload = (await activePolicyPreview.json()) as {
     result: { mode: string; status: string };
   };
-  expect(previewPayload.result).toMatchObject({ mode: "enforce", status: "block" });
+  expect(previewPayload.result).toMatchObject({ mode: "optimize", status: "block" });
 
   const settingsResponse = await request.get(`${apiBaseUrl}/api/settings`);
   expect(settingsResponse.ok()).toBeTruthy();

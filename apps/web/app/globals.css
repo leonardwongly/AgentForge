@@ -473,6 +473,7 @@ button {
 .status-badge--missing,
 .status-badge--required,
 .status-badge--enforce,
+.status-badge--optimize,
 .status-badge--critical,
 .status-badge--high {
   background: #fff1f0;
@@ -690,7 +691,7 @@ button {
 
 .mode-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
 }
 

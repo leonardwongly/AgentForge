@@ -29,7 +29,10 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
       <header className="topbar">
         <div>
           <h1>Policy Preview</h1>
-          <p>Preview recent PRs before moving policy rules from observe to warn or enforce.</p>
+          <p>
+            Preview recent PRs before moving policy rules from observe to warn, enforce, or
+            optimize.
+          </p>
         </div>
         <button className="button button--primary" type="button">
           <Play size={16} aria-hidden="true" /> Run preview
@@ -147,6 +150,10 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
           <section className="mode-card">
             <h3>enforce</h3>
             <p>Preview blocks only when deterministic policy requirements are unmet.</p>
+          </section>
+          <section className="mode-card">
+            <h3>optimize</h3>
+            <p>Preview preserves enforce behavior and highlights improvement opportunities.</p>
           </section>
         </div>
       </section>

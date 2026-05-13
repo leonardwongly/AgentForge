@@ -22,6 +22,8 @@ Minimum permissions:
 - Issues: read/write if PR-visible notes are enabled
 - Members: read if team membership validation is enabled
 
+The worker uses the installation credentials to fetch PR files, reviews, commits, and supported manifest contents before evaluating deterministic policy. It also publishes the `AgentForge Merge Guard` check run back to GitHub. Branch protection should require that check only after the repository has graduated to `enforce` or `optimize`.
+
 Webhook URL:
 
 ```text

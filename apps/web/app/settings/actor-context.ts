@@ -52,12 +52,8 @@ export function dashboardActorErrorMessage(): string {
 function dashboardActorFromTrustedHeaders(
   headers: HeaderReader
 ): DashboardActorContext | undefined {
-  const login =
-    safeActorValue(headers.get("x-agentforge-authenticated-actor")) ??
-    safeActorValue(headers.get("x-agentforge-actor"));
-  const role =
-    safeRoleValue(headers.get("x-agentforge-authenticated-role")) ??
-    safeRoleValue(headers.get("x-agentforge-role"));
+  const login = safeActorValue(headers.get("x-agentforge-authenticated-actor"));
+  const role = safeRoleValue(headers.get("x-agentforge-authenticated-role"));
   return login && role ? { login, role, source: "trusted_headers" } : undefined;
 }
 

@@ -135,7 +135,7 @@ describe("runtime data surfaces", () => {
       url: `/api/repositories/${record.repositoryId}/settings`,
       payload: JSON.stringify({
         enabled: false,
-        mode: "enforce",
+        mode: "optimize",
         dataHandling: {
           fullDiffRetention: "7d",
           llmFeatures: false,
@@ -165,7 +165,7 @@ describe("runtime data surfaces", () => {
       expect.objectContaining({
         repository: expect.objectContaining({
           enabled: false,
-          mode: "enforce",
+          mode: "optimize",
           dataHandling: expect.objectContaining({
             fullDiffRetention: "7d",
             auditRecordRetentionDays: 730
@@ -186,7 +186,7 @@ describe("runtime data surfaces", () => {
       expect.objectContaining({
         id: record.repositoryId,
         enabled: false,
-        mode: "enforce",
+        mode: "optimize",
         dataHandling: expect.objectContaining({ fullDiffRetention: "7d" })
       })
     );
@@ -221,7 +221,7 @@ describe("runtime data surfaces", () => {
     expect(activePolicyPreview.statusCode).toBe(200);
     expect(activePolicyPreview.json().result).toEqual(
       expect.objectContaining({
-        mode: "enforce",
+        mode: "optimize",
         status: "block"
       })
     );
@@ -241,6 +241,45 @@ describe("runtime data surfaces", () => {
         "owner_mapping_changed"
       ])
     );
+
+    await app.close();
+  });
+
+  it("scopes repository PR Change Control Record lookup by repository id and PR number", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest }),
+      headers: { "content-type": "application/json" }
+    });
+    const secondPr: PullRequestInput = {
+      ...pullRequest,
+      repositoryFullName: "runtime/ledger",
+      title: "Update ledger billing code",
+      headSha: "sha-runtime-ledger"
+    };
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: secondPr }),
+      headers: { "content-type": "application/json" }
+    });
+    const firstRecord = first.json().record;
+    const secondRecord = second.json().record;
+
+    const firstLookup = await app.inject({
+      method: "GET",
+      url: `/api/repositories/${firstRecord.repositoryId}/pull-requests/${pullRequest.pullRequestNumber}/change-control-record`
+    });
+    const secondLookup = await app.inject({
+      method: "GET",
+      url: `/api/repositories/${secondRecord.repositoryId}/pull-requests/${pullRequest.pullRequestNumber}/change-control-record`
+    });
+
+    expect(firstLookup.json().record.repositoryFullName).toBe("runtime/payments");
+    expect(secondLookup.json().record.repositoryFullName).toBe("runtime/ledger");
 
     await app.close();
   });

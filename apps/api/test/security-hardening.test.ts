@@ -6,6 +6,7 @@ import { createApp, createInitialState } from "../src/index.js";
 
 const rawGithubToken = "ghp_123456789012345678901234567890123456";
 const rawSource = "export const checkoutToken = process.env.CHECKOUT_TOKEN;";
+const originalNodeEnv = process.env.NODE_ENV;
 
 const policyYaml = `
 version: 1
@@ -27,6 +28,13 @@ function actorHeaders(actor: string, role: string): Record<string, string> {
   return {
     "x-agentforge-actor": actor,
     "x-agentforge-role": role
+  };
+}
+
+function authenticatedActorHeaders(actor: string, role: string): Record<string, string> {
+  return {
+    "x-agentforge-authenticated-actor": actor,
+    "x-agentforge-authenticated-role": role
   };
 }
 
@@ -72,6 +80,13 @@ afterEach(() => {
   delete process.env.REDACT_SECRETS;
   delete process.env.LLM_FEATURES;
   delete process.env.ALLOW_UNSIGNED_GITHUB_WEBHOOKS;
+  delete process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS;
+  delete process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS;
+  if (originalNodeEnv === undefined) {
+    delete process.env.NODE_ENV;
+  } else {
+    process.env.NODE_ENV = originalNodeEnv;
+  }
 });
 
 describe("security and audit hardening", () => {
@@ -172,9 +187,72 @@ describe("security and audit hardening", () => {
     await app.close();
   });
 
+  it("rejects raw local actor headers in production unless explicitly allowed", async () => {
+    process.env.NODE_ENV = "production";
+    const { app, state } = await createPreviewRecord();
+    const record = state.records[0]!;
+    const evidence = record.requiredEvidence[0]!;
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        kind: evidence.kind,
+        content: "Security note: raw local actor headers are not production auth context."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(rejected.statusCode).toBe(401);
+
+    process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS = "true";
+    const allowedLocalFallback = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        kind: evidence.kind,
+        content: "Security note: explicit production local fallback accepted."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(allowedLocalFallback.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("accepts authenticated proxy actor headers in production when proxy trust is enabled", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
+    const { app, state } = await createPreviewRecord();
+    const record = state.records[0]!;
+    const evidence = record.requiredEvidence[0]!;
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        kind: evidence.kind,
+        content: "Security note: authenticated proxy header context accepted."
+      }),
+      headers: {
+        "content-type": "application/json",
+        ...authenticatedActorHeaders("sam", "developer")
+      }
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(state.records[0]!.requiredEvidence[0]!.providedBy).toBe("sam");
+    await app.close();
+  });
+
   it("rejects unauthorized overrides and records authorized override audit details", async () => {
     const { app, state } = await createPreviewRecord();
     const record = state.records[0]!;
+
+    const activePolicy = await app.inject({
+      method: "PUT",
+      url: `/api/repositories/${record.repositoryId}/policy`,
+      payload: JSON.stringify({ contentYaml: policyYaml }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(activePolicy.statusCode).toBe(200);
 
     const unauthorized = await app.inject({
       method: "POST",
@@ -187,6 +265,21 @@ describe("security and audit hardening", () => {
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
     });
     expect(unauthorized.statusCode).toBe(403);
+
+    const unauthorizedByActivePolicy = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/override`,
+      payload: JSON.stringify({
+        reason: "Engineering manager cannot override this repository policy.",
+        scope: "pr"
+      }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("morgan", "engineering_manager")
+      }
+    });
+    expect(unauthorizedByActivePolicy.statusCode).toBe(403);
+    expect(unauthorizedByActivePolicy.json().error).toContain("not authorized");
 
     const authorized = await app.inject({
       method: "POST",

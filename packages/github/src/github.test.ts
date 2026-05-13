@@ -238,4 +238,20 @@ describe("github integration", () => {
     expect(payload.conclusion).toBe("neutral");
     expect(payload.output.text).toContain("Non-blocking warning");
   });
+
+  it("keeps optimize mode blocking semantics in check conclusions", () => {
+    const result: PolicyResult = {
+      mode: "optimize",
+      status: "block",
+      policyVersion: "fintech@1.0.0",
+      findings: [],
+      requiredEvidence: [],
+      requiredReviewers: [],
+      explanation: [],
+      evaluatedAt: "2026-05-12T00:00:00.000Z"
+    };
+    const payload = buildCheckRunPayload({ headSha: "sha" }, result);
+    expect(payload.conclusion).toBe("failure");
+    expect(payload.output.text).toContain("Optimize mode keeps enforce controls active");
+  });
 });

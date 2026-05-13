@@ -36,6 +36,15 @@ export type DashboardData = {
   message: string;
 };
 
+export type BlockingModeBadge = Extract<
+  ChangeControlRecord["mode"],
+  "warn" | "enforce" | "optimize"
+>;
+
+export function blockingModeBadge(mode: ChangeControlRecord["mode"]): BlockingModeBadge {
+  return mode === "enforce" || mode === "optimize" ? mode : "warn";
+}
+
 export type RepositoryOption = {
   id: string;
   fullName: string;
