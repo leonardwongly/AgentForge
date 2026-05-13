@@ -93,8 +93,10 @@ Copy `.env.example` to `.env` and fill in values. The defaults are safe for loca
 - `AUDIT_RECORD_RETENTION_DAYS`: Audit retention duration.
 - `EXPORT_STORAGE_BUCKET` / `EXPORT_STORAGE_REGION`: Optional export storage.
 - `SESSION_SECRET`: Session signing secret for deployed dashboard/API usage.
-- `AGENTFORGE_DASHBOARD_ACTOR`: Local dashboard server-action actor for settings/policy saves.
+- `AGENTFORGE_DASHBOARD_ACTOR`: Local dashboard server-action actor for settings/policy saves in non-production runs.
 - `AGENTFORGE_DASHBOARD_ROLE`: Local dashboard server-action role. Use `platform_admin` or `engineering_manager` for repository setup.
+- `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS`: Set `true` only when a trusted auth proxy injects `x-agentforge-authenticated-actor` and `x-agentforge-authenticated-role`.
+- `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR`: Explicit production-like local fallback for `AGENTFORGE_DASHBOARD_ACTOR` / `AGENTFORGE_DASHBOARD_ROLE`. Keep `false` for deployed environments.
 
 ## GitHub App Setup
 
@@ -136,7 +138,7 @@ x-agentforge-role: platform_admin | engineering_manager | auditor | security_rev
 
 Policy/settings changes require `platform_admin` or `engineering_manager`. Repository settings are persisted as runtime state, including enabled status, repository mode, data-handling overrides, and configured owner mappings. Change Control Record exports and audit access require `auditor`, `platform_admin`, or `engineering_manager`. Overrides use the role allowlist configured by policy.
 
-The Next.js dashboard uses server actions for onboarding and settings changes. In local V1 those server actions send `AGENTFORGE_DASHBOARD_ACTOR` and `AGENTFORGE_DASHBOARD_ROLE` to the API; production authentication should replace those local defaults with authenticated user context.
+The Next.js dashboard uses server actions for onboarding and settings changes. In development/test, those server actions can use `AGENTFORGE_DASHBOARD_ACTOR` and `AGENTFORGE_DASHBOARD_ROLE` as a local actor fallback. In production, server actions fail closed unless a trusted auth proxy is configured with `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true` and injects `x-agentforge-authenticated-actor` plus `x-agentforge-authenticated-role`, or `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR=true` is explicitly set for a production-like local run.
 
 ## Policy Modes
 

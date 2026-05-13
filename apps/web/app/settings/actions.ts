@@ -2,6 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { resolveDashboardActor } from "./actor";
+import type { DashboardActorContext } from "./actor-context";
 
 type PolicyModeChoice = "observe" | "warn" | "enforce";
 type FullDiffRetentionChoice = "disabled" | "7d" | "30d" | "custom";
@@ -26,8 +28,6 @@ type RepositorySettingsPatch = {
 type RepositoryDataHandlingPatch = NonNullable<RepositorySettingsPatch["dataHandling"]>;
 
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:4000";
-const dashboardActor = process.env.AGENTFORGE_DASHBOARD_ACTOR ?? "dashboard-local";
-const dashboardRole = process.env.AGENTFORGE_DASHBOARD_ROLE ?? "platform_admin";
 const allowedReturnPaths = new Set(["/settings", "/onboarding"]);
 const policyModes = new Set(["observe", "warn", "enforce"]);
 const diffRetentionModes = new Set(["disabled", "7d", "30d", "custom"]);
@@ -88,14 +88,16 @@ export async function saveRepositorySettings(formData: FormData): Promise<void> 
   }
 
   try {
+    const actor = await resolveDashboardActor();
     if (policyPackId) {
       const pack = await requestJson<{ contentYaml?: string }>(
+        actor,
         `/api/policy-packs/${encodeURIComponent(policyPackId)}`
       );
       if (!pack.contentYaml) {
         throw new Error("Selected policy pack does not include policy YAML.");
       }
-      await requestJson(`/api/repositories/${encodeURIComponent(repositoryId)}/policy`, {
+      await requestJson(actor, `/api/repositories/${encodeURIComponent(repositoryId)}/policy`, {
         method: "PUT",
         body: JSON.stringify({ contentYaml: pack.contentYaml })
       });
@@ -115,7 +117,7 @@ export async function saveRepositorySettings(formData: FormData): Promise<void> 
       patch.ownerMappings = ownerMappings;
     }
 
-    await requestJson(`/api/repositories/${encodeURIComponent(repositoryId)}/settings`, {
+    await requestJson(actor, `/api/repositories/${encodeURIComponent(repositoryId)}/settings`, {
       method: "PATCH",
       body: JSON.stringify(patch)
     });
@@ -132,15 +134,19 @@ export async function saveRepositorySettings(formData: FormData): Promise<void> 
   redirect(`${returnTo}?updated=repository-settings`);
 }
 
-async function requestJson<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+async function requestJson<T = unknown>(
+  actor: DashboardActorContext,
+  path: string,
+  init: RequestInit = {}
+): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, {
     ...init,
     cache: "no-store",
     headers: {
       accept: "application/json",
       "content-type": "application/json",
-      "x-agentforge-actor": dashboardActor,
-      "x-agentforge-role": dashboardRole,
+      "x-agentforge-actor": actor.login,
+      "x-agentforge-role": actor.role,
       ...(init.headers ?? {})
     }
   });

@@ -30,7 +30,9 @@ export default defineConfig({
     {
       command:
         "pnpm --filter @agentforge/web build && " +
-        `API_BASE_URL=${apiBaseUrl} pnpm --filter @agentforge/web exec next start ` +
+        `API_BASE_URL=${apiBaseUrl} AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR=true ` +
+        "AGENTFORGE_DASHBOARD_ACTOR=playwright AGENTFORGE_DASHBOARD_ROLE=platform_admin " +
+        "pnpm --filter @agentforge/web exec next start " +
         `--hostname 127.0.0.1 --port ${appPort}`,
       url: appBaseUrl,
       reuseExistingServer: false,
