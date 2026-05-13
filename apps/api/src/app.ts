@@ -429,8 +429,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           }
         : item
     );
-    record.updatedAt = new Date().toISOString();
-    const savedRecord = await saveRecord(record);
+    const savedRecord = await saveRecord(recomputeRequirementStatus(record));
     await audit({
       organizationId: record.organizationId,
       repositoryId: record.repositoryId,
@@ -465,8 +464,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         evidence.status = "approved";
         evidence.approvedBy = actor.login;
         evidence.approvedAt = new Date().toISOString();
-        record.updatedAt = new Date().toISOString();
-        const savedRecord = await saveRecord(record);
+        const savedRecord = await saveRecord(recomputeRequirementStatus(record));
         await audit({
           organizationId: record.organizationId,
           repositoryId: record.repositoryId,
@@ -506,8 +504,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         reviewer.approved = true;
         reviewer.approvedBy = actor.login;
         reviewer.approvedAt = new Date().toISOString();
-        record.updatedAt = new Date().toISOString();
-        const savedRecord = await saveRecord(record);
+        const savedRecord = await saveRecord(recomputeRequirementStatus(record));
         await audit({
           organizationId: record.organizationId,
           repositoryId: record.repositoryId,
@@ -1137,6 +1134,43 @@ function dashboardSummary(records: ChangeControlRecord[]) {
       .sort((a, b) => b.count - a.count)
       .slice(0, 5),
     agentAssistedChangeVolume: agentAssisted
+  };
+}
+
+function recomputeRequirementStatus(
+  record: ChangeControlRecord,
+  now = new Date().toISOString()
+): ChangeControlRecord {
+  if (record.lifecycle === "overridden") {
+    return { ...record, updatedAt: now };
+  }
+
+  const hasMissingEvidence = record.requiredEvidence.some((item) => item.status === "missing");
+  const hasPendingRequiredReview = record.requiredReviewers.some(
+    (item) => item.tier === "required" && !item.approved
+  );
+  const wouldBlock = hasMissingEvidence || hasPendingRequiredReview;
+  const checkStatus =
+    record.mode === "observe"
+      ? "pass"
+      : record.mode === "warn" && wouldBlock
+        ? "warn"
+        : wouldBlock
+          ? "block"
+          : "pass";
+  const lifecycle =
+    checkStatus === "block" ? "blocked" : checkStatus === "warn" ? "warned" : "passed";
+
+  return {
+    ...record,
+    checkStatus,
+    lifecycle,
+    decision: {
+      ...record.decision,
+      status: checkStatus === "block" ? "blocked" : "passed",
+      decidedAt: now
+    },
+    updatedAt: now
   };
 }
 

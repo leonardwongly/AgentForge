@@ -220,6 +220,58 @@ describe("security and audit hardening", () => {
     await app.close();
   });
 
+  it("recomputes the Merge Guard result after evidence and reviewer approvals clear requirements", async () => {
+    const { app, state } = await createPreviewRecord();
+    const record = state.records[0]!;
+    const evidence = record.requiredEvidence[0]!;
+    const reviewer = record.requiredReviewers[0]!;
+
+    expect(record.checkStatus).toBe("block");
+
+    const provided = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        kind: evidence.kind,
+        content: "Security note: secret-like value was removed and the old token was revoked."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(provided.statusCode).toBe(200);
+    expect(state.records[0]!.checkStatus).toBe("block");
+
+    const approvedEvidence = await app.inject({
+      method: "PATCH",
+      url: `/api/evidence/${evidence.id}/approve`,
+      payload: JSON.stringify({}),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(approvedEvidence.statusCode).toBe(200);
+    expect(state.records[0]!.checkStatus).toBe("block");
+
+    const approvedReviewer = await app.inject({
+      method: "PATCH",
+      url: `/api/reviewers/${reviewer.id}/approve`,
+      payload: JSON.stringify({}),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("security-team", "security_reviewer")
+      }
+    });
+    expect(approvedReviewer.statusCode).toBe(200);
+
+    const updated = await app.inject({
+      method: "GET",
+      url: `/api/pull-requests/${record.id}/change-control-record`
+    });
+    expect(updated.json().record).toMatchObject({
+      checkStatus: "pass",
+      lifecycle: "passed",
+      decision: expect.objectContaining({ status: "passed" })
+    });
+    await app.close();
+  });
+
   it("exports Change Control Records as JSON and CSV without source code", async () => {
     const { app } = await createPreviewRecord();
 
