@@ -1,6 +1,11 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Octokit } from "@octokit/rest";
-import type { PolicyResult, PullRequestInput } from "@agentforge/core";
+import type {
+  ChangedFile,
+  PolicyResult,
+  PullRequestInput,
+  PullRequestReview
+} from "@agentforge/core";
 import { redactSecrets } from "@agentforge/security";
 
 export type GithubWebhookEnvelope = {
@@ -31,6 +36,26 @@ export type GithubWebhookEnvelope = {
         merged: boolean;
       }
     | undefined;
+  review?: PullRequestReview | undefined;
+  checkRun?:
+    | {
+        id: number;
+        name: string;
+        status: string;
+        conclusion?: string | undefined;
+        headSha: string;
+        pullRequests: Array<{ number: number; headSha?: string | undefined }>;
+      }
+    | undefined;
+  installation?:
+    | {
+        id: number;
+        accountLogin: string;
+        accountType: string;
+        repositoriesAdded: Array<{ id: number; fullName: string }>;
+        repositoriesRemoved: Array<{ id: number; fullName: string }>;
+      }
+    | undefined;
   receivedAt: string;
 };
 
@@ -44,6 +69,24 @@ export type CheckRunPayload = {
     summary: string;
     text: string;
   };
+};
+
+type GithubRequest<TData> = (params: Record<string, unknown>) => Promise<{ data: TData }>;
+
+export type GithubAdapterClient = {
+  pulls: {
+    get: GithubRequest<Record<string, unknown>>;
+    listFiles: GithubRequest<Array<Record<string, unknown>>>;
+    listReviews: GithubRequest<Array<Record<string, unknown>>>;
+    listCommits: GithubRequest<Array<Record<string, unknown>>>;
+  };
+  repos?: {
+    getContent: GithubRequest<Record<string, unknown> | Array<Record<string, unknown>>>;
+  };
+  paginate?: <TData>(
+    method: GithubRequest<Array<TData>>,
+    params: Record<string, unknown>
+  ) => Promise<TData[]>;
 };
 
 export function verifyGithubSignature(input: {
@@ -74,32 +117,127 @@ export function normalizeGithubWebhook(input: {
 }): GithubWebhookEnvelope {
   const repository = readRepository(input.payload.repository);
   const pullRequest = readPullRequest(input.payload.pull_request);
+  const checkRun = readCheckRun(input.payload.check_run);
+  const installation = readInstallation(
+    input.payload.installation,
+    input.payload.repositories_added,
+    input.payload.repositories_removed,
+    input.payload.repositories
+  );
   return {
     deliveryId: input.deliveryId,
     event: input.event,
     action: stringValue(input.payload.action),
-    installationId: numberValue(
-      (input.payload.installation as Record<string, unknown> | undefined)?.id
-    ),
+    installationId: installation?.id,
     repository,
     pullRequest,
+    review: readReview(input.payload.review),
+    checkRun,
+    installation,
     receivedAt: input.receivedAt ?? new Date().toISOString()
   };
 }
 
 export function shouldEnqueueEvaluation(envelope: GithubWebhookEnvelope): boolean {
-  if (!envelope.pullRequest || !envelope.repository) {
+  if (!envelope.repository) {
     return false;
   }
-  if (envelope.event === "pull_request") {
+  if (envelope.event === "pull_request" && envelope.pullRequest) {
     return ["opened", "synchronize", "reopened", "edited", "ready_for_review", "closed"].includes(
       envelope.action ?? ""
     );
   }
-  if (envelope.event === "pull_request_review") {
+  if (envelope.event === "pull_request_review" && envelope.pullRequest) {
     return ["submitted", "edited", "dismissed"].includes(envelope.action ?? "");
   }
+  if (envelope.event === "check_run" && envelope.checkRun) {
+    return (
+      envelope.checkRun.pullRequests.length > 0 &&
+      ["completed", "rerequested", "requested_action"].includes(envelope.action ?? "")
+    );
+  }
   return false;
+}
+
+export function pullRequestInputFromFixture(pr: PullRequestInput): PullRequestInput {
+  return {
+    ...pr,
+    labels: [...(pr.labels ?? [])],
+    commits: pr.commits?.map((commit) => ({ ...commit })),
+    reviews: pr.reviews?.map((review) => ({ ...review })),
+    manualEvidence: pr.manualEvidence?.map((evidence) => ({ ...evidence })),
+    changedFiles: pr.changedFiles.map((file) => ({ ...file }))
+  };
+}
+
+export async function fetchPullRequestInputFromGithub(input: {
+  client: GithubAdapterClient;
+  owner: string;
+  repo: string;
+  pullNumber: number;
+  includeManifestContents?: boolean | undefined;
+  maxManifestBytes?: number | undefined;
+}): Promise<PullRequestInput> {
+  const params = { owner: input.owner, repo: input.repo, pull_number: input.pullNumber };
+  const prResponse = await input.client.pulls.get(params);
+  const pr = prResponse.data;
+  const files = await paginateOrRequest(input.client, input.client.pulls.listFiles, {
+    ...params,
+    per_page: 100
+  });
+  const reviews = await paginateOrRequest(input.client, input.client.pulls.listReviews, {
+    ...params,
+    per_page: 100
+  });
+  const commits = await paginateOrRequest(input.client, input.client.pulls.listCommits, {
+    ...params,
+    per_page: 100
+  });
+
+  const base = recordValue(pr.base);
+  const head = recordValue(pr.head);
+  const baseSha = stringValue(recordValue(base?.commit)?.sha) ?? stringValue(base?.sha);
+  const headSha = stringValue(recordValue(head?.commit)?.sha) ?? stringValue(head?.sha) ?? "";
+  const repositoryFullName =
+    stringValue(recordValue(head?.repo)?.full_name) ?? `${input.owner}/${input.repo}`;
+  const changedFiles = await Promise.all(
+    files.map((file) =>
+      githubChangedFileToInput({
+        client: input.client,
+        owner: input.owner,
+        repo: input.repo,
+        file,
+        baseSha,
+        headSha,
+        includeManifestContents: input.includeManifestContents ?? true,
+        maxManifestBytes: input.maxManifestBytes ?? 200_000
+      })
+    )
+  );
+
+  return {
+    repositoryFullName,
+    pullRequestNumber: numberValue(pr.number) ?? input.pullNumber,
+    title: stringValue(pr.title) ?? "",
+    authorLogin: stringValue(recordValue(pr.user)?.login) ?? "",
+    baseBranch: stringValue(base?.ref) ?? "",
+    headBranch: stringValue(head?.ref) ?? "",
+    headSha,
+    body: stringValue(pr.body),
+    labels: labelsFromGithub(pr.labels),
+    commits: commits.map((commit) => ({
+      sha: stringValue(commit.sha) ?? "",
+      message: stringValue(recordValue(commit.commit)?.message) ?? "",
+      authorLogin: stringValue(recordValue(commit.author)?.login)
+    })),
+    reviews: reviews.map((review) => ({
+      reviewer: stringValue(recordValue(review.user)?.login) ?? "",
+      reviewerType: "user",
+      state: pullRequestReviewState(stringValue(review.state)),
+      submittedAt: stringValue(review.submitted_at) ?? new Date().toISOString()
+    })),
+    changedFiles
+  };
 }
 
 export function githubConclusionForPolicyResult(
@@ -238,12 +376,219 @@ function readPullRequest(value: unknown): GithubWebhookEnvelope["pullRequest"] {
   };
 }
 
+function readReview(value: unknown): PullRequestReview | undefined {
+  const review = value as Record<string, unknown> | undefined;
+  if (!review) {
+    return undefined;
+  }
+  return {
+    reviewer: stringValue((review.user as Record<string, unknown> | undefined)?.login) ?? "",
+    reviewerType: "user",
+    state: pullRequestReviewState(stringValue(review.state)),
+    submittedAt: stringValue(review.submitted_at) ?? new Date().toISOString()
+  };
+}
+
+function readCheckRun(value: unknown): GithubWebhookEnvelope["checkRun"] {
+  const checkRun = value as Record<string, unknown> | undefined;
+  if (!checkRun) {
+    return undefined;
+  }
+  return {
+    id: numberValue(checkRun.id) ?? 0,
+    name: stringValue(checkRun.name) ?? "",
+    status: stringValue(checkRun.status) ?? "",
+    conclusion: stringValue(checkRun.conclusion),
+    headSha: stringValue(checkRun.head_sha) ?? "",
+    pullRequests: arrayValue(checkRun.pull_requests).map((item) => ({
+      number: numberValue(item.number) ?? 0,
+      headSha: stringValue(item.head_sha)
+    }))
+  };
+}
+
+function readInstallation(
+  value: unknown,
+  repositoriesAdded: unknown,
+  repositoriesRemoved: unknown,
+  repositories: unknown
+): GithubWebhookEnvelope["installation"] {
+  const installation = value as Record<string, unknown> | undefined;
+  if (!installation) {
+    return undefined;
+  }
+  const account = installation.account as Record<string, unknown> | undefined;
+  return {
+    id: numberValue(installation.id) ?? 0,
+    accountLogin: stringValue(account?.login) ?? "",
+    accountType: stringValue(account?.type) ?? "",
+    repositoriesAdded: reposFromPayload(repositoriesAdded ?? repositories),
+    repositoriesRemoved: reposFromPayload(repositoriesRemoved)
+  };
+}
+
+function reposFromPayload(value: unknown): Array<{ id: number; fullName: string }> {
+  return arrayValue(value).map((repo) => ({
+    id: numberValue(repo.id) ?? 0,
+    fullName: stringValue(repo.full_name) ?? stringValue(repo.name) ?? ""
+  }));
+}
+
+function arrayValue(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? (value as Array<Record<string, unknown>>) : [];
+}
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function pullRequestReviewState(value: string | undefined): PullRequestReview["state"] {
+  const normalized = value?.toUpperCase();
+  if (normalized === "APPROVED" || normalized === "CHANGES_REQUESTED") {
+    return normalized;
+  }
+  return "COMMENTED";
+}
+
+async function paginateOrRequest<TData>(
+  client: GithubAdapterClient,
+  method: GithubRequest<Array<TData>>,
+  params: Record<string, unknown>
+): Promise<TData[]> {
+  if (client.paginate) {
+    return client.paginate(method, params);
+  }
+  return (await method(params)).data;
+}
+
+async function githubChangedFileToInput(input: {
+  client: GithubAdapterClient;
+  owner: string;
+  repo: string;
+  file: Record<string, unknown>;
+  baseSha?: string | undefined;
+  headSha: string;
+  includeManifestContents: boolean;
+  maxManifestBytes: number;
+}): Promise<ChangedFile> {
+  const filename = stringValue(input.file.filename) ?? "";
+  const status = changedFileStatus(stringValue(input.file.status));
+  const changedFile: ChangedFile = {
+    filename,
+    status,
+    additions: numberValue(input.file.additions),
+    deletions: numberValue(input.file.deletions),
+    changes: numberValue(input.file.changes),
+    patch: stringValue(input.file.patch),
+    previousFilename: stringValue(input.file.previous_filename)
+  };
+
+  if (
+    input.includeManifestContents &&
+    input.client.repos?.getContent &&
+    isSupportedManifest(filename)
+  ) {
+    if (status !== "added" && input.baseSha) {
+      changedFile.previousContent = await fetchTextContent({
+        client: input.client,
+        owner: input.owner,
+        repo: input.repo,
+        path: changedFile.previousFilename ?? filename,
+        ref: input.baseSha,
+        maxBytes: input.maxManifestBytes
+      });
+    }
+    if (status !== "removed") {
+      changedFile.currentContent = await fetchTextContent({
+        client: input.client,
+        owner: input.owner,
+        repo: input.repo,
+        path: filename,
+        ref: input.headSha,
+        maxBytes: input.maxManifestBytes
+      });
+    }
+  }
+
+  return changedFile;
+}
+
+function changedFileStatus(value: string | undefined): ChangedFile["status"] {
+  if (
+    value === "added" ||
+    value === "modified" ||
+    value === "removed" ||
+    value === "renamed" ||
+    value === "copied" ||
+    value === "changed" ||
+    value === "unchanged"
+  ) {
+    return value;
+  }
+  return "modified";
+}
+
+function labelsFromGithub(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((label) => (typeof label === "string" ? label : stringValue(recordValue(label)?.name)))
+    .filter((label): label is string => Boolean(label));
+}
+
+function isSupportedManifest(filename: string): boolean {
+  return [
+    "package.json",
+    "requirements.txt",
+    "pyproject.toml",
+    "poetry.lock",
+    "pnpm-lock.yaml",
+    "package-lock.json",
+    "yarn.lock"
+  ].some((suffix) => filename.endsWith(suffix));
+}
+
+async function fetchTextContent(input: {
+  client: GithubAdapterClient;
+  owner: string;
+  repo: string;
+  path: string;
+  ref: string;
+  maxBytes: number;
+}): Promise<string | undefined> {
+  let response: { data: Record<string, unknown> | Array<Record<string, unknown>> } | undefined;
+  try {
+    response = await input.client.repos?.getContent({
+      owner: input.owner,
+      repo: input.repo,
+      path: input.path,
+      ref: input.ref
+    });
+  } catch {
+    return undefined;
+  }
+  const data = response?.data;
+  if (!data || Array.isArray(data)) {
+    return undefined;
+  }
+  const content = stringValue(data.content);
+  if (stringValue(data.encoding) !== "base64" || !content) {
+    return undefined;
+  }
+  const decoded = Buffer.from(content, "base64");
+  const bounded = decoded.length > input.maxBytes ? decoded.subarray(0, input.maxBytes) : decoded;
+  return bounded.toString("utf8");
 }
 
 function humanize(value: string): string {

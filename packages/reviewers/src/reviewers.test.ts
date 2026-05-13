@@ -35,4 +35,52 @@ describe("reviewer router", () => {
     expect(reviewers).toHaveLength(1);
     expect(reviewers[0]?.approved).toBe(true);
   });
+
+  it("supports suggested reviewers", () => {
+    const reviewers = routeReviewers(
+      [
+        {
+          id: "hit_suggest",
+          ruleId: "docs",
+          finding: fact,
+          action: "suggest",
+          severity: "low",
+          requiredEvidence: [],
+          requiredReviewers: ["maintainer"],
+          reviewerTier: "suggested",
+          explanation: "Maintainer review suggested."
+        }
+      ],
+      {}
+    );
+
+    expect(reviewers).toHaveLength(1);
+    expect(reviewers[0]).toMatchObject({
+      reviewer: "maintainer",
+      reviewerType: "user",
+      tier: "suggested",
+      reason: "Maintainer review suggested."
+    });
+  });
+
+  it("caps non-critical required reviewer groups as conditional reviewers", () => {
+    const hits: PolicyHit[] = ["billing-owner", "security-team", "database-owner"].map(
+      (reviewer, index) => ({
+        id: `hit_${index}`,
+        ruleId: `rule_${index}`,
+        finding: { ...fact, id: `fact_${index}` },
+        action: "require_review",
+        severity: "high",
+        requiredEvidence: [],
+        requiredReviewers: [reviewer],
+        explanation: `${reviewer} approval required.`
+      })
+    );
+
+    const reviewers = routeReviewers(hits, {}, { maxRequiredReviewersWithoutCritical: 1 });
+
+    expect(reviewers[0]?.tier).toBe("required");
+    expect(reviewers.slice(1).every((reviewer) => reviewer.tier === "conditional")).toBe(true);
+    expect(reviewers.slice(1).every((reviewer) => reviewer.reason.includes("capped"))).toBe(true);
+  });
 });

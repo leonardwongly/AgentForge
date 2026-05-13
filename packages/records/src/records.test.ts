@@ -4,6 +4,7 @@ import {
   applyOverride,
   createChangeControlRecord,
   exportChangeControlRecordsCsv,
+  updateRecordFromPolicyResult,
   validateOverride
 } from "./index.js";
 
@@ -39,6 +40,31 @@ describe("records", () => {
     });
     expect(record.lifecycle).toBe("blocked");
     expect(exportChangeControlRecordsCsv([record])).toContain("repositoryFullName");
+  });
+
+  it("updates change control records after re-evaluation", () => {
+    const record = createChangeControlRecord({
+      organizationId: "org",
+      repositoryId: "repo",
+      pr,
+      policyResult: result
+    });
+    const updated = updateRecordFromPolicyResult(
+      record,
+      {
+        ...result,
+        status: "pass",
+        requiredEvidence: [],
+        requiredReviewers: [],
+        evaluatedAt: "2026-05-12T01:00:00.000Z"
+      },
+      "2026-05-12T01:00:01.000Z"
+    );
+
+    expect(updated.checkStatus).toBe("pass");
+    expect(updated.lifecycle).toBe("passed");
+    expect(updated.decision?.status).toBe("passed");
+    expect(updated.updatedAt).toBe("2026-05-12T01:00:01.000Z");
   });
 
   it("rejects unauthorized overrides", () => {
