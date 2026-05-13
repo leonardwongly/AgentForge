@@ -35,6 +35,7 @@ import {
   summarizeSafeSnippet,
   type MetadataStoragePolicy
 } from "@agentforge/security";
+import { actorOrSystem, isAuthzFailure, requireApiActor, requireRole } from "./auth.js";
 import { evaluateFixturePr } from "./evaluation.js";
 
 type QueuedEvaluation = {
@@ -178,20 +179,23 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     ]
   }));
 
-  app.patch("/api/repositories/:id/settings", async (request) => ({
-    id: (request.params as { id: string }).id,
-    updated: true,
-    settings: safe(request.body),
-    auditEvent: recordAuditEvent(state, {
-      organizationId: "org_local",
-      repositoryId: (request.params as { id: string }).id,
-      actor: "system",
-      action: "retention_changed",
-      targetType: "repository",
-      targetId: (request.params as { id: string }).id,
-      metadataJson: safe(request.body as Record<string, unknown>)
-    })
-  }));
+  app.patch("/api/repositories/:id/settings", async (request) => {
+    const actor = actorOrSystem(request);
+    return {
+      id: (request.params as { id: string }).id,
+      updated: true,
+      settings: safe(request.body),
+      auditEvent: recordAuditEvent(state, {
+        organizationId: "org_local",
+        repositoryId: (request.params as { id: string }).id,
+        actor: actor.login,
+        action: "retention_changed",
+        targetType: "repository",
+        targetId: (request.params as { id: string }).id,
+        metadataJson: { ...safe(request.body as Record<string, unknown>), actorRole: actor.role }
+      })
+    };
+  });
 
   app.get("/api/policy-packs", async () => ({ policyPacks: builtinPolicyPacks }));
   app.get("/api/policy-packs/:id", async (request, reply) => {
@@ -226,14 +230,15 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       return reply.code(400).send(validation);
     }
     const parsed = parsePolicyYaml(body.contentYaml ?? "");
+    const actor = actorOrSystem(request);
     recordAuditEvent(state, {
       organizationId: "org_local",
       repositoryId: (request.params as { id: string }).id,
-      actor: "system",
+      actor: actor.login,
       action: "policy_changed",
       targetType: "policy",
       targetId: parsed.contentHash,
-      metadataJson: { contentHash: parsed.contentHash }
+      metadataJson: { contentHash: parsed.contentHash, actorRole: actor.role }
     });
     return {
       repositoryId: (request.params as { id: string }).id,
@@ -326,8 +331,12 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (!record) {
       return reply.code(404).send({ error: "Change Control Record not found" });
     }
-    if (!body.kind || !body.content?.trim() || !body.actor) {
-      return reply.code(400).send({ error: "kind, content, and actor are required" });
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    if (!body.kind || !body.content?.trim()) {
+      return reply.code(400).send({ error: "kind and content are required" });
     }
     const evidenceContent = body.content;
     record.requiredEvidence = record.requiredEvidence.map((item) =>
@@ -336,7 +345,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
             ...item,
             status: "provided",
             source: "manual_attestation",
-            providedBy: body.actor,
+            providedBy: actor.login,
             providedAt: new Date().toISOString(),
             contentSummary: summarizeSafeSnippet(evidenceContent)
           }
@@ -347,19 +356,27 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       organizationId: record.organizationId,
       repositoryId: record.repositoryId,
       pullRequestId: record.id,
-      actor: body.actor,
+      actor: actor.login,
       action: "evidence_provided",
       targetType: "evidence_requirement",
       targetId: body.kind,
-      metadataJson: { kind: body.kind, source: "manual_attestation" }
+      metadataJson: { kind: body.kind, source: "manual_attestation", actorRole: actor.role }
     });
     return { evidence: safe(record.requiredEvidence) };
   });
 
   app.patch("/api/evidence/:id/approve", async (request, reply) => {
-    const body = request.body as { actor?: string };
-    if (!body.actor) {
-      return reply.code(400).send({ error: "actor is required" });
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const allowed = requireRole(
+      actor,
+      ["engineering_manager", "platform_admin", "security_reviewer"],
+      "Evidence approval"
+    );
+    if (!allowed.ok) {
+      return reply.code(allowed.statusCode).send({ error: allowed.reason });
     }
     for (const record of state.records) {
       const evidence = record.requiredEvidence.find(
@@ -367,18 +384,18 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       );
       if (evidence) {
         evidence.status = "approved";
-        evidence.approvedBy = body.actor;
+        evidence.approvedBy = actor.login;
         evidence.approvedAt = new Date().toISOString();
         record.updatedAt = new Date().toISOString();
         recordAuditEvent(state, {
           organizationId: record.organizationId,
           repositoryId: record.repositoryId,
           pullRequestId: record.id,
-          actor: body.actor,
+          actor: actor.login,
           action: "evidence_approved",
           targetType: "evidence_requirement",
           targetId: evidence.id,
-          metadataJson: { kind: evidence.kind }
+          metadataJson: { kind: evidence.kind, actorRole: actor.role }
         });
         return { evidence: safe(evidence) };
       }
@@ -387,28 +404,36 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   });
 
   app.patch("/api/reviewers/:id/approve", async (request, reply) => {
-    const body = request.body as { actor?: string };
-    if (!body.actor) {
-      return reply.code(400).send({ error: "actor is required" });
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
     }
     for (const record of state.records) {
       const reviewer = record.requiredReviewers.find(
         (item) => item.id === (request.params as { id: string }).id
       );
       if (reviewer) {
+        const canApprove =
+          actor.login === reviewer.reviewer ||
+          ["engineering_manager", "platform_admin", "security_reviewer"].includes(actor.role);
+        if (!canApprove) {
+          return reply
+            .code(403)
+            .send({ error: "Reviewer approval requires the reviewer or an authorized role." });
+        }
         reviewer.approved = true;
-        reviewer.approvedBy = body.actor;
+        reviewer.approvedBy = actor.login;
         reviewer.approvedAt = new Date().toISOString();
         record.updatedAt = new Date().toISOString();
         recordAuditEvent(state, {
           organizationId: record.organizationId,
           repositoryId: record.repositoryId,
           pullRequestId: record.id,
-          actor: body.actor,
+          actor: actor.login,
           action: "reviewer_approved",
           targetType: "reviewer_requirement",
           targetId: reviewer.id,
-          metadataJson: { reviewer: reviewer.reviewer, tier: reviewer.tier }
+          metadataJson: { reviewer: reviewer.reviewer, tier: reviewer.tier, actorRole: actor.role }
         });
         return { reviewer: safe(reviewer) };
       }
@@ -423,11 +448,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     }
     const policy = parsePolicyYaml(getPolicyPack("fintech")?.contentYaml ?? "").config;
     const body = request.body as {
-      actor?: string;
       actorRole?: string;
       reason?: string;
       scope?: "pr" | "finding" | "evidence" | "reviewer";
     };
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
     try {
       const output = applyOverride({
         record,
@@ -438,8 +466,8 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           audit: policy.overrides.audit
         },
         override: {
-          actor: body.actor ?? "unknown",
-          actorRole: body.actorRole ?? "",
+          actor: actor.login,
+          actorRole: actor.role,
           reason: body.reason,
           scope: body.scope ?? "pr"
         },
@@ -502,6 +530,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       format === "csv"
         ? exportChangeControlRecordsCsv(state.records, storagePolicy)
         : exportChangeControlRecordsJson(state.records, storagePolicy);
+    const actor = actorOrSystem(request);
     const job: ExportJob = {
       id: randomUUID(),
       status: "completed",
@@ -513,11 +542,11 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     state.exports.push(job);
     recordAuditEvent(state, {
       organizationId: "org_local",
-      actor: "system",
+      actor: actor.login,
       action: "record_exported",
       targetType: "change_control_records_export",
       targetId: job.id,
-      metadataJson: { format, recordCount: job.recordCount }
+      metadataJson: { format, recordCount: job.recordCount, actorRole: actor.role }
     });
     return reply.code(201).send({ id: job.id, status: job.status, recordCount: job.recordCount });
   });

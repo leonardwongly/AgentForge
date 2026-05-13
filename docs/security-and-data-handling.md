@@ -31,5 +31,6 @@ Audit readiness:
 
 - Every evaluated PR has an exportable Change Control Record with policy version, findings, evidence, reviewers, decision, and lifecycle state.
 - Override records include actor, role, reason, timestamp, scope, policy version, and PR-visible setting.
+- State-changing governance routes resolve actors from server-side request context headers in local V1 (`x-agentforge-actor` and `x-agentforge-role`), not from request-body role claims.
 - Audit events are emitted for policy changes, overrides, evidence updates, reviewer approvals, check publishing, exports, and retention changes.
 - JSON and CSV exports are sanitized through the same metadata-only storage policy used for dashboard/API output.

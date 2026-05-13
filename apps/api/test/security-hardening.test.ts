@@ -23,6 +23,13 @@ overrides:
   audit: true
 `;
 
+function actorHeaders(actor: string, role: string): Record<string, string> {
+  return {
+    "x-agentforge-actor": actor,
+    "x-agentforge-role": role
+  };
+}
+
 function sensitivePr(): PullRequestInput {
   return {
     repositoryFullName: "acme/payments",
@@ -139,6 +146,26 @@ describe("security and audit hardening", () => {
     expect("prompt" in prompt).toBe(false);
   });
 
+  it("requires server-resolved actor headers for manual evidence", async () => {
+    const { app, state } = await createPreviewRecord();
+    const record = state.records[0]!;
+    const evidence = record.requiredEvidence[0]!;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        actor: "spoofed-user",
+        kind: evidence.kind,
+        content: "Security note: provided without authenticated actor headers."
+      }),
+      headers: { "content-type": "application/json" }
+    });
+
+    expect(response.statusCode).toBe(401);
+    await app.close();
+  });
+
   it("rejects unauthorized overrides and records authorized override audit details", async () => {
     const { app, state } = await createPreviewRecord();
     const record = state.records[0]!;
@@ -147,12 +174,11 @@ describe("security and audit hardening", () => {
       method: "POST",
       url: `/api/pull-requests/${record.id}/override`,
       payload: JSON.stringify({
-        actor: "sam",
-        actorRole: "developer",
+        actorRole: "platform_admin",
         reason: "Need to merge",
         scope: "pr"
       }),
-      headers: { "content-type": "application/json" }
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
     });
     expect(unauthorized.statusCode).toBe(403);
 
@@ -160,12 +186,11 @@ describe("security and audit hardening", () => {
       method: "POST",
       url: `/api/pull-requests/${record.id}/override`,
       payload: JSON.stringify({
-        actor: "alex",
-        actorRole: "platform_admin",
+        actorRole: "developer",
         reason: "Release manager accepted the documented rollback window.",
         scope: "pr"
       }),
-      headers: { "content-type": "application/json" }
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
     expect(authorized.statusCode).toBe(201);
     expect(authorized.json().override).toMatchObject({
@@ -225,42 +250,44 @@ describe("security and audit hardening", () => {
       method: "PUT",
       url: "/api/repositories/repo_local/policy",
       payload: JSON.stringify({ contentYaml: policyYaml }),
-      headers: { "content-type": "application/json" }
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
     await app.inject({
       method: "PATCH",
       url: "/api/repositories/repo_local/settings",
       payload: JSON.stringify({ fullDiffRetention: "7d", sourceCodeStorage: false }),
-      headers: { "content-type": "application/json" }
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
     await app.inject({
       method: "POST",
       url: `/api/pull-requests/${record.id}/evidence`,
       payload: JSON.stringify({
-        actor: "sam",
         kind: evidence.kind,
         content: `Security note: token rotated, old value ${rawGithubToken} revoked.`
       }),
-      headers: { "content-type": "application/json" }
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
     });
     expect(JSON.stringify(state.records)).not.toContain(rawGithubToken);
     await app.inject({
       method: "PATCH",
       url: `/api/evidence/${evidence.id}/approve`,
-      payload: JSON.stringify({ actor: "alex" }),
-      headers: { "content-type": "application/json" }
+      payload: JSON.stringify({}),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
     await app.inject({
       method: "PATCH",
       url: `/api/reviewers/${reviewer.id}/approve`,
-      payload: JSON.stringify({ actor: "security-team" }),
-      headers: { "content-type": "application/json" }
+      payload: JSON.stringify({}),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("security-team", "security_reviewer")
+      }
     });
     await app.inject({
       method: "POST",
       url: "/api/exports/change-control-records",
       payload: JSON.stringify({ format: "json" }),
-      headers: { "content-type": "application/json" }
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
 
     const audit = await app.inject({ method: "GET", url: "/api/audit-events" });
