@@ -576,6 +576,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     };
     if (repositoryId) {
       evaluationInput.repositoryId = repositoryId;
+      const modeOverride = await getRepositoryModeOverride(state, prisma, repositoryId);
+      if (modeOverride) {
+        evaluationInput.modeOverride = modeOverride;
+      }
     }
     const output = evaluateFixturePr(evaluationInput);
     const record = await saveRecord(
@@ -1846,6 +1850,25 @@ async function findRepositoryIdByFullName(
     select: { id: true }
   });
   return repository?.id;
+}
+
+async function getRepositoryModeOverride(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  repositoryId: string
+): Promise<ChangeControlRecord["mode"] | undefined> {
+  const inMemory = state.repositorySettings.get(repositoryId)?.mode;
+  if (inMemory) {
+    return inMemory;
+  }
+  if (!prisma) {
+    return undefined;
+  }
+  const repository = await prisma.repository.findUnique({
+    where: { id: repositoryId },
+    select: { mode: true }
+  });
+  return repository?.mode ?? undefined;
 }
 
 function repositoryIdFromFullName(fullName: string): string {

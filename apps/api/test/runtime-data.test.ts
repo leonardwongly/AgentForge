@@ -118,6 +118,18 @@ describe("runtime data surfaces", () => {
     });
     const record = preview.json().record;
 
+    const savedPolicy = await app.inject({
+      method: "PUT",
+      url: `/api/repositories/${record.repositoryId}/policy`,
+      payload: JSON.stringify({ contentYaml: policyYaml }),
+      headers: {
+        "content-type": "application/json",
+        "x-agentforge-actor": "alex",
+        "x-agentforge-role": "platform_admin"
+      }
+    });
+    expect(savedPolicy.statusCode).toBe(200);
+
     const update = await app.inject({
       method: "PATCH",
       url: `/api/repositories/${record.repositoryId}/settings`,
@@ -198,6 +210,20 @@ describe("runtime data surfaces", () => {
           status: "complete"
         })
       ])
+    );
+
+    const activePolicyPreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ pr: pullRequest }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(activePolicyPreview.statusCode).toBe(200);
+    expect(activePolicyPreview.json().result).toEqual(
+      expect.objectContaining({
+        mode: "enforce",
+        status: "block"
+      })
     );
 
     const audit = await app.inject({
