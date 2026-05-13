@@ -294,8 +294,8 @@ export async function loadSettings(): Promise<{
 
 export function getDashboardSummary(records: DashboardRecord[] = []) {
   const evidenceItems = records.flatMap((item) => item.record.requiredEvidence);
-  const providedEvidence = evidenceItems.filter((item) => item.status !== "missing").length;
-  const missingEvidenceCount = evidenceItems.length - providedEvidence;
+  const approvedEvidence = evidenceItems.filter((item) => item.status === "approved").length;
+  const incompleteEvidenceCount = evidenceItems.length - approvedEvidence;
   const requiredReviewers = records.flatMap((item) =>
     item.record.requiredReviewers.filter((reviewer) => reviewer.tier === "required")
   );
@@ -307,7 +307,7 @@ export function getDashboardSummary(records: DashboardRecord[] = []) {
 
   return {
     blockedPrs: records.filter((item) => item.record.checkStatus === "block").length,
-    missingEvidence: missingEvidenceCount,
+    missingEvidence: incompleteEvidenceCount,
     pendingRequiredReviewers: pendingReviewers.length,
     overrides: overrides.length,
     policyFindings: records.flatMap((item) => item.record.verifiedFindings).length,
@@ -315,7 +315,7 @@ export function getDashboardSummary(records: DashboardRecord[] = []) {
     evidenceCompletion:
       evidenceItems.length === 0
         ? 100
-        : Math.round((providedEvidence / evidenceItems.length) * 100),
+        : Math.round((approvedEvidence / evidenceItems.length) * 100),
     overrideRate: records.length === 0 ? 0 : Math.round((overrides.length / records.length) * 100),
     evaluatedAt: records[0]?.record.updatedAt ?? new Date(0).toISOString()
   };
@@ -334,7 +334,7 @@ export function actionRequiredRecords(records: DashboardRecord[] = []): Dashboar
 }
 
 export function missingEvidence(record: ChangeControlRecord): EvidenceRequirement[] {
-  return record.requiredEvidence.filter((item) => item.status === "missing");
+  return record.requiredEvidence.filter((item) => item.status !== "approved");
 }
 
 export function pendingRequiredReviewers(record: ChangeControlRecord): ReviewerRequirement[] {
@@ -443,7 +443,10 @@ function decorateRecords(records: ChangeControlRecord[]): DashboardRecord[] {
         }
       ]
     };
-    if (record.decision?.status === "merged_after_override") {
+    if (
+      record.decision?.status === "override_approved" ||
+      record.decision?.status === "merged_after_override"
+    ) {
       item.override = {
         actor: record.decision.overrideBy ?? record.decision.decidedBy ?? "unknown",
         actorRole: "authorized",

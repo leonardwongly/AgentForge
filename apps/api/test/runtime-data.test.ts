@@ -58,7 +58,22 @@ describe("runtime data surfaces", () => {
       headers: { "content-type": "application/json" }
     });
     expect(preview.statusCode).toBe(200);
-    const record = preview.json().record;
+    expect(preview.json().persisted).toBe(false);
+    const stillEmptyRecords = await app.inject({ method: "GET", url: "/api/dashboard/records" });
+    expect(stillEmptyRecords.json().records).toEqual([]);
+
+    const persistedPreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest, persist: true }),
+      headers: {
+        "content-type": "application/json",
+        "x-agentforge-actor": "alex",
+        "x-agentforge-role": "platform_admin"
+      }
+    });
+    expect(persistedPreview.statusCode).toBe(200);
+    const record = persistedPreview.json().record;
     expect(record.repositoryFullName).toBe("runtime/payments");
     expect(record.repositoryId).toMatch(/^repo_[a-f0-9]{12}$/);
 
@@ -113,8 +128,12 @@ describe("runtime data surfaces", () => {
     const preview = await app.inject({
       method: "POST",
       url: "/api/policies/preview",
-      payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest }),
-      headers: { "content-type": "application/json" }
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest, persist: true }),
+      headers: {
+        "content-type": "application/json",
+        "x-agentforge-actor": "alex",
+        "x-agentforge-role": "platform_admin"
+      }
     });
     const record = preview.json().record;
 
@@ -251,8 +270,12 @@ describe("runtime data surfaces", () => {
     const first = await app.inject({
       method: "POST",
       url: "/api/policies/preview",
-      payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest }),
-      headers: { "content-type": "application/json" }
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest, persist: true }),
+      headers: {
+        "content-type": "application/json",
+        "x-agentforge-actor": "alex",
+        "x-agentforge-role": "platform_admin"
+      }
     });
     const secondPr: PullRequestInput = {
       ...pullRequest,
@@ -263,8 +286,12 @@ describe("runtime data surfaces", () => {
     const second = await app.inject({
       method: "POST",
       url: "/api/policies/preview",
-      payload: JSON.stringify({ contentYaml: policyYaml, pr: secondPr }),
-      headers: { "content-type": "application/json" }
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: secondPr, persist: true }),
+      headers: {
+        "content-type": "application/json",
+        "x-agentforge-actor": "alex",
+        "x-agentforge-role": "platform_admin"
+      }
     });
     const firstRecord = first.json().record;
     const secondRecord = second.json().record;
@@ -290,8 +317,12 @@ describe("runtime data surfaces", () => {
     const preview = await app.inject({
       method: "POST",
       url: "/api/policies/preview",
-      payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest }),
-      headers: { "content-type": "application/json" }
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest, persist: true }),
+      headers: {
+        "content-type": "application/json",
+        "x-agentforge-actor": "alex",
+        "x-agentforge-role": "platform_admin"
+      }
     });
     const record = preview.json().record;
 

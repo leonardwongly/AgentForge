@@ -41,7 +41,14 @@ const dependencyRuleSchema = z.object({
 });
 
 const databaseRuleSchema = z.object({
-  paths: z.array(z.string()).default(["db/migrations/**", "migrations/**"]),
+  paths: z
+    .array(z.string())
+    .default([
+      "db/migrations/**",
+      "migrations/**",
+      "prisma/migrations/**",
+      "**/prisma/migrations/**"
+    ]),
   required_reviewers: z.array(z.string()).default([]),
   required_evidence: z.array(evidenceKindSchema).default([]),
   action: actionSchema.default("block"),
@@ -145,7 +152,12 @@ export const policyConfigSchema = z.object({
   database: z
     .object({
       migrations: databaseRuleSchema.default({
-        paths: ["db/migrations/**", "migrations/**"],
+        paths: [
+          "db/migrations/**",
+          "migrations/**",
+          "prisma/migrations/**",
+          "**/prisma/migrations/**"
+        ],
         required_reviewers: ["database-owner"],
         required_evidence: ["rollback_plan", "migration_dry_run"],
         action: "block"
@@ -153,7 +165,12 @@ export const policyConfigSchema = z.object({
     })
     .default({
       migrations: {
-        paths: ["db/migrations/**", "migrations/**"],
+        paths: [
+          "db/migrations/**",
+          "migrations/**",
+          "prisma/migrations/**",
+          "**/prisma/migrations/**"
+        ],
         required_reviewers: ["database-owner"],
         required_evidence: ["rollback_plan", "migration_dry_run"],
         action: "block"

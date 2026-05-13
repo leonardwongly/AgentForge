@@ -10,6 +10,7 @@ import type {
   AuditEventRecord,
   ChangeControlRecord,
   EvidenceRequirement,
+  OverrideRecord,
   PullRequestInput
 } from "@agentforge/core";
 import { PrismaClient } from "@agentforge/db";
@@ -152,6 +153,13 @@ const repositorySettingsPatchSchema = z
     redactSecrets: z.boolean().optional(),
     llmFeatures: z.boolean().optional(),
     auditRecordRetentionDays: z.number().int().positive().max(3650).optional()
+  })
+  .strict();
+const policyPreviewSchema = z
+  .object({
+    contentYaml: z.string().optional(),
+    pr: z.custom<PullRequestInput>((value) => Boolean(value && typeof value === "object")),
+    persist: z.boolean().optional()
   })
   .strict();
 
@@ -566,7 +574,31 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   });
 
   app.post("/api/policies/preview", async (request, reply) => {
-    const body = request.body as { contentYaml?: string; pr?: PullRequestInput };
+    const parsedBody = policyPreviewSchema.safeParse(request.body ?? {});
+    if (!parsedBody.success) {
+      return reply.code(400).send({
+        error: "Invalid policy preview input",
+        details: parsedBody.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message
+        }))
+      });
+    }
+    const body = parsedBody.data;
+    if (body.persist) {
+      const actor = requireApiActor(request);
+      if (isAuthzFailure(actor)) {
+        return reply.code(actor.statusCode).send({ error: actor.reason });
+      }
+      const allowed = requireRole(
+        actor,
+        ["platform_admin", "engineering_manager"],
+        "Persisted policy preview"
+      );
+      if (!allowed.ok) {
+        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+      }
+    }
     const repositoryId = body.pr
       ? await findRepositoryIdByFullName(state, prisma, body.pr.repositoryFullName)
       : undefined;
@@ -597,6 +629,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       }
     }
     const output = evaluateFixturePr(evaluationInput);
+    if (!body.persist) {
+      return safe({ ...output, persisted: false });
+    }
+
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
     const record = await saveRecord(
       sanitizeChangeControlRecord(output.record, storagePolicy),
       body.pr
@@ -605,7 +645,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       organizationId: record.organizationId,
       repositoryId: record.repositoryId,
       pullRequestId: record.id,
-      actor: "system",
+      actor: actor.login,
       action: "check_published",
       targetType: "change_control_record",
       targetId: record.id,
@@ -613,10 +653,12 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         conclusion: output.checkRun.conclusion,
         status: output.result.status,
         mode: output.result.mode,
-        policyVersion: output.result.policyVersion
+        policyVersion: output.result.policyVersion,
+        previewPersisted: true,
+        actorRole: actor.role
       }
     });
-    return safe({ ...output, record });
+    return safe({ ...output, record, persisted: true });
   });
 
   app.get("/api/pull-requests", async () => ({
@@ -627,7 +669,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       headSha: record.headSha,
       mode: record.mode,
       checkStatus: record.checkStatus,
-      missingEvidence: record.requiredEvidence.filter((item) => item.status === "missing").length,
+      missingEvidence: record.requiredEvidence.filter((item) => item.status !== "approved").length,
       pendingReviewers: record.requiredReviewers.filter(
         (item) => item.tier === "required" && !item.approved
       ).length
@@ -726,9 +768,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         (item) => item.id === (request.params as { id: string }).id
       );
       if (evidence) {
-        evidence.status = "approved";
-        evidence.approvedBy = actor.login;
-        evidence.approvedAt = new Date().toISOString();
+        const approvedAt = new Date().toISOString();
+        for (const item of record.requiredEvidence) {
+          if (item.kind === evidence.kind) {
+            item.status = "approved";
+            item.approvedBy = actor.login;
+            item.approvedAt = approvedAt;
+          }
+        }
         const savedRecord = await saveRecord(recomputeRequirementStatus(record));
         await audit({
           organizationId: record.organizationId,
@@ -821,6 +868,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         pullRequestId: record.id
       });
       const savedRecord = await saveRecord(output.record);
+      await saveOverrideRecord(prisma, output.overrideRecord);
       if (output.auditEvent) {
         await saveAuditEvent(state, prisma, output.auditEvent);
       }
@@ -867,7 +915,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   }));
   app.get("/api/dashboard/evidence-completion", async () => {
     const evidence = (await listRecords()).flatMap((record) => record.requiredEvidence);
-    const complete = evidence.filter((item) => item.status !== "missing").length;
+    const complete = evidence.filter((item) => item.status === "approved").length;
     return {
       total: evidence.length,
       complete,
@@ -1537,12 +1585,145 @@ async function saveChangeControlRecord(
       ...changeControlRecordData(record)
     }
   });
+  await persistEvaluationSnapshot(prisma, {
+    organizationId: organization.id,
+    repositoryId: repository.id,
+    pullRequestId: pullRequest.id,
+    record
+  });
   const savedRecord = changeControlRecordFromRow({
     ...persisted,
     pullRequest: { repositoryId: repository.id }
   });
   rememberRecord(state, savedRecord);
   return savedRecord;
+}
+
+async function persistEvaluationSnapshot(
+  prisma: PrismaClient,
+  input: {
+    organizationId: string;
+    repositoryId: string;
+    pullRequestId: string;
+    record: ChangeControlRecord;
+  }
+): Promise<void> {
+  const policyVersion = await ensurePolicyVersionSnapshot(prisma, input);
+  const evaluation = await prisma.evaluation.create({
+    data: {
+      pullRequestId: input.pullRequestId,
+      policyVersionId: policyVersion.id,
+      mode: input.record.mode,
+      status: input.record.checkStatus,
+      headSha: input.record.headSha,
+      completedAt: new Date(input.record.updatedAt),
+      explanationJson: explainChangeControlRecord(input.record) as never
+    }
+  });
+  if (input.record.verifiedFindings.length > 0) {
+    await prisma.verifiedFactRecord.createMany({
+      data: input.record.verifiedFindings.map((fact) => ({
+        evaluationId: evaluation.id,
+        type: fact.type,
+        source: fact.source,
+        path: fact.path ?? null,
+        evidence: fact.evidence,
+        confidence: fact.confidence,
+        severity: fact.severity ?? null,
+        metadataJson: (fact.metadata ?? null) as never
+      }))
+    });
+  }
+  if (input.record.requiredEvidence.length > 0) {
+    await prisma.evidenceRequirementRecord.createMany({
+      data: input.record.requiredEvidence.map((evidence) => ({
+        evaluationId: evaluation.id,
+        kind: evidence.kind,
+        status: evidence.status,
+        source: evidence.source ?? null,
+        requiredByFindingId: evidence.requiredByFindingId,
+        providedBy: evidence.providedBy ?? null,
+        providedAt: evidence.providedAt ? new Date(evidence.providedAt) : null,
+        approvedBy: evidence.approvedBy ?? null,
+        approvedAt: evidence.approvedAt ? new Date(evidence.approvedAt) : null,
+        contentSummary: evidence.contentSummary ?? null
+      }))
+    });
+  }
+  if (input.record.requiredReviewers.length > 0) {
+    await prisma.reviewerRequirementRecord.createMany({
+      data: input.record.requiredReviewers.map((reviewer) => ({
+        evaluationId: evaluation.id,
+        reviewer: reviewer.reviewer,
+        reviewerType: reviewer.reviewerType,
+        tier: reviewer.tier,
+        reason: reviewer.reason,
+        triggeredByFindingId: reviewer.triggeredByFindingId,
+        clearsWhen: reviewer.clearsWhen ?? null,
+        approved: reviewer.approved,
+        approvedBy: reviewer.approvedBy ?? null,
+        approvedAt: reviewer.approvedAt ? new Date(reviewer.approvedAt) : null
+      }))
+    });
+  }
+  await prisma.checkRun.create({
+    data: {
+      evaluationId: evaluation.id,
+      conclusion: checkConclusionForRecord(input.record),
+      outputTitle: "AgentForge Merge Guard",
+      outputSummary: explainChangeControlRecord(input.record).join(" "),
+      updatedAt: new Date(input.record.updatedAt)
+    }
+  });
+}
+
+async function ensurePolicyVersionSnapshot(
+  prisma: PrismaClient,
+  input: {
+    organizationId: string;
+    repositoryId: string;
+    record: ChangeControlRecord;
+  }
+) {
+  const existing = await prisma.policyVersion.findFirst({
+    where: {
+      organizationId: input.organizationId,
+      repositoryId: input.repositoryId,
+      version: input.record.policyVersion
+    }
+  });
+  if (existing) {
+    return existing;
+  }
+  const policyPack = input.record.policyPackId
+    ? await prisma.policyPack.findUnique({ where: { id: input.record.policyPackId } })
+    : null;
+  return prisma.policyVersion.create({
+    data: {
+      organizationId: input.organizationId,
+      repositoryId: input.repositoryId,
+      policyPackId: policyPack?.id ?? null,
+      version: input.record.policyVersion,
+      mode: input.record.mode,
+      contentYaml: `# Runtime policy snapshot for ${input.record.repositoryFullName}#${input.record.pullRequestNumber}\n# Full policy content was not attached to this evaluation snapshot.`,
+      contentHash: createHash("sha256")
+        .update(`${input.record.policyVersion}:${input.record.policyPackId ?? ""}`)
+        .digest("hex"),
+      createdBy: "system"
+    }
+  });
+}
+
+function checkConclusionForRecord(
+  record: Pick<ChangeControlRecord, "mode" | "checkStatus">
+): "success" | "neutral" | "failure" {
+  if (record.mode === "observe") {
+    return "success";
+  }
+  if (record.mode === "warn") {
+    return "neutral";
+  }
+  return record.checkStatus === "block" ? "failure" : "success";
 }
 
 async function hasWebhookDelivery(
@@ -1724,6 +1905,38 @@ async function saveAuditEvent(
       targetId: event.targetId,
       metadataJson: event.metadataJson as never,
       createdAt: new Date(event.createdAt)
+    }
+  });
+}
+
+async function saveOverrideRecord(
+  prisma: PrismaClient | undefined,
+  override: OverrideRecord
+): Promise<void> {
+  if (!prisma) {
+    return;
+  }
+  const record = await prisma.changeControlRecord.findUnique({
+    where: { id: override.pullRequestId },
+    select: { pullRequestId: true }
+  });
+  if (!record) {
+    return;
+  }
+  await prisma.overrideRecord.upsert({
+    where: { id: override.id },
+    update: {},
+    create: {
+      id: override.id,
+      pullRequestId: record.pullRequestId,
+      evaluationId: null,
+      actor: override.actor,
+      actorRole: override.actorRole,
+      reason: override.reason,
+      scope: override.scope,
+      visibleInPr: override.visibleInPr,
+      policyVersion: override.policyVersion,
+      createdAt: new Date(override.createdAt)
     }
   });
 }
@@ -2017,7 +2230,7 @@ function onboardingStepsFromRuntime(input: {
 
 function dashboardSummary(records: ChangeControlRecord[]) {
   const evidence = records.flatMap((record) => record.requiredEvidence);
-  const complete = evidence.filter((item) => item.status !== "missing").length;
+  const complete = evidence.filter((item) => item.status === "approved").length;
   const agentAssisted = records.filter((record) =>
     record.verifiedFindings.some((finding) => finding.type === "agent_signal_detected")
   ).length;
@@ -2050,11 +2263,11 @@ function recomputeRequirementStatus(
     return { ...record, updatedAt: now };
   }
 
-  const hasMissingEvidence = record.requiredEvidence.some((item) => item.status === "missing");
+  const hasIncompleteEvidence = record.requiredEvidence.some((item) => item.status !== "approved");
   const hasPendingRequiredReview = record.requiredReviewers.some(
     (item) => item.tier === "required" && !item.approved
   );
-  const wouldBlock = hasMissingEvidence || hasPendingRequiredReview;
+  const wouldBlock = hasIncompleteEvidence || hasPendingRequiredReview;
   const checkStatus =
     record.mode === "observe"
       ? "pass"

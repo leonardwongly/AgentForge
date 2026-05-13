@@ -111,7 +111,13 @@ export type ChangeControlRecord = {
     | "merged"
     | "closed";
   decision?: {
-    status: "passed" | "blocked" | "merged" | "merged_after_override" | "closed_without_merge";
+    status:
+      | "passed"
+      | "blocked"
+      | "override_approved"
+      | "merged"
+      | "merged_after_override"
+      | "closed_without_merge";
     decidedAt?: string | undefined;
     decidedBy?: string | undefined;
     overrideBy?: string | undefined;

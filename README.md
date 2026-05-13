@@ -102,6 +102,8 @@ Copy `.env.example` to `.env` and fill in values. The defaults are safe for loca
 - `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS`: Set `true` only when a trusted auth proxy injects `x-agentforge-authenticated-actor` and `x-agentforge-authenticated-role`.
 - `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR`: Explicit production-like local fallback for `AGENTFORGE_DASHBOARD_ACTOR` / `AGENTFORGE_DASHBOARD_ROLE`. Keep `false` for deployed environments.
 
+When `NODE_ENV=production`, startup fails closed if `GITHUB_WEBHOOK_SECRET` is missing, unsigned webhooks are enabled, source-code storage is enabled, or secret redaction is disabled.
+
 ## GitHub App Setup
 
 Create a GitHub App with these webhook events:
@@ -157,7 +159,7 @@ Mode can be set at organization, repository, and rule level. The evaluator resol
 
 ## Policy Files
 
-Policies are YAML files validated with zod. A policy pack includes mode, sensitive paths, tests, dependencies, database migrations, reviewers, evidence requirements, overrides, and data-retention defaults.
+Policies are YAML files validated with zod. A policy pack includes mode, scoped applicability, sensitive paths, tests, dependencies, database migrations, reviewers, evidence requirements, overrides, and data-retention defaults.
 
 Example:
 
@@ -184,9 +186,13 @@ pnpm policy:validate fixtures/policies/fintech.yaml
 pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.json
 ```
 
+`agentforge.apply_to` supports `all_pull_requests`, `repo:<glob>`, `base:<glob>`, `head:<glob>`, `branch:<glob>`, and `label:<glob>`. API policy previews are read-only by default; persisting preview-generated Change Control Records requires `persist: true` plus a server-resolved `platform_admin` or `engineering_manager` actor.
+
 ## Change Control Records
 
 Every evaluated PR receives a structured Change Control Record with repository, PR number, head SHA, policy version, policy pack version, mode, verified findings, evidence requirements, reviewer requirements, check status, overrides, final decision, timestamps, and lifecycle transitions.
+
+Runtime evaluations are also normalized into policy-version, evaluation, verified-fact, evidence-requirement, reviewer-requirement, check-run, and override tables for audit queries. Evidence counts as complete only after approval; provided-but-unapproved evidence remains open.
 
 Records are exportable as JSON and CSV and intentionally exclude full source code by default.
 

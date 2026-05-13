@@ -37,6 +37,8 @@ Set these values before launch:
 
 Keep `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=false` in every shared or deployed environment.
 
+In production, configuration loading fails closed when the webhook secret is missing, unsigned webhooks are enabled, source-code storage is enabled, or secret redaction is disabled.
+
 ## Auth Proxy Contract
 
 Deploy the dashboard/API behind an authenticated ingress. The ingress must strip untrusted client-supplied actor headers and inject trusted identity headers only after authentication:
@@ -105,7 +107,8 @@ Then create a test PR that changes a sensitive path and confirm:
 - the webhook delivery is accepted once and duplicates are ignored;
 - the worker fetches changed files from GitHub;
 - the `AgentForge Merge Guard` check is published;
-- the Change Control Record includes deterministic findings, required evidence, reviewers, mode, and decision;
+- the Change Control Record includes deterministic findings, approved-or-open evidence, reviewers, mode, override history, and decision;
+- the normalized evaluation, fact, evidence, reviewer, check-run, and override rows are written;
 - no source code, raw patches, secrets, or private key material appears in records, dashboard responses, logs, or exports.
 
 ## Queue Operations

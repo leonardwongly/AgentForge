@@ -20,6 +20,8 @@ It captures:
 - override details
 - timestamps
 
+Normalized runtime tables mirror the record into policy-version, evaluation, verified-fact, evidence-requirement, reviewer-requirement, check-run, and override rows. The JSON Change Control Record remains the authoritative export shape; normalized rows make audit queries and dashboard aggregation deterministic.
+
 Lifecycle states:
 
 - `opened`
@@ -40,6 +42,7 @@ Audit use cases:
 
 - reconstruct why a PR was blocked
 - show which evidence was missing
+- show which evidence was provided but not approved
 - show which reviewer was required
 - prove which policy version was applied
 - record authorized override actor, role, reason, scope, and timestamp

@@ -223,6 +223,43 @@ describe("github integration", () => {
     });
   });
 
+  it("attributes fork pull requests to the governed base repository", async () => {
+    const client: GithubAdapterClient = {
+      pulls: {
+        get: async () => ({
+          data: {
+            number: 7,
+            title: "Forked change",
+            user: { login: "outside-contributor" },
+            base: {
+              ref: "main",
+              sha: "base-sha",
+              repo: { full_name: "acme/payments" }
+            },
+            head: {
+              ref: "feature/fork",
+              sha: "head-sha",
+              repo: { full_name: "contributor/payments-fork" }
+            }
+          }
+        }),
+        listFiles: async () => ({ data: [] }),
+        listReviews: async () => ({ data: [] }),
+        listCommits: async () => ({ data: [] })
+      }
+    };
+
+    const pr = await fetchPullRequestInputFromGithub({
+      client,
+      owner: "acme",
+      repo: "payments",
+      pullNumber: 7
+    });
+
+    expect(pr.repositoryFullName).toBe("acme/payments");
+    expect(pr.headBranch).toBe("feature/fork");
+  });
+
   it("maps warn mode to neutral check conclusion", () => {
     const result: PolicyResult = {
       mode: "warn",

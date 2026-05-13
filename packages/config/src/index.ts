@@ -79,7 +79,7 @@ export type AgentForgeConfig = {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConfig {
   const parsed = envSchema.parse(withDotEnvDefaults(env));
   const localRuntime = parsed.NODE_ENV !== "production";
-  return {
+  const config = {
     databaseUrl: parsed.DATABASE_URL ?? (localRuntime ? LOCAL_DATABASE_URL : undefined),
     redisUrl: parsed.REDIS_URL ?? (localRuntime ? LOCAL_REDIS_URL : undefined),
     nodeEnv: parsed.NODE_ENV,
@@ -103,6 +103,30 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConf
     exportStorageRegion: parsed.EXPORT_STORAGE_REGION,
     sessionSecret: parsed.SESSION_SECRET
   };
+  validateProductionConfig(config);
+  return config;
+}
+
+function validateProductionConfig(config: AgentForgeConfig): void {
+  if (config.nodeEnv !== "production") {
+    return;
+  }
+  const errors: string[] = [];
+  if (!config.github.webhookSecret) {
+    errors.push("GITHUB_WEBHOOK_SECRET is required in production.");
+  }
+  if (config.github.allowUnsignedWebhooks) {
+    errors.push("ALLOW_UNSIGNED_GITHUB_WEBHOOKS must be false in production.");
+  }
+  if (config.sourceCodeStorage) {
+    errors.push("SOURCE_CODE_STORAGE must remain false in production.");
+  }
+  if (!config.redactSecrets) {
+    errors.push("REDACT_SECRETS must remain true in production.");
+  }
+  if (errors.length > 0) {
+    throw new Error(`Unsafe AgentForge production configuration: ${errors.join(" ")}`);
+  }
 }
 
 function withDotEnvDefaults(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {

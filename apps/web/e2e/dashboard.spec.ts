@@ -12,7 +12,11 @@ async function seedMergeGuardRecord(request: APIRequestContext): Promise<ChangeC
   ]);
   const pr = JSON.parse(rawPr) as PullRequestInput;
   const preview = await request.post(`${apiBaseUrl}/api/policies/preview`, {
-    data: { pr, contentYaml }
+    data: { pr, contentYaml, persist: true },
+    headers: {
+      "x-agentforge-actor": "playwright",
+      "x-agentforge-role": "platform_admin"
+    }
   });
   expect(preview.ok()).toBeTruthy();
   const payload = (await preview.json()) as { record: ChangeControlRecord };

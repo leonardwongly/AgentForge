@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Play, ShieldCheck } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 import { MetricCard, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../../data-source-notice";
 import {
@@ -34,9 +34,6 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
             optimize.
           </p>
         </div>
-        <button className="button button--primary" type="button">
-          <Play size={16} aria-hidden="true" /> Run preview
-        </button>
       </header>
 
       <section className="page">

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Save, ShieldCheck, WandSparkles } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
 import { loadPolicyYaml } from "../../../data";
+import { saveRepositoryPolicy } from "./actions";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -21,10 +22,7 @@ export default async function PolicyEditorPage({ params }: PageProps) {
           </p>
         </div>
         <div className="control-row">
-          <button className="button" type="button">
-            <ShieldCheck size={16} aria-hidden="true" /> Validate
-          </button>
-          <button className="button button--primary" type="button">
+          <button className="button button--primary" form="policy-editor-form" type="submit">
             <Save size={16} aria-hidden="true" /> Save new version
           </button>
         </div>
@@ -71,16 +69,20 @@ export default async function PolicyEditorPage({ params }: PageProps) {
                 <WandSparkles size={16} aria-hidden="true" /> Preview
               </Link>
             </div>
-            {policy.policy ? (
-              <pre className="code-pane">{policy.policy}</pre>
-            ) : (
-              <div className="empty-state">
-                <h3>No active repository policy</h3>
-                <p>
-                  Create or assign a policy version before previewing repository-specific rules.
-                </p>
-              </div>
-            )}
+            <form
+              action={saveRepositoryPolicy}
+              className="policy-editor-form"
+              id="policy-editor-form"
+            >
+              <input name="repositoryId" type="hidden" value={id} />
+              <textarea
+                aria-label="Repository policy YAML"
+                className="code-pane code-pane--editor"
+                defaultValue={policy.policy}
+                name="contentYaml"
+                spellCheck={false}
+              />
+            </form>
           </section>
 
           <div className="bar-list">

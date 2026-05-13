@@ -206,7 +206,7 @@ export async function fetchPullRequestInputFromGithub(input: {
   const baseSha = stringValue(recordValue(base?.commit)?.sha) ?? stringValue(base?.sha);
   const headSha = stringValue(recordValue(head?.commit)?.sha) ?? stringValue(head?.sha) ?? "";
   const repositoryFullName =
-    stringValue(recordValue(head?.repo)?.full_name) ?? `${input.owner}/${input.repo}`;
+    stringValue(recordValue(base?.repo)?.full_name) ?? `${input.owner}/${input.repo}`;
   const changedFiles = await Promise.all(
     files.map((file) =>
       githubChangedFileToInput({

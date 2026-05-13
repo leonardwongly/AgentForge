@@ -246,6 +246,7 @@ model OverrideRecord {
   reason        String
   scope         String
   visibleInPr   Boolean     @default(true)
+  policyVersion String
   createdAt     DateTime    @default(now())
   pullRequest   PullRequest @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
   evaluation    Evaluation? @relation(fields: [evaluationId], references: [id], onDelete: SetNull)

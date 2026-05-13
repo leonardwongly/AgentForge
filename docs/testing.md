@@ -2,11 +2,11 @@
 
 Test layers:
 
-- Unit tests for policy parsing, validation, mode resolution, detectors, evidence, reviewer routing, status mapping, redaction, overrides, and records.
+- Unit tests for policy parsing, validation, applicability scoping, mode resolution, detectors, evidence, reviewer routing, status mapping, redaction, overrides, and records.
 - Integration tests for webhook ingestion, duplicate delivery handling, policy preview, evidence updates, override flow, and export flow.
 - End-to-end tests for dashboard rendering and primary navigation.
 - Performance sanity tests for large changed-file lists and repeated synchronize events.
-- Security tests for webhook signature validation, redaction, LLM disabled mode, unauthorized override rejection, and source-excluding exports.
+- Security tests for webhook signature validation, read-only previews, redaction, LLM disabled mode, unauthorized override rejection, and source-excluding exports.
 
 Fixture scenarios live under `fixtures/repos`:
 

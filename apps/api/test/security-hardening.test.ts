@@ -63,11 +63,15 @@ function sensitivePr(): PullRequestInput {
 async function createPreviewRecord() {
   const state = createInitialState();
   const app = createApp(state);
+  const headers =
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS === "true"
+      ? authenticatedActorHeaders("alex", "platform_admin")
+      : actorHeaders("alex", "platform_admin");
   const response = await app.inject({
     method: "POST",
     url: "/api/policies/preview",
-    payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr() }),
-    headers: { "content-type": "application/json" }
+    payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr(), persist: true }),
+    headers: { "content-type": "application/json", ...headers }
   });
   expect(response.statusCode).toBe(200);
   return { app, state, response };
@@ -90,6 +94,32 @@ afterEach(() => {
 });
 
 describe("security and audit hardening", () => {
+  it("keeps unauthenticated policy preview read-only and rejects unauthenticated persistence", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr() }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json().persisted).toBe(false);
+    expect(state.records).toHaveLength(0);
+    expect(state.auditEvents).toHaveLength(0);
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr(), persist: true }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(rejected.statusCode).toBe(401);
+    expect(state.records).toHaveLength(0);
+    await app.close();
+  });
+
   it("rejects invalid GitHub webhook signatures", async () => {
     process.env.GITHUB_WEBHOOK_SECRET = "secret";
     const app = createApp(createInitialState());
@@ -189,7 +219,10 @@ describe("security and audit hardening", () => {
 
   it("rejects raw local actor headers in production unless explicitly allowed", async () => {
     process.env.NODE_ENV = "production";
+    process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
+    process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS = "true";
     const { app, state } = await createPreviewRecord();
+    delete process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS;
     const record = state.records[0]!;
     const evidence = record.requiredEvidence[0]!;
 
@@ -220,6 +253,7 @@ describe("security and audit hardening", () => {
 
   it("accepts authenticated proxy actor headers in production when proxy trust is enabled", async () => {
     process.env.NODE_ENV = "production";
+    process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
     process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
     const { app, state } = await createPreviewRecord();
     const record = state.records[0]!;

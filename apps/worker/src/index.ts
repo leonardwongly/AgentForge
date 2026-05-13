@@ -22,7 +22,11 @@ import {
   parsePolicyYaml,
   type PolicyConfig
 } from "@agentforge/policy";
-import { createAuditEvent, createChangeControlRecord } from "@agentforge/records";
+import {
+  createAuditEvent,
+  createChangeControlRecord,
+  explainChangeControlRecord
+} from "@agentforge/records";
 import { sanitizeForMetadataStorage, type MetadataStoragePolicy } from "@agentforge/security";
 
 type CheckPublisher = (input: {
@@ -600,6 +604,15 @@ async function persistWorkerRecord(input: {
       updatedAt: new Date(record.updatedAt)
     }
   });
+  await persistWorkerEvaluationSnapshot({
+    prisma,
+    organizationId: organization.id,
+    repositoryId: repository.id,
+    pullRequestId: pullRequest.id,
+    record,
+    checkConclusion,
+    publishedCheckRunId
+  });
 
   const audit = createAuditEvent({
     organizationId: organization.id,
@@ -631,6 +644,120 @@ async function persistWorkerRecord(input: {
       targetId: audit.targetId,
       metadataJson: audit.metadataJson as never,
       createdAt: new Date(audit.createdAt)
+    }
+  });
+}
+
+async function persistWorkerEvaluationSnapshot(input: {
+  prisma: PrismaClient;
+  organizationId: string;
+  repositoryId: string;
+  pullRequestId: string;
+  record: ChangeControlRecord;
+  checkConclusion: string;
+  publishedCheckRunId?: number | undefined;
+}): Promise<void> {
+  const policyVersion = await ensureWorkerPolicyVersionSnapshot(input);
+  const evaluation = await input.prisma.evaluation.create({
+    data: {
+      pullRequestId: input.pullRequestId,
+      policyVersionId: policyVersion.id,
+      mode: input.record.mode,
+      status: input.record.checkStatus,
+      headSha: input.record.headSha,
+      completedAt: new Date(input.record.updatedAt),
+      explanationJson: explainChangeControlRecord(input.record) as never
+    }
+  });
+  if (input.record.verifiedFindings.length > 0) {
+    await input.prisma.verifiedFactRecord.createMany({
+      data: input.record.verifiedFindings.map((fact) => ({
+        evaluationId: evaluation.id,
+        type: fact.type,
+        source: fact.source,
+        path: fact.path ?? null,
+        evidence: fact.evidence,
+        confidence: fact.confidence,
+        severity: fact.severity ?? null,
+        metadataJson: (fact.metadata ?? null) as never
+      }))
+    });
+  }
+  if (input.record.requiredEvidence.length > 0) {
+    await input.prisma.evidenceRequirementRecord.createMany({
+      data: input.record.requiredEvidence.map((evidence) => ({
+        evaluationId: evaluation.id,
+        kind: evidence.kind,
+        status: evidence.status,
+        source: evidence.source ?? null,
+        requiredByFindingId: evidence.requiredByFindingId,
+        providedBy: evidence.providedBy ?? null,
+        providedAt: evidence.providedAt ? new Date(evidence.providedAt) : null,
+        approvedBy: evidence.approvedBy ?? null,
+        approvedAt: evidence.approvedAt ? new Date(evidence.approvedAt) : null,
+        contentSummary: evidence.contentSummary ?? null
+      }))
+    });
+  }
+  if (input.record.requiredReviewers.length > 0) {
+    await input.prisma.reviewerRequirementRecord.createMany({
+      data: input.record.requiredReviewers.map((reviewer) => ({
+        evaluationId: evaluation.id,
+        reviewer: reviewer.reviewer,
+        reviewerType: reviewer.reviewerType,
+        tier: reviewer.tier,
+        reason: reviewer.reason,
+        triggeredByFindingId: reviewer.triggeredByFindingId,
+        clearsWhen: reviewer.clearsWhen ?? null,
+        approved: reviewer.approved,
+        approvedBy: reviewer.approvedBy ?? null,
+        approvedAt: reviewer.approvedAt ? new Date(reviewer.approvedAt) : null
+      }))
+    });
+  }
+  await input.prisma.checkRun.create({
+    data: {
+      evaluationId: evaluation.id,
+      githubCheckRunId: input.publishedCheckRunId ? BigInt(input.publishedCheckRunId) : null,
+      conclusion: input.checkConclusion,
+      outputTitle: "AgentForge Merge Guard",
+      outputSummary: explainChangeControlRecord(input.record).join(" "),
+      updatedAt: new Date(input.record.updatedAt)
+    }
+  });
+}
+
+async function ensureWorkerPolicyVersionSnapshot(input: {
+  prisma: PrismaClient;
+  organizationId: string;
+  repositoryId: string;
+  record: ChangeControlRecord;
+}) {
+  const existing = await input.prisma.policyVersion.findFirst({
+    where: {
+      organizationId: input.organizationId,
+      repositoryId: input.repositoryId,
+      version: input.record.policyVersion
+    }
+  });
+  if (existing) {
+    return existing;
+  }
+  const policyPack = input.record.policyPackId
+    ? await input.prisma.policyPack.findUnique({ where: { id: input.record.policyPackId } })
+    : null;
+  return input.prisma.policyVersion.create({
+    data: {
+      organizationId: input.organizationId,
+      repositoryId: input.repositoryId,
+      policyPackId: policyPack?.id ?? null,
+      version: input.record.policyVersion,
+      mode: input.record.mode,
+      contentYaml: `# Runtime policy snapshot for ${input.record.repositoryFullName}#${input.record.pullRequestNumber}\n# Full policy content was not attached to this evaluation snapshot.`,
+      contentHash: createHash("sha256")
+        .update(`${input.record.policyVersion}:${input.record.policyPackId ?? ""}`)
+        .digest("hex"),
+      createdBy: "system"
     }
   });
 }

@@ -27,13 +27,24 @@ const defaultOptions: Required<DetectorOptions> = {
 
 const defaultCiWorkflowPaths = [
   ".github/workflows/**",
+  ".gitlab-ci.yml",
   "scripts/deploy/**",
   "infra/prod/**",
   "deployment/**",
   "ci/**",
   "buildkite/**",
   ".circleci/**",
-  "Jenkinsfile"
+  "Jenkinsfile",
+  "Dockerfile",
+  "docker-compose.yml",
+  "compose.yml",
+  "helm/**",
+  "k8s/**",
+  "kubernetes/**",
+  "terraform/**",
+  "pulumi/**",
+  "netlify.toml",
+  "vercel.json"
 ];
 
 const defaultMigrationPaths = [
@@ -41,6 +52,8 @@ const defaultMigrationPaths = [
   "migrations/**",
   "database/migrations/**",
   "prisma/migrations/**",
+  "**/prisma/migrations/**",
+  "packages/*/prisma/migrations/**",
   "alembic/versions/**"
 ];
 
@@ -94,7 +107,7 @@ export function detectorConfigFromPolicy(policy: {
   return {
     sensitivePaths: policy.sensitive_paths ?? {},
     migrationPaths: policy.database?.migrations?.paths ?? defaultMigrationPaths,
-    ciWorkflowPaths: defaultCiWorkflowPaths
+    ciWorkflowPaths: policy.sensitive_paths?.ci_and_deploy?.paths ?? defaultCiWorkflowPaths
   };
 }
 
@@ -109,16 +122,17 @@ export function detectSensitivePathChanges(
       if (ruleId === "ci_and_deploy") {
         continue;
       }
-      if (matchesAnyPath(file.filename, rule.paths)) {
+      const matchedPath = matchingGovernedPath(file, rule.paths);
+      if (matchedPath) {
         facts.push(
           makeFact({
             type: "sensitive_path_changed",
             source: "github_diff",
-            path: file.filename,
-            evidence: `Changed path matched ${ruleId} policy: ${file.filename}`,
+            path: matchedPath,
+            evidence: `Changed path matched ${ruleId} policy: ${matchedPath}`,
             confidence: "verified",
             severity: "high",
-            metadata: { ruleId, agentAssisted }
+            metadata: { ruleId, agentAssisted, currentFilename: file.filename }
           })
         );
       }
@@ -134,16 +148,23 @@ export function detectCiWorkflowChanges(
 ): VerifiedFact[] {
   return dedupeFacts(
     files
-      .filter((file) => matchesAnyPath(file.filename, paths))
+      .map((file) => ({ file, matchedPath: matchingGovernedPath(file, paths) }))
+      .filter((item): item is { file: ChangedFile; matchedPath: string } =>
+        Boolean(item.matchedPath)
+      )
       .map((file) =>
         makeFact({
           type: "ci_workflow_changed",
           source: "github_diff",
-          path: file.filename,
-          evidence: `CI or deployment path changed: ${file.filename}`,
+          path: file.matchedPath,
+          evidence: `CI or deployment path changed: ${file.matchedPath}`,
           confidence: "verified",
           severity: "high",
-          metadata: { ruleId: "ci_and_deploy", agentAssisted }
+          metadata: {
+            ruleId: "ci_and_deploy",
+            agentAssisted,
+            currentFilename: file.file.filename
+          }
         })
       )
   );
@@ -224,7 +245,13 @@ export function detectDependencyChanges(files: ChangedFile[]): VerifiedFact[] {
     if (file.filename.endsWith("package.json")) {
       facts.push(...detectPackageJsonDependencyChanges(file));
     } else if (file.filename.endsWith("requirements.txt")) {
-      facts.push(...detectRequirementsChanges(file));
+      facts.push(
+        ...(file.currentContent
+          ? detectRequirementsChanges(file)
+          : detectDependencyChangesFromPatch(file))
+      );
+    } else if (file.filename.endsWith("pyproject.toml")) {
+      facts.push(...detectDependencyChangesFromPatch(file));
     } else if (
       ["pnpm-lock.yaml", "package-lock.json", "yarn.lock", "poetry.lock"].some((name) =>
         file.filename.endsWith(name)
@@ -254,15 +281,21 @@ export function detectMigrationChanges(
 ): VerifiedFact[] {
   return dedupeFacts(
     files
-      .filter((file) => file.status === "added" && matchesAnyPath(file.filename, paths))
+      .map((file) => ({ file, matchedPath: matchingGovernedPath(file, paths) }))
+      .filter(
+        (item): item is { file: ChangedFile; matchedPath: string } =>
+          Boolean(item.matchedPath) &&
+          ["added", "modified", "removed", "renamed", "changed"].includes(item.file.status)
+      )
       .map((file) =>
         makeFact({
           type: "migration_added",
           source: "github_diff",
-          path: file.filename,
-          evidence: `Database migration added: ${file.filename}`,
+          path: file.matchedPath,
+          evidence: `Database migration ${file.file.status}: ${file.matchedPath}`,
           confidence: "verified",
-          severity: "high"
+          severity: "high",
+          metadata: { status: file.file.status, currentFilename: file.file.filename }
         })
       )
   );
@@ -344,7 +377,7 @@ export function detectSecretLikeValues(
 
 function detectPackageJsonDependencyChanges(file: ChangedFile): VerifiedFact[] {
   if (!file.currentContent) {
-    return [];
+    return detectDependencyChangesFromPatch(file);
   }
   const before = parsePackageJsonDeps(file.previousContent ?? "{}");
   const after = parsePackageJsonDeps(file.currentContent);
@@ -381,6 +414,51 @@ function detectPackageJsonDependencyChanges(file: ChangedFile): VerifiedFact[] {
             before: previous,
             after: version,
             majorVersionBump: Boolean(major)
+          }
+        })
+      );
+    }
+  }
+  return facts;
+}
+
+function detectDependencyChangesFromPatch(file: ChangedFile): VerifiedFact[] {
+  const patch = file.patch ?? "";
+  const added = parseDependencyLinesFromPatch(patch, "+");
+  const removed = parseDependencyLinesFromPatch(patch, "-");
+  const facts: VerifiedFact[] = [];
+  for (const [name, version] of added.entries()) {
+    const previous = removed.get(name);
+    if (!previous) {
+      facts.push(
+        makeFact({
+          type: "dependency_added",
+          source: "manifest_parser",
+          path: file.filename,
+          evidence: `${name}@${version}`,
+          confidence: "observed",
+          severity: "medium",
+          metadata: { package: name, version, patchOnly: true }
+        })
+      );
+    } else if (previous !== version) {
+      const beforeSemver = coerceVersion(previous);
+      const afterSemver = coerceVersion(version);
+      const major = beforeSemver && afterSemver && afterSemver.major > beforeSemver.major;
+      facts.push(
+        makeFact({
+          type: "dependency_bumped",
+          source: "manifest_parser",
+          path: file.filename,
+          evidence: `${name} changed from ${previous} to ${version}`,
+          confidence: "observed",
+          severity: major ? "high" : "medium",
+          metadata: {
+            package: name,
+            before: previous,
+            after: version,
+            majorVersionBump: Boolean(major),
+            patchOnly: true
           }
         })
       );
@@ -513,6 +591,37 @@ function boundedPatch(patch: string | undefined, maxPatchBytes: number): string 
 
 function matchesAnyPath(path: string, patterns: string[]): boolean {
   return patterns.some((pattern) => minimatch(path, pattern, { dot: true }));
+}
+
+function matchingGovernedPath(file: ChangedFile, patterns: string[]): string | undefined {
+  if (matchesAnyPath(file.filename, patterns)) {
+    return file.filename;
+  }
+  if (file.previousFilename && matchesAnyPath(file.previousFilename, patterns)) {
+    return file.previousFilename;
+  }
+  return undefined;
+}
+
+function parseDependencyLinesFromPatch(patch: string, prefix: "+" | "-"): Map<string, string> {
+  const dependencies = new Map<string, string>();
+  for (const rawLine of patch.split(/\r?\n/)) {
+    if (!rawLine.startsWith(prefix) || rawLine.startsWith(`${prefix}${prefix}${prefix}`)) {
+      continue;
+    }
+    const line = rawLine.slice(1).trim();
+    const jsonMatch = /^"(?<name>@?[\w./-]+)"\s*:\s*"(?<version>[^"]+)"/u.exec(line);
+    if (jsonMatch?.groups?.name && jsonMatch.groups.version) {
+      dependencies.set(jsonMatch.groups.name, jsonMatch.groups.version);
+      continue;
+    }
+    const requirementMatch =
+      /^(?<name>[A-Za-z0-9_.-]+)(?:==|>=|~=|<=|>|<)(?<version>[^;\s#]+)/u.exec(line);
+    if (requirementMatch?.groups?.name && requirementMatch.groups.version) {
+      dependencies.set(requirementMatch.groups.name.toLowerCase(), requirementMatch.groups.version);
+    }
+  }
+  return dependencies;
 }
 
 function agentSignal(signal: string, evidence: string): VerifiedFact {
