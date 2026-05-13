@@ -1,19 +1,32 @@
 import { Download, GitBranch, Save, ShieldCheck } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
-import { loadSettings } from "../data";
+import { loadSettings, type SettingsData } from "../data";
+import { saveRepositorySettings } from "./actions";
 
-export default async function SettingsPage() {
+type SettingsPageProps = {
+  searchParams?: Promise<{ updated?: string; error?: string }>;
+};
+
+export default async function SettingsPage({ searchParams }: SettingsPageProps) {
+  const params = await searchParams;
   const { settings, source, message } = await loadSettings();
   const enabledRepositories =
     settings?.repositories.filter((repository) => repository.enabled) ?? [];
-  const defaultMode = enabledRepositories[0]?.mode ?? settings?.repositories[0]?.mode;
-  const dataHandlingRows = settings
+  const selectedRepository = enabledRepositories[0] ?? settings?.repositories[0];
+  const selectedHandling = selectedRepository?.dataHandling ?? settings?.dataHandling;
+  const defaultMode = selectedRepository?.mode;
+  const repositoryOwnerMappings =
+    settings?.ownerMappings.filter((mapping) =>
+      selectedRepository ? mapping.sources.includes(selectedRepository.id) : true
+    ) ?? [];
+  const ownerMappingRows = ownerRows(repositoryOwnerMappings);
+  const dataHandlingRows = selectedHandling
     ? [
-        ["Source code storage", settings.dataHandling.sourceCodeStorage ? "enabled" : "disabled"],
-        ["Full diff retention", settings.dataHandling.fullDiffRetention],
-        ["Secret redaction", settings.dataHandling.redactSecrets ? "enabled" : "disabled"],
-        ["LLM advisory features", settings.dataHandling.llmFeatures ? "enabled" : "disabled"],
-        ["Audit record retention", `${settings.dataHandling.auditRecordRetentionDays} days`]
+        ["Source code storage", selectedHandling.sourceCodeStorage ? "enabled" : "disabled"],
+        ["Full diff retention", selectedHandling.fullDiffRetention],
+        ["Secret redaction", selectedHandling.redactSecrets ? "enabled" : "disabled"],
+        ["LLM advisory features", selectedHandling.llmFeatures ? "enabled" : "disabled"],
+        ["Audit record retention", `${selectedHandling.auditRecordRetentionDays} days`]
       ]
     : [];
 
@@ -26,12 +39,36 @@ export default async function SettingsPage() {
             GitHub installation, repositories, retention, LLM controls, roles, and audit exports.
           </p>
         </div>
-        <button className="button button--primary" type="button">
+        <button
+          className="button button--primary"
+          disabled={!selectedRepository}
+          form="repository-settings-form"
+          type="submit"
+        >
           <Save size={16} aria-hidden="true" /> Save settings
         </button>
       </header>
 
       <section className="page">
+        {params?.updated === "repository-settings" ? (
+          <section className="notice">
+            <ShieldCheck size={18} aria-hidden="true" />
+            <div>
+              <h2>Repository settings saved</h2>
+              <p>Runtime configuration was updated and dashboard data was reloaded.</p>
+            </div>
+          </section>
+        ) : null}
+        {params?.error ? (
+          <section className="notice notice--unavailable">
+            <GitBranch size={18} aria-hidden="true" />
+            <div>
+              <h2>Settings were not saved</h2>
+              <p>{params.error}</p>
+            </div>
+          </section>
+        ) : null}
+
         {source !== "api" ? (
           <section className="notice notice--unavailable">
             <GitBranch size={18} aria-hidden="true" />
@@ -130,87 +167,263 @@ export default async function SettingsPage() {
           </section>
         </div>
 
-        <div className="two-column">
+        <form action={saveRepositorySettings} className="two-column" id="repository-settings-form">
+          <input name="returnTo" type="hidden" value="/settings" />
+          <input name="ownerMappingRowCount" type="hidden" value={ownerMappingRows.length} />
           <section className="panel">
             <div className="panel-header">
-              <h2>Owner mappings</h2>
+              <div>
+                <h2>Repository controls</h2>
+                <p>Changes are persisted through the API and used by policy preview.</p>
+              </div>
             </div>
             <div className="panel-body form-grid">
-              {settings?.ownerMappings.length === 0 ? (
-                <p className="muted">
-                  No owner mappings are available from evaluated PRs or repository configuration.
-                </p>
-              ) : null}
-              {settings?.ownerMappings.map((mapping) => (
-                <div className="field" key={mapping.reviewer}>
-                  <label htmlFor={`mapping-${mapping.reviewer}`}>
-                    {mapping.ownerKey ? mapping.ownerKey.replace(/_/g, " ") : mapping.reviewer}
-                  </label>
-                  <input
-                    className="input"
-                    id={`mapping-${mapping.reviewer}`}
-                    defaultValue={`${mapping.reviewer} (${mapping.reviewerType})`}
-                  />
-                </div>
-              ))}
+              <div className="field">
+                <label htmlFor="repositoryId">Repository</label>
+                <select
+                  className="select"
+                  disabled={!selectedRepository}
+                  id="repositoryId"
+                  name="repositoryId"
+                  required
+                  defaultValue={selectedRepository?.id ?? ""}
+                >
+                  {settings?.repositories.length === 0 ? (
+                    <option value="">No repositories connected</option>
+                  ) : null}
+                  {settings?.repositories.map((repository) => (
+                    <option key={repository.id} value={repository.id}>
+                      {repository.fullName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="enabled">Repository status</label>
+                <select
+                  className="select"
+                  disabled={!selectedRepository}
+                  id="enabled"
+                  name="enabled"
+                  defaultValue={String(selectedRepository?.enabled ?? true)}
+                >
+                  <option value="true">enabled</option>
+                  <option value="false">disabled</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="mode">Mode</label>
+                <select
+                  className="select"
+                  disabled={!selectedRepository}
+                  id="mode"
+                  name="mode"
+                  defaultValue={selectedRepository?.mode ?? "observe"}
+                >
+                  <option value="observe">observe</option>
+                  <option value="warn">warn</option>
+                  <option value="enforce">enforce</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="fullDiffRetention">Full diff retention</label>
+                <select
+                  className="select"
+                  disabled={!selectedRepository}
+                  id="fullDiffRetention"
+                  name="fullDiffRetention"
+                  defaultValue={selectedHandling?.fullDiffRetention ?? "disabled"}
+                >
+                  <option value="disabled">disabled</option>
+                  <option value="7d">7d</option>
+                  <option value="30d">30d</option>
+                  <option value="custom">custom</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="sourceCodeStorage">Source code storage</label>
+                <select
+                  className="select"
+                  disabled={!selectedRepository}
+                  id="sourceCodeStorage"
+                  name="sourceCodeStorage"
+                  defaultValue={String(selectedHandling?.sourceCodeStorage ?? false)}
+                >
+                  <option value="false">disabled</option>
+                  <option value="true">enabled</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="redactSecrets">Secret redaction</label>
+                <select
+                  className="select"
+                  disabled={!selectedRepository}
+                  id="redactSecrets"
+                  name="redactSecrets"
+                  defaultValue={String(selectedHandling?.redactSecrets ?? true)}
+                >
+                  <option value="true">enabled</option>
+                  <option value="false">disabled</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="llmFeatures">LLM advisory features</label>
+                <select
+                  className="select"
+                  disabled={!selectedRepository}
+                  id="llmFeatures"
+                  name="llmFeatures"
+                  defaultValue={String(selectedHandling?.llmFeatures ?? false)}
+                >
+                  <option value="false">disabled</option>
+                  <option value="true">enabled</option>
+                </select>
+              </div>
+              <div className="field">
+                <label htmlFor="auditRecordRetentionDays">Audit record retention days</label>
+                <input
+                  className="input"
+                  disabled={!selectedRepository}
+                  id="auditRecordRetentionDays"
+                  max={3650}
+                  min={1}
+                  name="auditRecordRetentionDays"
+                  type="number"
+                  defaultValue={selectedHandling?.auditRecordRetentionDays ?? 365}
+                />
+              </div>
             </div>
           </section>
 
           <section className="panel">
             <div className="panel-header">
               <div>
-                <h2>Audit exports</h2>
-                <p>
-                  Exports include records, findings, evidence, reviewers, overrides, and decisions.
-                </p>
+                <h2>Owner mappings</h2>
+                <p>Reviewer routing uses these owner keys for the selected repository.</p>
               </div>
-              <button className="button" type="button">
-                <Download size={16} aria-hidden="true" /> Create export
-              </button>
             </div>
-            <ul className="compact-list">
-              <li>
-                <div className="list-row">
-                  <span>JSON export</span>
-                  <StatusBadge
-                    status={settings?.exports.json ? "approved" : "low"}
-                    label={settings?.exports.json ? "enabled" : "disabled"}
-                  />
+            <div className="panel-body owner-mapping-grid">
+              {ownerMappingRows.map((mapping, index) => (
+                <div className="owner-mapping-row" key={mapping.key}>
+                  <div className="field">
+                    <label htmlFor={`ownerKey_${index}`}>Owner key {index + 1}</label>
+                    <input
+                      className="input"
+                      disabled={!selectedRepository}
+                      id={`ownerKey_${index}`}
+                      name={`ownerKey_${index}`}
+                      placeholder="billing_owner"
+                      defaultValue={mapping.ownerKey}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`reviewer_${index}`}>Reviewer {index + 1}</label>
+                    <input
+                      className="input"
+                      disabled={!selectedRepository}
+                      id={`reviewer_${index}`}
+                      name={`reviewer_${index}`}
+                      placeholder="billing-owner"
+                      defaultValue={mapping.reviewer}
+                    />
+                  </div>
+                  <div className="field">
+                    <label htmlFor={`reviewerType_${index}`}>Reviewer type {index + 1}</label>
+                    <select
+                      className="select"
+                      disabled={!selectedRepository}
+                      id={`reviewerType_${index}`}
+                      name={`reviewerType_${index}`}
+                      defaultValue={mapping.reviewerType}
+                    >
+                      <option value="team">team</option>
+                      <option value="user">user</option>
+                    </select>
+                  </div>
                 </div>
-                <p>Structured Change Control Records without source code.</p>
-              </li>
-              <li>
-                <div className="list-row">
-                  <span>CSV export</span>
-                  <StatusBadge
-                    status={settings?.exports.csv ? "approved" : "low"}
-                    label={settings?.exports.csv ? "enabled" : "disabled"}
-                  />
-                </div>
-                <p>
-                  Audit-friendly rows for repository, PR, policy, findings, evidence, and decision.
-                </p>
-              </li>
-              <li>
-                <div className="list-row">
-                  <span>Export storage</span>
-                  <StatusBadge
-                    status={settings?.exports.storageBucketConfigured ? "approved" : "low"}
-                    label={
-                      settings?.exports.storageBucketConfigured ? "configured" : "not configured"
-                    }
-                  />
-                </div>
-                <p>
-                  {settings?.exports.storageRegion
-                    ? `Region: ${settings.exports.storageRegion}`
-                    : "Exports are available through API jobs when no bucket is configured."}
-                </p>
-              </li>
-            </ul>
+              ))}
+              {repositoryOwnerMappings.length === 0 ? (
+                <p className="muted">No owner mappings are configured for this repository yet.</p>
+              ) : null}
+            </div>
           </section>
-        </div>
+        </form>
+
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <h2>Audit exports</h2>
+              <p>
+                Exports include records, findings, evidence, reviewers, overrides, and decisions.
+              </p>
+            </div>
+            <button className="button" type="button">
+              <Download size={16} aria-hidden="true" /> Create export
+            </button>
+          </div>
+          <ul className="compact-list">
+            <li>
+              <div className="list-row">
+                <span>JSON export</span>
+                <StatusBadge
+                  status={settings?.exports.json ? "approved" : "low"}
+                  label={settings?.exports.json ? "enabled" : "disabled"}
+                />
+              </div>
+              <p>Structured Change Control Records without source code.</p>
+            </li>
+            <li>
+              <div className="list-row">
+                <span>CSV export</span>
+                <StatusBadge
+                  status={settings?.exports.csv ? "approved" : "low"}
+                  label={settings?.exports.csv ? "enabled" : "disabled"}
+                />
+              </div>
+              <p>
+                Audit-friendly rows for repository, PR, policy, findings, evidence, and decision.
+              </p>
+            </li>
+            <li>
+              <div className="list-row">
+                <span>Export storage</span>
+                <StatusBadge
+                  status={settings?.exports.storageBucketConfigured ? "approved" : "low"}
+                  label={
+                    settings?.exports.storageBucketConfigured ? "configured" : "not configured"
+                  }
+                />
+              </div>
+              <p>
+                {settings?.exports.storageRegion
+                  ? `Region: ${settings.exports.storageRegion}`
+                  : "Exports are available through API jobs when no bucket is configured."}
+              </p>
+            </li>
+          </ul>
+        </section>
       </section>
     </>
   );
+}
+
+function ownerRows(
+  mappings: NonNullable<SettingsData["ownerMappings"]>
+): Array<{ key: string; ownerKey: string; reviewer: string; reviewerType: string }> {
+  const existingRows = mappings.map((mapping, index) => ({
+    key: `${mapping.ownerKey ?? mapping.reviewer}-${index}`,
+    ownerKey: mapping.ownerKey ?? "",
+    reviewer: mapping.reviewer,
+    reviewerType: mapping.reviewerType
+  }));
+  const minimumRows = Math.max(4, existingRows.length + 1);
+  return [
+    ...existingRows,
+    ...Array.from({ length: Math.max(0, minimumRows - existingRows.length) }, (_, index) => ({
+      key: `new-${index}`,
+      ownerKey: "",
+      reviewer: "",
+      reviewerType: "team"
+    }))
+  ];
 }

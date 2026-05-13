@@ -93,6 +93,8 @@ Copy `.env.example` to `.env` and fill in values. The defaults are safe for loca
 - `AUDIT_RECORD_RETENTION_DAYS`: Audit retention duration.
 - `EXPORT_STORAGE_BUCKET` / `EXPORT_STORAGE_REGION`: Optional export storage.
 - `SESSION_SECRET`: Session signing secret for deployed dashboard/API usage.
+- `AGENTFORGE_DASHBOARD_ACTOR`: Local dashboard server-action actor for settings/policy saves.
+- `AGENTFORGE_DASHBOARD_ROLE`: Local dashboard server-action role. Use `platform_admin` or `engineering_manager` for repository setup.
 
 ## GitHub App Setup
 
@@ -133,6 +135,8 @@ x-agentforge-role: platform_admin | engineering_manager | auditor | security_rev
 ```
 
 Policy/settings changes require `platform_admin` or `engineering_manager`. Repository settings are persisted as runtime state, including enabled status, repository mode, data-handling overrides, and configured owner mappings. Change Control Record exports and audit access require `auditor`, `platform_admin`, or `engineering_manager`. Overrides use the role allowlist configured by policy.
+
+The Next.js dashboard uses server actions for onboarding and settings changes. In local V1 those server actions send `AGENTFORGE_DASHBOARD_ACTOR` and `AGENTFORGE_DASHBOARD_ROLE` to the API; production authentication should replace those local defaults with authenticated user context.
 
 ## Policy Modes
 

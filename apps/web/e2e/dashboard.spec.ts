@@ -70,3 +70,53 @@ test("governance drill-down routes render careful change-control language", asyn
     await expect(page.getByText("guaranteed safe")).toHaveCount(0);
   }
 });
+
+test("settings form persists repository mode, retention, and owner mappings", async ({
+  page,
+  request
+}) => {
+  const [rawPr] = await Promise.all([
+    readFile(path.resolve(process.cwd(), "fixtures", "repos", "billing-path.json"), "utf8"),
+    seedMergeGuardRecord(request)
+  ]);
+  const pr = JSON.parse(rawPr) as PullRequestInput;
+
+  await page.goto("/settings");
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+
+  await page.getByLabel("Mode").selectOption("enforce");
+  await page.getByLabel("Full diff retention").selectOption("7d");
+  await page.getByLabel("Owner key 1").fill("runtime_owner");
+  await page.getByLabel("Reviewer 1").fill("runtime-team");
+  await page.getByLabel("Reviewer type 1").selectOption("team");
+  await page.getByRole("button", { name: "Save settings" }).click();
+
+  await expect(page.getByText("Repository settings saved")).toBeVisible();
+  await expect(page.getByLabel("Mode")).toHaveValue("enforce");
+  await expect(page.getByLabel("Full diff retention")).toHaveValue("7d");
+  await expect(page.getByLabel("Owner key 1")).toHaveValue("runtime_owner");
+  await expect(page.getByLabel("Reviewer 1")).toHaveValue("runtime-team");
+
+  const activePolicyPreview = await request.post(`${apiBaseUrl}/api/policies/preview`, {
+    data: { pr }
+  });
+  expect(activePolicyPreview.ok()).toBeTruthy();
+  const previewPayload = (await activePolicyPreview.json()) as {
+    result: { mode: string; status: string };
+  };
+  expect(previewPayload.result).toMatchObject({ mode: "enforce", status: "block" });
+
+  const settingsResponse = await request.get(`${apiBaseUrl}/api/settings`);
+  expect(settingsResponse.ok()).toBeTruthy();
+  const settingsPayload = (await settingsResponse.json()) as {
+    ownerMappings: Array<{ ownerKey?: string; reviewer: string; sources: string[] }>;
+  };
+  expect(settingsPayload.ownerMappings).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        ownerKey: "runtime_owner",
+        reviewer: "runtime-team"
+      })
+    ])
+  );
+});

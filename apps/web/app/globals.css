@@ -258,6 +258,13 @@ button {
   border-color: #ffd3cf;
 }
 
+.button:disabled,
+.select:disabled,
+.input:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -577,6 +584,17 @@ button {
   width: 100%;
 }
 
+.owner-mapping-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.owner-mapping-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(130px, 0.45fr);
+  gap: 14px;
+}
+
 .toggle-row {
   display: flex;
   align-items: center;
@@ -759,6 +777,7 @@ button {
   .three-column,
   .form-grid,
   .mode-grid,
+  .owner-mapping-row,
   .summary-strip {
     grid-template-columns: 1fr;
   }
