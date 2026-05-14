@@ -316,7 +316,7 @@ async function resolveRuntimeEvaluationContext(input: {
       ? storagePolicyFromRepositorySetting(repository.settings)
       : storagePolicyFromConfig(input.config),
     ownerMappings:
-      repository?.ownerMappings.map((mapping) => ({
+      repository?.ownerMappings.map((mapping: { ownerKey: string; reviewer: string }) => ({
         ownerKey: mapping.ownerKey,
         reviewer: mapping.reviewer
       })) ?? []

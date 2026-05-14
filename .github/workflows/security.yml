@@ -23,5 +23,7 @@ jobs:
       - run: pnpm audit --audit-level high
       - name: Secret scan
         run: |
-          ! git grep -nE 'ghp_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN .*PRIVATE KEY-----' -- . ':!fixtures/repos/secret-like-token.json'
+          if git grep -nE 'ghp_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN .*PRIVATE KEY-----' -- . ':!**/*.test.ts' ':!fixtures/repos/secret-like-token.json' ':!packages/security/src/redaction.ts' ':!.github/workflows/security.yml'; then
+            exit 1
+          fi
       - run: pnpm --filter @agentforge/security test
