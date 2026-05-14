@@ -63,6 +63,77 @@ describe("reviewer router", () => {
     });
   });
 
+  it("accepts an approved user review when GitHub verified the reviewer belongs to the required team", () => {
+    const reviewers = routeReviewers(
+      [
+        {
+          id: "hit_team",
+          ruleId: "security",
+          finding: fact,
+          action: "require_review",
+          severity: "high",
+          requiredEvidence: [],
+          requiredReviewers: ["security-team"],
+          explanation: "Security team approval required."
+        }
+      ],
+      {
+        reviews: [
+          {
+            reviewer: "alice",
+            reviewerType: "user",
+            teamSlugs: ["security-team", "platform-team"],
+            state: "APPROVED",
+            submittedAt: "2026-05-14T00:00:00.000Z"
+          }
+        ]
+      }
+    );
+
+    expect(reviewers).toHaveLength(1);
+    expect(reviewers[0]).toMatchObject({
+      reviewer: "security-team",
+      reviewerType: "team",
+      approved: true,
+      approvedBy: "alice"
+    });
+  });
+
+  it("does not approve team requirements from unrelated user approvals", () => {
+    const reviewers = routeReviewers(
+      [
+        {
+          id: "hit_team",
+          ruleId: "security",
+          finding: fact,
+          action: "require_review",
+          severity: "high",
+          requiredEvidence: [],
+          requiredReviewers: ["security-team"],
+          explanation: "Security team approval required."
+        }
+      ],
+      {
+        reviews: [
+          {
+            reviewer: "alice",
+            reviewerType: "user",
+            teamSlugs: ["platform-team"],
+            state: "APPROVED",
+            submittedAt: "2026-05-14T00:00:00.000Z"
+          }
+        ]
+      }
+    );
+
+    expect(reviewers).toHaveLength(1);
+    expect(reviewers[0]).toMatchObject({
+      reviewer: "security-team",
+      reviewerType: "team",
+      approved: false
+    });
+  });
+
   it("caps non-critical required reviewer groups as conditional reviewers", () => {
     const hits: PolicyHit[] = ["billing-owner", "security-team", "database-owner"].map(
       (reviewer, index) => ({

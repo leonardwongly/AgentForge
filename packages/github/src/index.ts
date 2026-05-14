@@ -84,6 +84,9 @@ export type GithubAdapterClient = {
   repos?: {
     getContent: GithubRequest<Record<string, unknown> | Array<Record<string, unknown>>>;
   };
+  teams?: {
+    getMembershipForUserInOrg: GithubRequest<Record<string, unknown>>;
+  };
   paginate?: <TData>(
     method: GithubRequest<Array<TData>>,
     params: Record<string, unknown>
@@ -171,7 +174,10 @@ export function pullRequestInputFromFixture(pr: PullRequestInput): PullRequestIn
     ...pr,
     labels: [...(pr.labels ?? [])],
     commits: pr.commits?.map((commit) => ({ ...commit })),
-    reviews: pr.reviews?.map((review) => ({ ...review })),
+    reviews: pr.reviews?.map((review) => ({
+      ...review,
+      teamSlugs: review.teamSlugs ? [...review.teamSlugs] : undefined
+    })),
     manualEvidence: pr.manualEvidence?.map((evidence) => ({ ...evidence })),
     changedFiles: pr.changedFiles.map((file) => ({ ...file }))
   };
@@ -184,6 +190,7 @@ export async function fetchPullRequestInputFromGithub(input: {
   pullNumber: number;
   includeManifestContents?: boolean | undefined;
   maxManifestBytes?: number | undefined;
+  requiredReviewerTeams?: string[] | undefined;
 }): Promise<PullRequestInput> {
   const params = { owner: input.owner, repo: input.repo, pull_number: input.pullNumber };
   const prResponse = await input.client.pulls.get(params);
@@ -221,6 +228,13 @@ export async function fetchPullRequestInputFromGithub(input: {
       })
     )
   );
+  const mappedReviews = reviews.map(githubReviewToInput);
+  const enrichedReviews = await enrichPullRequestReviewsWithTeamMemberships({
+    client: input.client,
+    org: input.owner,
+    reviews: mappedReviews,
+    teamSlugs: input.requiredReviewerTeams ?? []
+  });
 
   return {
     repositoryFullName,
@@ -237,14 +251,51 @@ export async function fetchPullRequestInputFromGithub(input: {
       message: stringValue(recordValue(commit.commit)?.message) ?? "",
       authorLogin: stringValue(recordValue(commit.author)?.login)
     })),
-    reviews: reviews.map((review) => ({
-      reviewer: stringValue(recordValue(review.user)?.login) ?? "",
-      reviewerType: "user",
-      state: pullRequestReviewState(stringValue(review.state)),
-      submittedAt: stringValue(review.submitted_at) ?? new Date().toISOString()
-    })),
+    reviews: enrichedReviews,
     changedFiles
   };
+}
+
+export async function enrichPullRequestReviewsWithTeamMemberships(input: {
+  client: GithubAdapterClient;
+  org: string;
+  reviews: PullRequestReview[];
+  teamSlugs: string[];
+}): Promise<PullRequestReview[]> {
+  const requiredTeamSlugs = uniqueNormalizedTeamSlugs(input.teamSlugs);
+  if (requiredTeamSlugs.length === 0 || !input.client.teams?.getMembershipForUserInOrg) {
+    return input.reviews.map(normalizeReviewTeamSlugs);
+  }
+
+  return Promise.all(
+    input.reviews.map(async (review) => {
+      const existing = uniqueNormalizedTeamSlugs(review.teamSlugs ?? []);
+      if (
+        review.state !== "APPROVED" ||
+        !review.reviewer ||
+        (review.reviewerType ?? "user") !== "user"
+      ) {
+        return applyReviewTeamSlugs(review, existing);
+      }
+
+      const memberships = await Promise.all(
+        requiredTeamSlugs.map(async (teamSlug) =>
+          (await isActiveTeamMember({
+            client: input.client,
+            org: input.org,
+            teamSlug,
+            username: review.reviewer
+          }))
+            ? teamSlug
+            : undefined
+        )
+      );
+      return applyReviewTeamSlugs(review, [
+        ...existing,
+        ...memberships.filter((teamSlug): teamSlug is string => Boolean(teamSlug))
+      ]);
+    })
+  );
 }
 
 export function githubConclusionForPolicyResult(
@@ -439,6 +490,15 @@ function readReview(value: unknown): PullRequestReview | undefined {
   };
 }
 
+function githubReviewToInput(review: Record<string, unknown>): PullRequestReview {
+  return {
+    reviewer: stringValue(recordValue(review.user)?.login) ?? "",
+    reviewerType: "user",
+    state: pullRequestReviewState(stringValue(review.state)),
+    submittedAt: stringValue(review.submitted_at) ?? new Date().toISOString()
+  };
+}
+
 function readCheckRun(value: unknown): GithubWebhookEnvelope["checkRun"] {
   const checkRun = value as Record<string, unknown> | undefined;
   if (!checkRun) {
@@ -508,6 +568,52 @@ function pullRequestReviewState(value: string | undefined): PullRequestReview["s
     return normalized;
   }
   return "COMMENTED";
+}
+
+async function isActiveTeamMember(input: {
+  client: GithubAdapterClient;
+  org: string;
+  teamSlug: string;
+  username: string;
+}): Promise<boolean> {
+  try {
+    const response = await input.client.teams?.getMembershipForUserInOrg({
+      org: input.org,
+      team_slug: input.teamSlug,
+      username: input.username
+    });
+    return stringValue(response?.data.state)?.toLowerCase() === "active";
+  } catch {
+    return false;
+  }
+}
+
+function normalizeReviewTeamSlugs(review: PullRequestReview): PullRequestReview {
+  return applyReviewTeamSlugs(review, uniqueNormalizedTeamSlugs(review.teamSlugs ?? []));
+}
+
+function applyReviewTeamSlugs(review: PullRequestReview, teamSlugs: string[]): PullRequestReview {
+  const normalizedTeamSlugs = uniqueNormalizedTeamSlugs(teamSlugs);
+  if (normalizedTeamSlugs.length === 0) {
+    return { ...review, teamSlugs: undefined };
+  }
+  return { ...review, teamSlugs: normalizedTeamSlugs };
+}
+
+function uniqueNormalizedTeamSlugs(values: string[]): string[] {
+  return [
+    ...new Set(
+      values.map(normalizeTeamSlug).filter((teamSlug): teamSlug is string => Boolean(teamSlug))
+    )
+  ];
+}
+
+function normalizeTeamSlug(value: string): string | undefined {
+  const teamSlug = value.trim().replace(/^@/u, "").split("/").at(-1)?.toLowerCase();
+  if (!teamSlug || !/^[a-z0-9][a-z0-9-]*$/u.test(teamSlug)) {
+    return undefined;
+  }
+  return teamSlug;
 }
 
 async function paginateOrRequest<TData>(

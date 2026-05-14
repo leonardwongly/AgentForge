@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   buildCheckRunPayload,
+  enrichPullRequestReviewsWithTeamMemberships,
   fetchPullRequestInputFromGithub,
   normalizeGithubWebhook,
   pullRequestInputFromFixture,
@@ -182,6 +183,92 @@ describe("github integration", () => {
     expect(pr.reviews?.[0]?.state).toBe("APPROVED");
     expect(cloned).toEqual(pr);
     expect(cloned).not.toBe(pr);
+  });
+
+  it("enriches approved user reviews with verified GitHub team memberships", async () => {
+    const membershipChecks: Array<{ org: unknown; teamSlug: unknown; username: unknown }> = [];
+    const client: GithubAdapterClient = {
+      pulls: {
+        get: async () => ({
+          data: {
+            number: 8,
+            title: "Auth change",
+            user: { login: "sam" },
+            base: { ref: "main", sha: "base-sha", repo: { full_name: "acme/payments" } },
+            head: { ref: "feature/auth", sha: "head-sha", repo: { full_name: "acme/payments" } }
+          }
+        }),
+        listFiles: async () => ({ data: [] }),
+        listReviews: async () => ({
+          data: [
+            {
+              state: "APPROVED",
+              submitted_at: "2026-05-14T00:00:00.000Z",
+              user: { login: "alice" }
+            }
+          ]
+        }),
+        listCommits: async () => ({ data: [] })
+      },
+      teams: {
+        getMembershipForUserInOrg: async ({ org, team_slug, username }) => {
+          membershipChecks.push({ org, teamSlug: team_slug, username });
+          if (team_slug === "security-team" && username === "alice") {
+            return { data: { state: "active" } };
+          }
+          throw new Error("not found");
+        }
+      }
+    };
+
+    const pr = await fetchPullRequestInputFromGithub({
+      client,
+      owner: "acme",
+      repo: "payments",
+      pullNumber: 8,
+      requiredReviewerTeams: ["security-team", "database-owner"]
+    });
+
+    expect(pr.reviews?.[0]).toMatchObject({
+      reviewer: "alice",
+      reviewerType: "user",
+      state: "APPROVED",
+      teamSlugs: ["security-team"]
+    });
+    expect(membershipChecks).toEqual([
+      { org: "acme", teamSlug: "security-team", username: "alice" },
+      { org: "acme", teamSlug: "database-owner", username: "alice" }
+    ]);
+  });
+
+  it("fails closed when team membership cannot be verified", async () => {
+    const reviews = await enrichPullRequestReviewsWithTeamMemberships({
+      client: {
+        pulls: {
+          get: async () => ({ data: {} }),
+          listFiles: async () => ({ data: [] }),
+          listReviews: async () => ({ data: [] }),
+          listCommits: async () => ({ data: [] })
+        },
+        teams: {
+          getMembershipForUserInOrg: async () => {
+            throw new Error("GitHub unavailable");
+          }
+        }
+      },
+      org: "acme",
+      teamSlugs: ["security-team"],
+      reviews: [
+        {
+          reviewer: "alice",
+          reviewerType: "user",
+          state: "APPROVED",
+          submittedAt: "2026-05-14T00:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(reviews[0]?.teamSlugs).toBeUndefined();
   });
 
   it("keeps PR extraction usable when manifest content fetch is unavailable", async () => {

@@ -20,9 +20,11 @@ Minimum permissions:
 - Contents: read
 - Metadata: read
 - Issues: read/write if PR-visible notes are enabled
-- Members: read if team membership validation is enabled
+- Members: read for GitHub-verified team reviewer approvals
 
 The worker uses the installation credentials to fetch PR files, reviews, commits, and supported manifest contents before evaluating deterministic policy. It also publishes the `AgentForge Merge Guard` check run back to GitHub. Branch protection should require that check only after the repository has graduated to `enforce` or `optimize`.
+
+Team reviewer requirements are cleared only after GitHub confirms that the approving user is an active member of the required team slug. Missing `Members: read`, unavailable membership APIs, or inactive memberships fail closed and leave the team reviewer requirement pending.
 
 Webhook URL:
 

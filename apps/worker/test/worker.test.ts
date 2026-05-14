@@ -94,6 +94,42 @@ describe("Merge Guard worker evaluation jobs", () => {
     );
   });
 
+  it("uses verified GitHub team membership to clear required team reviewers", async () => {
+    const pr = {
+      ...(await loadPr("billing-path.json")),
+      body: "Rollback plan: revert the checkout change and redeploy the previous release.",
+      reviews: [
+        {
+          reviewer: "alice",
+          reviewerType: "user" as const,
+          state: "APPROVED" as const,
+          submittedAt: "2026-05-14T00:00:00.000Z"
+        }
+      ]
+    };
+    const envelope = webhookEnvelope(pr);
+    const published: PolicyResult[] = [];
+
+    await processMergeGuardEvaluationJob({
+      deliveryId: envelope.deliveryId,
+      envelope,
+      policyYaml: await loadPolicy("fintech.yaml"),
+      githubClient: githubClientForPr(pr, { alice: ["billing-owner"] }),
+      githubCheckPublisher: async (input) => {
+        published.push(input.result);
+        return { id: 43, conclusion: "neutral" };
+      }
+    });
+
+    expect(published).toHaveLength(1);
+    expect(published[0]?.requiredReviewers[0]).toMatchObject({
+      reviewer: "billing-owner",
+      reviewerType: "team",
+      approved: true,
+      approvedBy: "alice"
+    });
+  });
+
   it("records merged lifecycle decisions from closed pull request webhooks", async () => {
     const pr = await loadPr("billing-path.json");
     const envelope = webhookEnvelope(pr, { action: "closed", merged: true });
@@ -161,7 +197,10 @@ function webhookEnvelope(
   };
 }
 
-function githubClientForPr(pr: PullRequestInput): GithubAdapterClient {
+function githubClientForPr(
+  pr: PullRequestInput,
+  teamMemberships: Record<string, string[]> = {}
+): GithubAdapterClient {
   const [owner = "acme", repo = "payments"] = pr.repositoryFullName.split("/");
   return {
     pulls: {
@@ -208,6 +247,18 @@ function githubClientForPr(pr: PullRequestInput): GithubAdapterClient {
             author: commit.authorLogin ? { login: commit.authorLogin } : undefined
           })) ?? []
       })
+    },
+    teams: {
+      getMembershipForUserInOrg: async ({ team_slug, username }) => {
+        if (
+          typeof username === "string" &&
+          typeof team_slug === "string" &&
+          teamMemberships[username]?.includes(team_slug)
+        ) {
+          return { data: { state: "active" } };
+        }
+        throw new Error("not found");
+      }
     }
   };
 }

@@ -9,6 +9,7 @@ import {
   buildCheckRunPayload,
   createGithubClient,
   createGithubInstallationToken,
+  enrichPullRequestReviewsWithTeamMemberships,
   fetchPullRequestInputFromGithub,
   publishMergeGuardCheckWithClient,
   type CheckRunPayload,
@@ -68,7 +69,7 @@ export async function processMergeGuardEvaluationJob(
 
   try {
     const githubContext = await resolvePullRequestForJob(data, config);
-    const pr = githubContext.pr;
+    let pr = githubContext.pr;
     const runtime = await resolveRuntimeEvaluationContext({
       prisma,
       pr,
@@ -84,6 +85,12 @@ export async function processMergeGuardEvaluationJob(
     const policy = applyRuntimePolicyAdjustments(parsed.config, {
       modeOverride: runtime.modeOverride,
       ownerMappings: runtime.ownerMappings
+    });
+    pr = await enrichReviewTeamMemberships({
+      pr,
+      owner: githubContext.owner,
+      client: githubContext.githubClient,
+      policy
     });
     const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(policy));
     const result = evaluateMergeGuard(pr, facts, policy);
@@ -184,12 +191,13 @@ async function resolvePullRequestForJob(
   pr: PullRequestInput;
   owner: string;
   repo: string;
+  githubClient?: GithubAdapterClient | undefined;
   checkPublisherClient?: GithubCheckPublisherClient | undefined;
 }> {
   if (data.pr) {
     const [owner = "unknown", repo = data.pr.repositoryFullName] =
       data.pr.repositoryFullName.split("/");
-    return { pr: data.pr, owner, repo };
+    return { pr: data.pr, owner, repo, githubClient: data.githubClient };
   }
 
   const envelope = data.envelope;
@@ -219,6 +227,7 @@ async function resolvePullRequestForJob(
     pr,
     owner: envelope.repository.owner,
     repo: envelope.repository.name,
+    githubClient: configuredClient.client,
     checkPublisherClient: configuredClient.checkPublisherClient
   };
 }
@@ -386,6 +395,46 @@ function reviewerMapper(ownerMappings: OwnerMappingRuntime[]): (reviewers: strin
   return (reviewers) => [
     ...new Set(reviewers.map((reviewer) => byOwnerKey.get(normalizeOwnerKey(reviewer)) ?? reviewer))
   ];
+}
+
+async function enrichReviewTeamMemberships(input: {
+  pr: PullRequestInput;
+  owner: string;
+  client?: GithubAdapterClient | undefined;
+  policy: PolicyConfig;
+}): Promise<PullRequestInput> {
+  const teamSlugs = requiredTeamReviewersFromPolicy(input.policy);
+  if (!input.client || !input.pr.reviews?.length || teamSlugs.length === 0) {
+    return input.pr;
+  }
+  return {
+    ...input.pr,
+    reviews: await enrichPullRequestReviewsWithTeamMemberships({
+      client: input.client,
+      org: input.owner,
+      reviews: input.pr.reviews,
+      teamSlugs
+    })
+  };
+}
+
+function requiredTeamReviewersFromPolicy(policy: PolicyConfig): string[] {
+  const reviewers = [
+    ...Object.values(policy.sensitive_paths).flatMap((rule) => rule.required_reviewers),
+    ...policy.tests.deleted_tests.required_reviewers,
+    ...policy.tests.skipped_tests.required_reviewers,
+    ...policy.tests.coverage_threshold_reduced.required_reviewers,
+    ...policy.tests.suspicious_test_change.required_reviewers,
+    ...policy.dependencies.new_package.required_reviewers,
+    ...policy.dependencies.major_version_bump.required_reviewers,
+    ...policy.database.migrations.required_reviewers
+  ];
+  return [...new Set(reviewers.filter(isTeamReviewer))];
+}
+
+function isTeamReviewer(reviewer: string): boolean {
+  const normalized = reviewer.trim().replace(/^@/u, "");
+  return normalized.includes("/") || normalized.includes("-team") || normalized.includes("-owner");
 }
 
 function normalizeOwnerKey(value: string): string {

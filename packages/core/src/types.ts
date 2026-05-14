@@ -132,6 +132,7 @@ export type PullRequestReviewState = "APPROVED" | "CHANGES_REQUESTED" | "COMMENT
 export type PullRequestReview = {
   reviewer: string;
   reviewerType?: "user" | "team" | undefined;
+  teamSlugs?: string[] | undefined;
   state: PullRequestReviewState;
   submittedAt: string;
 };

@@ -124,7 +124,7 @@ Minimum permissions:
 - Contents: read
 - Metadata: read
 - Issues: read/write if PR-visible comments are enabled
-- Members: read if team membership validation is enabled
+- Members: read for GitHub-verified team reviewer approvals
 
 Set the webhook URL to:
 
@@ -133,6 +133,8 @@ https://your-api-domain.example/webhooks/github
 ```
 
 For local development, expose `http://localhost:4000/webhooks/github` through a tunnel and set `GITHUB_WEBHOOK_SECRET` to the same secret configured in GitHub.
+
+When a policy requires a team reviewer, Merge Guard only clears that reviewer requirement if GitHub verifies that the approving user is an active member of the required team. If membership cannot be checked because the app lacks `Members: read` or GitHub is unavailable, the requirement fails closed and stays pending.
 Unsigned webhook delivery is disabled by default. If you need to replay local fixture payloads without a GitHub secret, set `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=true` only for that local process.
 
 State-changing API calls require server-resolved actor context:

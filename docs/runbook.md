@@ -79,9 +79,12 @@ Required permissions:
 - Checks: read/write
 - Contents: read
 - Metadata: read
+- Members: read for GitHub-verified team reviewer approvals
 - Issues: read/write only if PR-visible notes are enabled
 
 Branch protection should require the `AgentForge Merge Guard` check before enforce or optimize mode is used as a merge gate.
+
+If `Members: read` is missing or the membership lookup fails, team reviewer requirements remain pending. This is intentional fail-closed behavior; do not move repositories into enforce mode until a test PR proves team approvals clear correctly.
 
 ## Launch Smoke Tests
 
