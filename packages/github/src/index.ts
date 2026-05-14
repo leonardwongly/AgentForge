@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
 import type {
   ChangedFile,
@@ -83,10 +84,19 @@ export type GithubAdapterClient = {
   repos?: {
     getContent: GithubRequest<Record<string, unknown> | Array<Record<string, unknown>>>;
   };
+  teams?: {
+    getMembershipForUserInOrg: GithubRequest<Record<string, unknown>>;
+  };
   paginate?: <TData>(
     method: GithubRequest<Array<TData>>,
     params: Record<string, unknown>
   ) => Promise<TData[]>;
+};
+
+export type GithubCheckPublisherClient = {
+  checks: {
+    create: GithubRequest<Record<string, unknown>>;
+  };
 };
 
 export function verifyGithubSignature(input: {
@@ -164,7 +174,10 @@ export function pullRequestInputFromFixture(pr: PullRequestInput): PullRequestIn
     ...pr,
     labels: [...(pr.labels ?? [])],
     commits: pr.commits?.map((commit) => ({ ...commit })),
-    reviews: pr.reviews?.map((review) => ({ ...review })),
+    reviews: pr.reviews?.map((review) => ({
+      ...review,
+      teamSlugs: review.teamSlugs ? [...review.teamSlugs] : undefined
+    })),
     manualEvidence: pr.manualEvidence?.map((evidence) => ({ ...evidence })),
     changedFiles: pr.changedFiles.map((file) => ({ ...file }))
   };
@@ -177,6 +190,7 @@ export async function fetchPullRequestInputFromGithub(input: {
   pullNumber: number;
   includeManifestContents?: boolean | undefined;
   maxManifestBytes?: number | undefined;
+  requiredReviewerTeams?: string[] | undefined;
 }): Promise<PullRequestInput> {
   const params = { owner: input.owner, repo: input.repo, pull_number: input.pullNumber };
   const prResponse = await input.client.pulls.get(params);
@@ -199,7 +213,7 @@ export async function fetchPullRequestInputFromGithub(input: {
   const baseSha = stringValue(recordValue(base?.commit)?.sha) ?? stringValue(base?.sha);
   const headSha = stringValue(recordValue(head?.commit)?.sha) ?? stringValue(head?.sha) ?? "";
   const repositoryFullName =
-    stringValue(recordValue(head?.repo)?.full_name) ?? `${input.owner}/${input.repo}`;
+    stringValue(recordValue(base?.repo)?.full_name) ?? `${input.owner}/${input.repo}`;
   const changedFiles = await Promise.all(
     files.map((file) =>
       githubChangedFileToInput({
@@ -214,6 +228,13 @@ export async function fetchPullRequestInputFromGithub(input: {
       })
     )
   );
+  const mappedReviews = reviews.map(githubReviewToInput);
+  const enrichedReviews = await enrichPullRequestReviewsWithTeamMemberships({
+    client: input.client,
+    org: input.owner,
+    reviews: mappedReviews,
+    teamSlugs: input.requiredReviewerTeams ?? []
+  });
 
   return {
     repositoryFullName,
@@ -230,14 +251,51 @@ export async function fetchPullRequestInputFromGithub(input: {
       message: stringValue(recordValue(commit.commit)?.message) ?? "",
       authorLogin: stringValue(recordValue(commit.author)?.login)
     })),
-    reviews: reviews.map((review) => ({
-      reviewer: stringValue(recordValue(review.user)?.login) ?? "",
-      reviewerType: "user",
-      state: pullRequestReviewState(stringValue(review.state)),
-      submittedAt: stringValue(review.submitted_at) ?? new Date().toISOString()
-    })),
+    reviews: enrichedReviews,
     changedFiles
   };
+}
+
+export async function enrichPullRequestReviewsWithTeamMemberships(input: {
+  client: GithubAdapterClient;
+  org: string;
+  reviews: PullRequestReview[];
+  teamSlugs: string[];
+}): Promise<PullRequestReview[]> {
+  const requiredTeamSlugs = uniqueNormalizedTeamSlugs(input.teamSlugs);
+  if (requiredTeamSlugs.length === 0 || !input.client.teams?.getMembershipForUserInOrg) {
+    return input.reviews.map(normalizeReviewTeamSlugs);
+  }
+
+  return Promise.all(
+    input.reviews.map(async (review) => {
+      const existing = uniqueNormalizedTeamSlugs(review.teamSlugs ?? []);
+      if (
+        review.state !== "APPROVED" ||
+        !review.reviewer ||
+        (review.reviewerType ?? "user") !== "user"
+      ) {
+        return applyReviewTeamSlugs(review, existing);
+      }
+
+      const memberships = await Promise.all(
+        requiredTeamSlugs.map(async (teamSlug) =>
+          (await isActiveTeamMember({
+            client: input.client,
+            org: input.org,
+            teamSlug,
+            username: review.reviewer
+          }))
+            ? teamSlug
+            : undefined
+        )
+      );
+      return applyReviewTeamSlugs(review, [
+        ...existing,
+        ...memberships.filter((teamSlug): teamSlug is string => Boolean(teamSlug))
+      ]);
+    })
+  );
 }
 
 export function githubConclusionForPolicyResult(
@@ -273,9 +331,13 @@ export function formatMergeGuardCheck(result: PolicyResult): CheckRunPayload["ou
       ? "Findings recorded; observe mode does not block merge."
       : result.mode === "warn"
         ? "Non-blocking warning; this shows what would block in enforce mode."
-        : result.status === "block"
-          ? "This check blocks merge because required policy evidence or approvals are missing."
-          : "Configured policy requirements are satisfied.";
+        : result.mode === "optimize"
+          ? result.status === "block"
+            ? "Optimize mode keeps enforce controls active; this check blocks because required policy evidence or approvals are missing."
+            : "Optimize mode keeps enforce controls active while surfacing improvement opportunities."
+          : result.status === "block"
+            ? "This check blocks merge because required policy evidence or approvals are missing."
+            : "Configured policy requirements are satisfied.";
 
   return {
     title,
@@ -317,6 +379,30 @@ export function buildCheckRunPayload(
   };
 }
 
+export function createGithubClient(
+  token: string
+): GithubAdapterClient & GithubCheckPublisherClient {
+  return new Octokit({ auth: token }) as unknown as GithubAdapterClient &
+    GithubCheckPublisherClient;
+}
+
+export async function createGithubInstallationToken(input: {
+  appId: string | number;
+  privateKey: string;
+  installationId: string | number;
+}): Promise<string> {
+  const auth = createAppAuth({
+    appId: input.appId,
+    privateKey: normalizePrivateKey(input.privateKey),
+    installationId: input.installationId
+  });
+  const installationAuth = await auth({
+    type: "installation",
+    installationId: input.installationId
+  });
+  return installationAuth.token;
+}
+
 export async function publishMergeGuardCheck(input: {
   token: string;
   owner: string;
@@ -324,9 +410,24 @@ export async function publishMergeGuardCheck(input: {
   pr: Pick<PullRequestInput, "headSha">;
   result: PolicyResult;
 }): Promise<{ id: number | undefined; conclusion: CheckRunPayload["conclusion"] }> {
-  const octokit = new Octokit({ auth: input.token });
+  return publishMergeGuardCheckWithClient({
+    client: createGithubClient(input.token),
+    owner: input.owner,
+    repo: input.repo,
+    pr: input.pr,
+    result: input.result
+  });
+}
+
+export async function publishMergeGuardCheckWithClient(input: {
+  client: GithubCheckPublisherClient;
+  owner: string;
+  repo: string;
+  pr: Pick<PullRequestInput, "headSha">;
+  result: PolicyResult;
+}): Promise<{ id: number | undefined; conclusion: CheckRunPayload["conclusion"] }> {
   const payload = buildCheckRunPayload(input.pr, input.result);
-  const response = await octokit.checks.create({
+  const response = await input.client.checks.create({
     owner: input.owner,
     repo: input.repo,
     name: payload.name,
@@ -335,7 +436,7 @@ export async function publishMergeGuardCheck(input: {
     conclusion: payload.conclusion,
     output: payload.output
   });
-  return { id: response.data.id, conclusion: payload.conclusion };
+  return { id: numberValue(response.data.id), conclusion: payload.conclusion };
 }
 
 function readRepository(value: unknown): GithubWebhookEnvelope["repository"] {
@@ -383,6 +484,15 @@ function readReview(value: unknown): PullRequestReview | undefined {
   }
   return {
     reviewer: stringValue((review.user as Record<string, unknown> | undefined)?.login) ?? "",
+    reviewerType: "user",
+    state: pullRequestReviewState(stringValue(review.state)),
+    submittedAt: stringValue(review.submitted_at) ?? new Date().toISOString()
+  };
+}
+
+function githubReviewToInput(review: Record<string, unknown>): PullRequestReview {
+  return {
+    reviewer: stringValue(recordValue(review.user)?.login) ?? "",
     reviewerType: "user",
     state: pullRequestReviewState(stringValue(review.state)),
     submittedAt: stringValue(review.submitted_at) ?? new Date().toISOString()
@@ -458,6 +568,52 @@ function pullRequestReviewState(value: string | undefined): PullRequestReview["s
     return normalized;
   }
   return "COMMENTED";
+}
+
+async function isActiveTeamMember(input: {
+  client: GithubAdapterClient;
+  org: string;
+  teamSlug: string;
+  username: string;
+}): Promise<boolean> {
+  try {
+    const response = await input.client.teams?.getMembershipForUserInOrg({
+      org: input.org,
+      team_slug: input.teamSlug,
+      username: input.username
+    });
+    return stringValue(response?.data.state)?.toLowerCase() === "active";
+  } catch {
+    return false;
+  }
+}
+
+function normalizeReviewTeamSlugs(review: PullRequestReview): PullRequestReview {
+  return applyReviewTeamSlugs(review, uniqueNormalizedTeamSlugs(review.teamSlugs ?? []));
+}
+
+function applyReviewTeamSlugs(review: PullRequestReview, teamSlugs: string[]): PullRequestReview {
+  const normalizedTeamSlugs = uniqueNormalizedTeamSlugs(teamSlugs);
+  if (normalizedTeamSlugs.length === 0) {
+    return { ...review, teamSlugs: undefined };
+  }
+  return { ...review, teamSlugs: normalizedTeamSlugs };
+}
+
+function uniqueNormalizedTeamSlugs(values: string[]): string[] {
+  return [
+    ...new Set(
+      values.map(normalizeTeamSlug).filter((teamSlug): teamSlug is string => Boolean(teamSlug))
+    )
+  ];
+}
+
+function normalizeTeamSlug(value: string): string | undefined {
+  const teamSlug = value.trim().replace(/^@/u, "").split("/").at(-1)?.toLowerCase();
+  if (!teamSlug || !/^[a-z0-9][a-z0-9-]*$/u.test(teamSlug)) {
+    return undefined;
+  }
+  return teamSlug;
 }
 
 async function paginateOrRequest<TData>(
@@ -597,4 +753,8 @@ function humanize(value: string): string {
 
 function capitalize(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function normalizePrivateKey(value: string): string {
+  return value.includes("\\n") ? value.replace(/\\n/g, "\n") : value;
 }

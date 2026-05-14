@@ -10,22 +10,26 @@ import {
   UserCheck
 } from "lucide-react";
 import { MetricCard, ProgressBar, StatusBadge } from "@agentforge/ui";
+import { DataSourceNotice } from "../data-source-notice";
 import {
   actionRequiredRecords,
+  blockingModeBadge,
   evidenceByKind,
   findingGroups,
   getDashboardSummary,
   hasAgentSignal,
   humanize,
   missingEvidence,
+  loadDashboardData,
   pendingRequiredReviewers
 } from "../data";
 
-export default function DashboardPage() {
-  const summary = getDashboardSummary();
-  const actionRequired = actionRequiredRecords();
-  const evidenceGroups = evidenceByKind();
-  const findings = findingGroups();
+export default async function DashboardPage() {
+  const data = await loadDashboardData();
+  const summary = getDashboardSummary(data.records);
+  const actionRequired = actionRequiredRecords(data.records);
+  const evidenceGroups = evidenceByKind(data.records);
+  const findings = findingGroups(data.records);
 
   return (
     <>
@@ -47,6 +51,8 @@ export default function DashboardPage() {
       </header>
 
       <section className="page">
+        <DataSourceNotice {...data} />
+
         <div className="metrics-grid" aria-label="Governance summary">
           <MetricCard
             label="Blocked PRs"
@@ -86,6 +92,12 @@ export default function DashboardPage() {
               </Link>
             </div>
             <ol className="action-list">
+              {actionRequired.length === 0 ? (
+                <li>
+                  No action-required PRs. Evaluated PRs with missing evidence or required reviewer
+                  approval will appear here.
+                </li>
+              ) : null}
               {actionRequired.map((item) => {
                 const record = item.record;
                 const missing = missingEvidence(record);
@@ -209,7 +221,7 @@ export default function DashboardPage() {
                 <li key={item.record.id}>
                   <div className="list-row">
                     <span>{item.record.repositoryFullName}</span>
-                    <StatusBadge status={item.record.mode === "enforce" ? "enforce" : "warn"} />
+                    <StatusBadge status={blockingModeBadge(item.record.mode)} />
                   </div>
                   <p>
                     {pendingRequiredReviewers(item.record)

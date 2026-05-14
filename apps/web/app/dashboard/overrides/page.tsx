@@ -1,12 +1,49 @@
 import Link from "next/link";
 import { ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { MetricCard, ProgressBar, StatusBadge } from "@agentforge/ui";
-import { dashboardRecords, formatDate, getDashboardSummary } from "../../data";
+import { DataSourceNotice } from "../../data-source-notice";
+import { formatDate, getDashboardSummary, loadDashboardData } from "../../data";
 
-export default function OverridesPage() {
-  const summary = getDashboardSummary();
-  const overrides = dashboardRecords.filter((item) => item.record.lifecycle === "overridden");
+export default async function OverridesPage() {
+  const data = await loadDashboardData();
+  const summary = getDashboardSummary(data.records);
+  const overrides = data.records.filter((item) => item.record.lifecycle === "overridden");
   const topReason = overrides[0]?.override?.reason ?? "No override reason recorded in this window.";
+  const reviewPolicyHref = data.records[0]
+    ? `/repositories/${data.records[0].record.repositoryId}/policy`
+    : "/settings";
+  const reasonCaptureRate =
+    overrides.length === 0
+      ? 0
+      : Math.round(
+          (overrides.filter((item) => Boolean(item.override?.reason)).length / overrides.length) *
+            100
+        );
+  const prVisibleRate =
+    overrides.length === 0
+      ? 0
+      : Math.round(
+          (overrides.filter((item) => item.override?.visibleInPr).length / overrides.length) * 100
+        );
+  const overriddenPolicies = [
+    ...overrides
+      .reduce((policies, item) => {
+        const existing = policies.get(item.record.policyVersion) ?? {
+          policyVersion: item.record.policyVersion,
+          count: 0,
+          examples: [] as string[]
+        };
+        existing.count += 1;
+        if (existing.examples.length < 2) {
+          existing.examples.push(
+            `${item.record.repositoryFullName} #${item.record.pullRequestNumber}`
+          );
+        }
+        policies.set(item.record.policyVersion, existing);
+        return policies;
+      }, new Map<string, { policyVersion: string; count: number; examples: string[] }>())
+      .values()
+  ];
 
   return (
     <>
@@ -17,12 +54,14 @@ export default function OverridesPage() {
             Authorized override activity with actors, roles, reasons, scopes, and policy versions.
           </p>
         </div>
-        <Link className="button" href="/repositories/repo_local/policy">
+        <Link className="button" href={reviewPolicyHref}>
           <SlidersHorizontal size={16} aria-hidden="true" /> Review policy
         </Link>
       </header>
 
       <section className="page">
+        <DataSourceNotice {...data} />
+
         <div className="metrics-grid">
           <MetricCard
             label="Override count"
@@ -44,7 +83,7 @@ export default function OverridesPage() {
           />
           <MetricCard
             label="Top reason"
-            value={overrides.length > 0 ? "Emergency window" : "N/A"}
+            value={overrides[0]?.override?.reason ? "Recorded" : "N/A"}
             detail={topReason}
             tone="warn"
           />
@@ -55,7 +94,10 @@ export default function OverridesPage() {
             <div className="panel-header">
               <div>
                 <h2>Override trend</h2>
-                <p>Override rate should stay visible as teams move rules toward enforce mode.</p>
+                <p>
+                  Override rate should stay visible as teams move rules toward enforce and optimize
+                  modes.
+                </p>
               </div>
               <ShieldCheck size={18} aria-hidden="true" />
             </div>
@@ -70,19 +112,16 @@ export default function OverridesPage() {
               <div className="bar-row">
                 <header>
                   <span>Reason captured</span>
-                  <strong>100%</strong>
+                  <strong>{reasonCaptureRate}%</strong>
                 </header>
-                <ProgressBar value={100} label="Override reason capture" />
+                <ProgressBar value={reasonCaptureRate} label="Override reason capture" />
               </div>
               <div className="bar-row">
                 <header>
                   <span>PR-visible override notes</span>
-                  <strong>{overrides.length === 0 ? 0 : 100}%</strong>
+                  <strong>{prVisibleRate}%</strong>
                 </header>
-                <ProgressBar
-                  value={overrides.length === 0 ? 0 : 100}
-                  label="PR visible override notes"
-                />
+                <ProgressBar value={prVisibleRate} label="PR visible override notes" />
               </div>
             </div>
           </section>
@@ -95,20 +134,21 @@ export default function OverridesPage() {
               </div>
             </div>
             <ul className="compact-list">
-              <li>
-                <div className="list-row">
-                  <span>healthcare-regulated@1.1.0</span>
-                  <StatusBadge status="overridden" label="1 override" />
-                </div>
-                <p>Auth path change required security approval before merge.</p>
-              </li>
-              <li>
-                <div className="list-row">
-                  <span>fintech@1.4.0</span>
-                  <StatusBadge status="approved" label="0 overrides" />
-                </div>
-                <p>Billing and migration findings are still waiting on evidence or owners.</p>
-              </li>
+              {overriddenPolicies.length === 0 ? (
+                <li>No policy versions have overrides in the current data set.</li>
+              ) : null}
+              {overriddenPolicies.map((policy) => (
+                <li key={policy.policyVersion}>
+                  <div className="list-row">
+                    <span>{policy.policyVersion}</span>
+                    <StatusBadge
+                      status="overridden"
+                      label={`${policy.count} override${policy.count === 1 ? "" : "s"}`}
+                    />
+                  </div>
+                  <p>{policy.examples.join(", ")}</p>
+                </li>
+              ))}
             </ul>
           </section>
         </div>
@@ -133,6 +173,13 @@ export default function OverridesPage() {
               </tr>
             </thead>
             <tbody>
+              {overrides.length === 0 ? (
+                <tr>
+                  <td className="empty-row" colSpan={7}>
+                    No authorized overrides are recorded in the current data set.
+                  </td>
+                </tr>
+              ) : null}
               {overrides.map((item) => (
                 <tr key={item.record.id}>
                   <td>{item.record.repositoryFullName}</td>

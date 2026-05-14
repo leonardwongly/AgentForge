@@ -8,13 +8,38 @@ export type ApiActor = {
 export type AuthzFailure = { ok: false; statusCode: 401 | 403; reason: string };
 export type AuthzDecision = { ok: true } | AuthzFailure;
 
+const allowedRoles = new Set([
+  "platform_admin",
+  "engineering_manager",
+  "auditor",
+  "security_reviewer",
+  "developer"
+]);
+const actorPattern = /^[A-Za-z0-9_.@-]{1,128}$/u;
+const rolePattern = /^[a-z][a-z0-9_-]{0,63}$/u;
+
 export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
-  const login = headerValue(request.headers["x-agentforge-actor"]);
-  const role = headerValue(request.headers["x-agentforge-role"]);
-  if (!login || !role) {
-    return undefined;
+  if (process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS === "true") {
+    const actor = actorFromHeaders(
+      request.headers["x-agentforge-authenticated-actor"],
+      request.headers["x-agentforge-authenticated-role"]
+    );
+    if (actor) {
+      return actor;
+    }
   }
-  return { login, role };
+
+  if (
+    process.env.NODE_ENV !== "production" ||
+    process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS === "true"
+  ) {
+    return actorFromHeaders(
+      request.headers["x-agentforge-actor"],
+      request.headers["x-agentforge-role"]
+    );
+  }
+
+  return undefined;
 }
 
 export function requireApiActor(request: FastifyRequest): ApiActor | AuthzFailure {
@@ -56,4 +81,19 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   const first = Array.isArray(value) ? value[0] : value;
   const trimmed = first?.trim();
   return trimmed || undefined;
+}
+
+function actorFromHeaders(
+  loginHeader: string | string[] | undefined,
+  roleHeader: string | string[] | undefined
+): ApiActor | undefined {
+  const login = headerValue(loginHeader);
+  const role = headerValue(roleHeader);
+  if (!login || !role) {
+    return undefined;
+  }
+  if (!actorPattern.test(login) || !rolePattern.test(role) || !allowedRoles.has(role)) {
+    return undefined;
+  }
+  return { login, role };
 }

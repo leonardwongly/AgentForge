@@ -1,14 +1,22 @@
 import Link from "next/link";
 import { AlertTriangle, Filter, ListChecks } from "lucide-react";
 import { MetricCard, ProgressBar, StatusBadge } from "@agentforge/ui";
-import { dashboardRecords, findingGroups, formatDate, humanize } from "../../data";
+import { DataSourceNotice } from "../../data-source-notice";
+import {
+  findingGroups,
+  formatDate,
+  humanize,
+  loadDashboardData,
+  loadPolicyPacks
+} from "../../data";
 
-export default function PolicyViolationsPage() {
-  const groups = findingGroups();
-  const deterministicFindings = dashboardRecords.flatMap((item) =>
+export default async function PolicyViolationsPage() {
+  const [data, policyPacks] = await Promise.all([loadDashboardData(), loadPolicyPacks()]);
+  const groups = findingGroups(data.records);
+  const deterministicFindings = data.records.flatMap((item) =>
     item.record.verifiedFindings.filter((finding) => finding.type !== "agent_signal_detected")
   );
-  const agentSignals = dashboardRecords.flatMap((item) =>
+  const agentSignals = data.records.flatMap((item) =>
     item.record.verifiedFindings.filter((finding) => finding.type === "agent_signal_detected")
   );
 
@@ -25,6 +33,8 @@ export default function PolicyViolationsPage() {
       </header>
 
       <section className="page">
+        <DataSourceNotice {...data} />
+
         <div className="metrics-grid">
           <MetricCard
             label="Policy findings"
@@ -50,8 +60,11 @@ export default function PolicyViolationsPage() {
           />
           <MetricCard
             label="Policy packs"
-            value="4"
-            detail="Fintech, Platform Engineering, Healthcare / Regulated, Open Source Maintainer."
+            value={String(policyPacks.policyPacks.length)}
+            detail={
+              policyPacks.policyPacks.map((pack) => pack.name).join(", ") ||
+              "No policy packs loaded."
+            }
             tone="pass"
           />
         </div>
@@ -66,6 +79,9 @@ export default function PolicyViolationsPage() {
               <ListChecks size={18} aria-hidden="true" />
             </div>
             <ul className="compact-list">
+              {groups.length === 0 ? (
+                <li>No deterministic policy findings are stored yet.</li>
+              ) : null}
               {groups.map((group) => (
                 <li key={group.type}>
                   <div className="list-row">
@@ -97,7 +113,8 @@ export default function PolicyViolationsPage() {
               <AlertTriangle size={18} aria-hidden="true" />
             </div>
             <ul className="compact-list">
-              {dashboardRecords.slice(0, 5).map((item) => (
+              {data.records.length === 0 ? <li>No recent finding evidence is available.</li> : null}
+              {data.records.slice(0, 5).map((item) => (
                 <li key={item.record.id}>
                   <div className="list-row">
                     <Link href={`/records/${item.record.id}`}>
@@ -136,6 +153,13 @@ export default function PolicyViolationsPage() {
               </tr>
             </thead>
             <tbody>
+              {deterministicFindings.length === 0 ? (
+                <tr>
+                  <td className="empty-row" colSpan={5}>
+                    No deterministic policy findings are stored yet.
+                  </td>
+                </tr>
+              ) : null}
               {deterministicFindings.map((finding) => (
                 <tr key={finding.id}>
                   <td>{humanize(finding.type)}</td>

@@ -6,7 +6,7 @@
   "description": "AgentForge Merge Guard is a deterministic, evidence-based GitHub pull request change-control system.",
   "packageManager": "pnpm@11.1.1",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "dev": "turbo run dev --parallel",

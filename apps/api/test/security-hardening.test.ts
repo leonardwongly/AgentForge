@@ -6,6 +6,7 @@ import { createApp, createInitialState } from "../src/index.js";
 
 const rawGithubToken = "ghp_123456789012345678901234567890123456";
 const rawSource = "export const checkoutToken = process.env.CHECKOUT_TOKEN;";
+const originalNodeEnv = process.env.NODE_ENV;
 
 const policyYaml = `
 version: 1
@@ -27,6 +28,13 @@ function actorHeaders(actor: string, role: string): Record<string, string> {
   return {
     "x-agentforge-actor": actor,
     "x-agentforge-role": role
+  };
+}
+
+function authenticatedActorHeaders(actor: string, role: string): Record<string, string> {
+  return {
+    "x-agentforge-authenticated-actor": actor,
+    "x-agentforge-authenticated-role": role
   };
 }
 
@@ -55,11 +63,15 @@ function sensitivePr(): PullRequestInput {
 async function createPreviewRecord() {
   const state = createInitialState();
   const app = createApp(state);
+  const headers =
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS === "true"
+      ? authenticatedActorHeaders("alex", "platform_admin")
+      : actorHeaders("alex", "platform_admin");
   const response = await app.inject({
     method: "POST",
     url: "/api/policies/preview",
-    payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr() }),
-    headers: { "content-type": "application/json" }
+    payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr(), persist: true }),
+    headers: { "content-type": "application/json", ...headers }
   });
   expect(response.statusCode).toBe(200);
   return { app, state, response };
@@ -71,9 +83,43 @@ afterEach(() => {
   delete process.env.FULL_DIFF_RETENTION;
   delete process.env.REDACT_SECRETS;
   delete process.env.LLM_FEATURES;
+  delete process.env.ALLOW_UNSIGNED_GITHUB_WEBHOOKS;
+  delete process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS;
+  delete process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS;
+  if (originalNodeEnv === undefined) {
+    delete process.env.NODE_ENV;
+  } else {
+    process.env.NODE_ENV = originalNodeEnv;
+  }
 });
 
 describe("security and audit hardening", () => {
+  it("keeps unauthenticated policy preview read-only and rejects unauthenticated persistence", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr() }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json().persisted).toBe(false);
+    expect(state.records).toHaveLength(0);
+    expect(state.auditEvents).toHaveLength(0);
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr(), persist: true }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(rejected.statusCode).toBe(401);
+    expect(state.records).toHaveLength(0);
+    await app.close();
+  });
+
   it("rejects invalid GitHub webhook signatures", async () => {
     process.env.GITHUB_WEBHOOK_SECRET = "secret";
     const app = createApp(createInitialState());
@@ -112,6 +158,11 @@ describe("security and audit hardening", () => {
     const dashboard = await app.inject({ method: "GET", url: "/api/dashboard/blocked-prs" });
     expect(dashboard.body).not.toContain(rawGithubToken);
     expect(dashboard.body).not.toContain(rawSource);
+    const records = await app.inject({ method: "GET", url: "/api/dashboard/records" });
+    expect(records.statusCode).toBe(200);
+    expect(records.body).toContain("records");
+    expect(records.body).not.toContain(rawGithubToken);
+    expect(records.body).not.toContain(rawSource);
     await app.close();
   });
 
@@ -166,9 +217,76 @@ describe("security and audit hardening", () => {
     await app.close();
   });
 
+  it("rejects raw local actor headers in production unless explicitly allowed", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
+    process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS = "true";
+    const { app, state } = await createPreviewRecord();
+    delete process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS;
+    const record = state.records[0]!;
+    const evidence = record.requiredEvidence[0]!;
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        kind: evidence.kind,
+        content: "Security note: raw local actor headers are not production auth context."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(rejected.statusCode).toBe(401);
+
+    process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS = "true";
+    const allowedLocalFallback = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        kind: evidence.kind,
+        content: "Security note: explicit production local fallback accepted."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(allowedLocalFallback.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("accepts authenticated proxy actor headers in production when proxy trust is enabled", async () => {
+    process.env.NODE_ENV = "production";
+    process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
+    const { app, state } = await createPreviewRecord();
+    const record = state.records[0]!;
+    const evidence = record.requiredEvidence[0]!;
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        kind: evidence.kind,
+        content: "Security note: authenticated proxy header context accepted."
+      }),
+      headers: {
+        "content-type": "application/json",
+        ...authenticatedActorHeaders("sam", "developer")
+      }
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(state.records[0]!.requiredEvidence[0]!.providedBy).toBe("sam");
+    await app.close();
+  });
+
   it("rejects unauthorized overrides and records authorized override audit details", async () => {
     const { app, state } = await createPreviewRecord();
     const record = state.records[0]!;
+
+    const activePolicy = await app.inject({
+      method: "PUT",
+      url: `/api/repositories/${record.repositoryId}/policy`,
+      payload: JSON.stringify({ contentYaml: policyYaml }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(activePolicy.statusCode).toBe(200);
 
     const unauthorized = await app.inject({
       method: "POST",
@@ -181,6 +299,21 @@ describe("security and audit hardening", () => {
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
     });
     expect(unauthorized.statusCode).toBe(403);
+
+    const unauthorizedByActivePolicy = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/override`,
+      payload: JSON.stringify({
+        reason: "Engineering manager cannot override this repository policy.",
+        scope: "pr"
+      }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("morgan", "engineering_manager")
+      }
+    });
+    expect(unauthorizedByActivePolicy.statusCode).toBe(403);
+    expect(unauthorizedByActivePolicy.json().error).toContain("not authorized");
 
     const authorized = await app.inject({
       method: "POST",
@@ -214,6 +347,58 @@ describe("security and audit hardening", () => {
     await app.close();
   });
 
+  it("recomputes the Merge Guard result after evidence and reviewer approvals clear requirements", async () => {
+    const { app, state } = await createPreviewRecord();
+    const record = state.records[0]!;
+    const evidence = record.requiredEvidence[0]!;
+    const reviewer = record.requiredReviewers[0]!;
+
+    expect(record.checkStatus).toBe("block");
+
+    const provided = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        kind: evidence.kind,
+        content: "Security note: secret-like value was removed and the old token was revoked."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(provided.statusCode).toBe(200);
+    expect(state.records[0]!.checkStatus).toBe("block");
+
+    const approvedEvidence = await app.inject({
+      method: "PATCH",
+      url: `/api/evidence/${evidence.id}/approve`,
+      payload: JSON.stringify({}),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(approvedEvidence.statusCode).toBe(200);
+    expect(state.records[0]!.checkStatus).toBe("block");
+
+    const approvedReviewer = await app.inject({
+      method: "PATCH",
+      url: `/api/reviewers/${reviewer.id}/approve`,
+      payload: JSON.stringify({}),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("security-team", "security_reviewer")
+      }
+    });
+    expect(approvedReviewer.statusCode).toBe(200);
+
+    const updated = await app.inject({
+      method: "GET",
+      url: `/api/pull-requests/${record.id}/change-control-record`
+    });
+    expect(updated.json().record).toMatchObject({
+      checkStatus: "pass",
+      lifecycle: "passed",
+      decision: expect.objectContaining({ status: "passed" })
+    });
+    await app.close();
+  });
+
   it("exports Change Control Records as JSON and CSV without source code", async () => {
     const { app } = await createPreviewRecord();
 
@@ -222,11 +407,12 @@ describe("security and audit hardening", () => {
         method: "POST",
         url: "/api/exports/change-control-records",
         payload: JSON.stringify({ format }),
-        headers: { "content-type": "application/json" }
+        headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
       });
       const job = await app.inject({
         method: "GET",
-        url: `/api/exports/${created.json().id}`
+        url: `/api/exports/${created.json().id}`,
+        headers: actorHeaders("alex", "platform_admin")
       });
 
       expect(job.statusCode).toBe(200);
@@ -240,6 +426,44 @@ describe("security and audit hardening", () => {
     await app.close();
   });
 
+  it("requires authorized actors for policy, settings, exports, and audit access", async () => {
+    const { app, state } = await createPreviewRecord();
+    const repositoryId = state.records[0]!.repositoryId;
+
+    const policyWithoutActor = await app.inject({
+      method: "PUT",
+      url: `/api/repositories/${repositoryId}/policy`,
+      payload: JSON.stringify({ contentYaml: policyYaml }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(policyWithoutActor.statusCode).toBe(401);
+
+    const settingsWrongRole = await app.inject({
+      method: "PATCH",
+      url: `/api/repositories/${repositoryId}/settings`,
+      payload: JSON.stringify({ fullDiffRetention: "7d" }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(settingsWrongRole.statusCode).toBe(403);
+
+    const exportWithoutActor = await app.inject({
+      method: "POST",
+      url: "/api/exports/change-control-records",
+      payload: JSON.stringify({ format: "json" }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(exportWithoutActor.statusCode).toBe(401);
+
+    const auditWrongRole = await app.inject({
+      method: "GET",
+      url: "/api/audit-events",
+      headers: actorHeaders("sam", "developer")
+    });
+    expect(auditWrongRole.statusCode).toBe(403);
+
+    await app.close();
+  });
+
   it("emits audit events for policy, retention, evidence, reviewer, check, and export actions", async () => {
     const { app, state } = await createPreviewRecord();
     const record = state.records[0]!;
@@ -248,13 +472,13 @@ describe("security and audit hardening", () => {
 
     await app.inject({
       method: "PUT",
-      url: "/api/repositories/repo_local/policy",
+      url: `/api/repositories/${record.repositoryId}/policy`,
       payload: JSON.stringify({ contentYaml: policyYaml }),
       headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
     await app.inject({
       method: "PATCH",
-      url: "/api/repositories/repo_local/settings",
+      url: `/api/repositories/${record.repositoryId}/settings`,
       payload: JSON.stringify({ fullDiffRetention: "7d", sourceCodeStorage: false }),
       headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
@@ -290,7 +514,11 @@ describe("security and audit hardening", () => {
       headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
 
-    const audit = await app.inject({ method: "GET", url: "/api/audit-events" });
+    const audit = await app.inject({
+      method: "GET",
+      url: "/api/audit-events",
+      headers: actorHeaders("alex", "platform_admin")
+    });
     const actions = audit.json().auditEvents.map((event: { action: string }) => event.action);
     expect(actions).toEqual(
       expect.arrayContaining([

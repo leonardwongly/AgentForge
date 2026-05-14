@@ -43,6 +43,95 @@ describe("policy evaluation", () => {
     expect(result.status).toBe("block");
   });
 
+  it("allows an enforce-mode block rule to clear after required evidence and review are approved", async () => {
+    const yaml = `
+version: 1
+agentforge:
+  mode: enforce
+  apply_to:
+    - all_pull_requests
+sensitive_paths:
+  billing:
+    paths:
+      - "src/billing/**"
+    action: block
+    required_reviewers:
+      - "billing-owner"
+    required_evidence:
+      - "rollback_plan"
+`;
+    const parsed = parsePolicyYaml(yaml);
+    const pr: PullRequestInput = {
+      ...(await load("billing-path.json")),
+      manualEvidence: [
+        {
+          kind: "rollback_plan",
+          content: "Rollback plan: revert the billing checkout change.",
+          actor: "sam",
+          approved: true,
+          approvedBy: "billing-owner",
+          approvedAt: "2026-05-13T00:00:00.000Z"
+        }
+      ],
+      reviews: [
+        {
+          reviewer: "billing-owner",
+          reviewerType: "team",
+          state: "APPROVED",
+          submittedAt: "2026-05-13T00:00:00.000Z"
+        }
+      ]
+    };
+    const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(parsed.config));
+    const result = evaluateMergeGuard(pr, facts, parsed.config);
+
+    expect(result.status).toBe("pass");
+    expect(result.requiredEvidence[0]).toMatchObject({
+      kind: "rollback_plan",
+      status: "approved"
+    });
+    expect(result.requiredReviewers[0]).toMatchObject({
+      reviewer: "billing-owner",
+      approved: true
+    });
+  });
+
+  it("does not let agent-assistance signals alone escalate a sensitive path rule", async () => {
+    const yaml = `
+version: 1
+agentforge:
+  mode: enforce
+  apply_to:
+    - all_pull_requests
+agent_assisted:
+  stricter_controls: true
+sensitive_paths:
+  billing:
+    paths:
+      - "src/billing/**"
+    required_reviewers:
+      - "billing-owner"
+    block_for_agent_assisted: true
+`;
+    const parsed = parsePolicyYaml(yaml);
+    const pr: PullRequestInput = {
+      ...(await load("billing-agent.json")),
+      reviews: [
+        {
+          reviewer: "billing-owner",
+          reviewerType: "team",
+          state: "APPROVED",
+          submittedAt: "2026-05-13T00:00:00.000Z"
+        }
+      ]
+    };
+    const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(parsed.config));
+    const result = evaluateMergeGuard(pr, facts, parsed.config);
+
+    expect(result.findings.map((finding) => finding.type)).toContain("agent_signal_detected");
+    expect(result.status).toBe("pass");
+  });
+
   it("does not allow inferred findings to block", async () => {
     const result = await evaluate("assertion-weakening.json", "enterprise-strict.yaml");
     expect(result.findings.some((finding) => finding.confidence === "inferred")).toBe(true);
@@ -52,5 +141,46 @@ describe("policy evaluation", () => {
   it("preserves policy pack version in result", async () => {
     const result = await evaluate("policy-update-after-open.json");
     expect(result.policyVersion).toBe("fintech@1.0.0");
+  });
+
+  it("passes without requirements when apply_to excludes the pull request", async () => {
+    const yaml = await readFile(
+      path.resolve(process.cwd(), "fixtures", "policies", "fintech.yaml"),
+      "utf8"
+    );
+    const parsed = parsePolicyYaml(yaml);
+    parsed.config.agentforge.apply_to = ["repo:acme/other", "base:release/*"];
+    parsed.config.agentforge.mode = "enforce";
+    const pr = await load("billing-path.json");
+    const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(parsed.config));
+    const result = evaluateMergeGuard(pr, facts, parsed.config);
+
+    expect(result.status).toBe("pass");
+    expect(result.findings).toHaveLength(0);
+    expect(result.requiredEvidence).toHaveLength(0);
+    expect(result.requiredReviewers).toHaveLength(0);
+    expect(result.explanation).toContain("Policy scope does not include this pull request.");
+  });
+
+  it("applies scoped policies by repository, branch, and label", async () => {
+    const yaml = await readFile(
+      path.resolve(process.cwd(), "fixtures", "policies", "fintech.yaml"),
+      "utf8"
+    );
+    const parsed = parsePolicyYaml(yaml);
+    parsed.config.agentforge.apply_to = [
+      "repo:acme/billing-service",
+      "base:main",
+      "label:agent-assisted"
+    ];
+    const pr: PullRequestInput = {
+      ...(await load("billing-path.json")),
+      labels: ["agent-assisted"]
+    };
+    const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(parsed.config));
+    const result = evaluateMergeGuard(pr, facts, parsed.config);
+
+    expect(result.findings.map((finding) => finding.type)).toContain("sensitive_path_changed");
+    expect(result.requiredEvidence.map((item) => item.kind)).toContain("rollback_plan");
   });
 });

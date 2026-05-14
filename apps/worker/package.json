@@ -9,16 +9,18 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/src/index.js",
+    "start": "tsx dist/apps/worker/src/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@agentforge/config": "workspace:*",
     "@agentforge/core": "workspace:*",
+    "@agentforge/db": "workspace:*",
     "@agentforge/detectors": "workspace:*",
     "@agentforge/github": "workspace:*",
     "@agentforge/policy": "workspace:*",
     "@agentforge/records": "workspace:*",
+    "@agentforge/security": "workspace:*",
     "bullmq": "5.76.8",
     "ioredis": "5.10.1"
   }

@@ -24,7 +24,12 @@ function fintechConfig(): DetectorPolicyConfig {
         paths: [".github/workflows/**", "scripts/deploy/**", "infra/prod/**"]
       }
     },
-    migrationPaths: ["db/migrations/**", "migrations/**", "prisma/migrations/**"]
+    migrationPaths: [
+      "db/migrations/**",
+      "migrations/**",
+      "prisma/migrations/**",
+      "**/prisma/migrations/**"
+    ]
   };
 }
 
@@ -78,6 +83,79 @@ describe("deterministic detectors", () => {
     expect(migration.map((fact) => fact.type)).toContain("migration_added");
     expect(secret.map((fact) => fact.type)).toContain("secret_like_value_detected");
     expect(JSON.stringify(secret)).not.toContain("ghp_123456");
+  });
+
+  it("detects renamed sensitive paths and nested Prisma migration edits", () => {
+    const facts = extractVerifiedFacts(
+      {
+        repositoryFullName: "acme/payments",
+        pullRequestNumber: 14,
+        title: "Move auth and edit migration",
+        authorLogin: "sam",
+        baseBranch: "main",
+        headBranch: "feature/move-auth",
+        headSha: "sha14",
+        changedFiles: [
+          {
+            filename: "src/session.ts",
+            previousFilename: "src/auth/session.ts",
+            status: "renamed"
+          },
+          {
+            filename: "packages/db/prisma/migrations/20260513000000_init/migration.sql",
+            status: "modified",
+            patch: "+ALTER TABLE users ADD COLUMN risk_score INTEGER;"
+          }
+        ]
+      },
+      fintechConfig()
+    );
+
+    expect(facts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "sensitive_path_changed",
+          path: "src/auth/session.ts"
+        }),
+        expect.objectContaining({
+          type: "migration_added",
+          path: "packages/db/prisma/migrations/20260513000000_init/migration.sql",
+          metadata: expect.objectContaining({ status: "modified" })
+        })
+      ])
+    );
+  });
+
+  it("flags dependency changes from patches when manifest contents are unavailable", () => {
+    const facts = extractVerifiedFacts(
+      {
+        repositoryFullName: "acme/payments",
+        pullRequestNumber: 15,
+        title: "Add dependency without content fetch",
+        authorLogin: "sam",
+        baseBranch: "main",
+        headBranch: "feature/deps",
+        headSha: "sha15",
+        changedFiles: [
+          {
+            filename: "package.json",
+            status: "modified",
+            patch: '@@\n+    "left-pad": "2.0.0"'
+          }
+        ]
+      },
+      fintechConfig()
+    );
+
+    expect(facts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "dependency_added",
+          confidence: "observed",
+          metadata: expect.objectContaining({ patchOnly: true })
+        })
+      ])
+    );
   });
 
   it("handles a 500-file PR without unbounded detector work", () => {

@@ -148,6 +148,55 @@ button {
   gap: 22px;
 }
 
+.notice {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #f8fafc;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+}
+
+.notice h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.notice p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.notice--unavailable {
+  background: #fff1f0;
+  border-color: #ffd3cf;
+}
+
+.empty-row {
+  color: var(--muted);
+  text-align: center;
+}
+
+.empty-state {
+  padding: 22px;
+  color: var(--muted);
+}
+
+.empty-state h3 {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.empty-state p {
+  margin: 0;
+  line-height: 1.45;
+}
+
 .toolbar,
 .panel-header,
 .record-title,
@@ -207,6 +256,13 @@ button {
   background: #fff1f0;
   color: var(--block);
   border-color: #ffd3cf;
+}
+
+.button:disabled,
+.select:disabled,
+.input:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 .metrics-grid {
@@ -417,6 +473,7 @@ button {
 .status-badge--missing,
 .status-badge--required,
 .status-badge--enforce,
+.status-badge--optimize,
 .status-badge--critical,
 .status-badge--high {
   background: #fff1f0;
@@ -463,6 +520,19 @@ button {
   min-height: 520px;
   font-size: 13px;
   line-height: 1.55;
+}
+
+.policy-editor-form {
+  margin: 0;
+}
+
+.code-pane--editor {
+  border: 0;
+  border-radius: 0;
+  display: block;
+  width: 100%;
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 .step-grid {
@@ -526,6 +596,17 @@ button {
 .field .input,
 .field .select {
   width: 100%;
+}
+
+.owner-mapping-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.owner-mapping-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(130px, 0.45fr);
+  gap: 14px;
 }
 
 .toggle-row {
@@ -623,7 +704,7 @@ button {
 
 .mode-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
 }
 
@@ -710,6 +791,7 @@ button {
   .three-column,
   .form-grid,
   .mode-grid,
+  .owner-mapping-row,
   .summary-strip {
     grid-template-columns: 1fr;
   }
@@ -725,8 +807,13 @@ button {
 
   .record-title,
   .list-row,
-  .setting-row {
+  .setting-row,
+  .notice {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .notice {
+    display: flex;
   }
 }

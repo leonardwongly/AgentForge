@@ -141,7 +141,7 @@ export function applyOverride(input: {
     checkStatus: "pass",
     lifecycle: "overridden",
     decision: {
-      status: "merged_after_override",
+      status: "override_approved",
       decidedAt: now,
       decidedBy: input.override.actor,
       overrideBy: input.override.actor,
@@ -206,7 +206,7 @@ export function exportChangeControlRecordsCsv(
     "checkStatus",
     "lifecycle",
     "findingCount",
-    "missingEvidenceCount",
+    "openEvidenceCount",
     "requiredReviewerCount",
     "findingsJson",
     "requiredEvidenceJson",
@@ -230,7 +230,7 @@ export function exportChangeControlRecordsCsv(
       record.checkStatus,
       record.lifecycle,
       String(record.verifiedFindings.length),
-      String(record.requiredEvidence.filter((item) => item.status === "missing").length),
+      String(record.requiredEvidence.filter((item) => item.status !== "approved").length),
       String(record.requiredReviewers.filter((item) => item.tier === "required").length),
       JSON.stringify(record.verifiedFindings),
       JSON.stringify(record.requiredEvidence),
@@ -283,6 +283,7 @@ export function explainChangeControlRecord(record: ChangeControlRecord): string[
     `Policy ${record.policyVersion} evaluated PR ${record.repositoryFullName}#${record.pullRequestNumber} in ${record.mode} mode.`
   ];
   const missingEvidence = record.requiredEvidence.filter((item) => item.status === "missing");
+  const unapprovedEvidence = record.requiredEvidence.filter((item) => item.status === "provided");
   const pendingReviewers = record.requiredReviewers.filter(
     (item) => item.tier === "required" && !item.approved
   );
@@ -317,11 +318,15 @@ export function explainChangeControlRecord(record: ChangeControlRecord): string[
   for (const item of missingEvidence) {
     lines.push(`Required evidence missing: ${humanize(item.kind)}.`);
   }
+  for (const item of unapprovedEvidence) {
+    lines.push(`Required evidence awaiting approval: ${humanize(item.kind)}.`);
+  }
   for (const reviewer of pendingReviewers) {
     lines.push(`Reviewer approval required: ${reviewer.reviewer}.`);
   }
   if (
     missingEvidence.length === 0 &&
+    unapprovedEvidence.length === 0 &&
     pendingReviewers.length === 0 &&
     record.checkStatus !== "block"
   ) {

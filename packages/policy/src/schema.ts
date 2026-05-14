@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { EvidenceKind, PolicyMode } from "@agentforge/core";
 
-export const policyModeSchema = z.enum(["observe", "warn", "enforce"]);
+export const policyModeSchema = z.enum(["observe", "warn", "enforce", "optimize"]);
 
 const evidenceKindSchema = z.enum([
   "rollback_plan",
@@ -41,7 +41,14 @@ const dependencyRuleSchema = z.object({
 });
 
 const databaseRuleSchema = z.object({
-  paths: z.array(z.string()).default(["db/migrations/**", "migrations/**"]),
+  paths: z
+    .array(z.string())
+    .default([
+      "db/migrations/**",
+      "migrations/**",
+      "prisma/migrations/**",
+      "**/prisma/migrations/**"
+    ]),
   required_reviewers: z.array(z.string()).default([]),
   required_evidence: z.array(evidenceKindSchema).default([]),
   action: actionSchema.default("block"),
@@ -145,7 +152,12 @@ export const policyConfigSchema = z.object({
   database: z
     .object({
       migrations: databaseRuleSchema.default({
-        paths: ["db/migrations/**", "migrations/**"],
+        paths: [
+          "db/migrations/**",
+          "migrations/**",
+          "prisma/migrations/**",
+          "**/prisma/migrations/**"
+        ],
         required_reviewers: ["database-owner"],
         required_evidence: ["rollback_plan", "migration_dry_run"],
         action: "block"
@@ -153,7 +165,12 @@ export const policyConfigSchema = z.object({
     })
     .default({
       migrations: {
-        paths: ["db/migrations/**", "migrations/**"],
+        paths: [
+          "db/migrations/**",
+          "migrations/**",
+          "prisma/migrations/**",
+          "**/prisma/migrations/**"
+        ],
         required_reviewers: ["database-owner"],
         required_evidence: ["rollback_plan", "migration_dry_run"],
         action: "block"
@@ -197,6 +214,9 @@ export function normalizeEvidenceKinds(values: EvidenceKind[] | undefined): Evid
 }
 
 export function strictestMode(modes: PolicyMode[]): PolicyMode {
+  if (modes.includes("optimize")) {
+    return "optimize";
+  }
   if (modes.includes("enforce")) {
     return "enforce";
   }

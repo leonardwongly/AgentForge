@@ -179,6 +179,7 @@ describe("records", () => {
 
     expect(json).toContain("security_note");
     expect(csv).toContain("findingsJson");
+    expect(csv).toContain("openEvidenceCount");
     for (const artifact of [json, csv]) {
       expect(artifact).not.toContain("ghp_123456");
       expect(artifact).not.toContain("export const token");
@@ -244,6 +245,34 @@ describe("records", () => {
         expect.stringContaining("Authorized override recorded by alex"),
         "Override reason: Emergency rollback window approved."
       ])
+    );
+  });
+
+  it("counts provided but unapproved evidence as open in CSV exports", () => {
+    const record = createChangeControlRecord({
+      organizationId: "org",
+      repositoryId: "repo",
+      pr,
+      policyResult: {
+        ...result,
+        requiredEvidence: [
+          {
+            id: "evidence_1",
+            kind: "security_note",
+            status: "provided",
+            requiredByFindingId: "fact_secret",
+            providedBy: "sam",
+            providedAt: "2026-05-12T00:00:00.000Z"
+          }
+        ]
+      }
+    });
+    const csv = exportChangeControlRecordsCsv([record]);
+
+    expect(csv.split("\n")[0]).toContain("openEvidenceCount");
+    expect(csv.split("\n")[1]).toContain(",1,");
+    expect(explainChangeControlRecord(record)).toContain(
+      "Required evidence awaiting approval: security note."
     );
   });
 });

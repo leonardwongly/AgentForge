@@ -17,6 +17,17 @@ Modes:
 - `observe`: records findings and always passes.
 - `warn`: records what would block but does not block.
 - `enforce`: blocks when required policy evidence, required reviewers, or blocking findings are unmet.
+- `optimize`: preserves enforce-mode blocking while teams tune evidence quality, routing, overrides, and operational metrics.
+
+Applicability scopes:
+
+- `all_pull_requests`
+- `repo:<glob>` or `repository:<glob>`
+- `base:<glob>` or `base_branch:<glob>`
+- `head:<glob>`, `head_branch:<glob>`, or `branch:<glob>`
+- `label:<glob>`
+
+Scopes are matched case-insensitively. If none match, Merge Guard returns a passing result with no findings, evidence, or reviewer requirements for that PR.
 
 Supported V1 rule groups:
 
@@ -74,3 +85,5 @@ Preview:
 ```bash
 pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.json
 ```
+
+The API preview route is read-only unless the request includes `persist: true` and an authorized server-resolved actor. Use read-only previews for policy tuning and persisted previews only when intentionally creating audit/demo records.

@@ -27,6 +27,7 @@ type StatusBadgeProps = {
     | "approved"
     | "required"
     | "enforce"
+    | "optimize"
     | "observe"
     | "conditional"
     | "suggested"

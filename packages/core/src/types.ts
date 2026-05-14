@@ -1,4 +1,4 @@
-export type PolicyMode = "observe" | "warn" | "enforce";
+export type PolicyMode = "observe" | "warn" | "enforce" | "optimize";
 
 export type FindingSeverity = "critical" | "high" | "medium" | "low";
 
@@ -111,7 +111,13 @@ export type ChangeControlRecord = {
     | "merged"
     | "closed";
   decision?: {
-    status: "passed" | "blocked" | "merged" | "merged_after_override" | "closed_without_merge";
+    status:
+      | "passed"
+      | "blocked"
+      | "override_approved"
+      | "merged"
+      | "merged_after_override"
+      | "closed_without_merge";
     decidedAt?: string | undefined;
     decidedBy?: string | undefined;
     overrideBy?: string | undefined;
@@ -126,6 +132,7 @@ export type PullRequestReviewState = "APPROVED" | "CHANGES_REQUESTED" | "COMMENT
 export type PullRequestReview = {
   reviewer: string;
   reviewerType?: "user" | "team" | undefined;
+  teamSlugs?: string[] | undefined;
   state: PullRequestReviewState;
   submittedAt: string;
 };
@@ -212,7 +219,9 @@ export type AuditEventAction =
   | "reviewer_approved"
   | "check_published"
   | "record_exported"
-  | "retention_changed";
+  | "retention_changed"
+  | "repository_settings_changed"
+  | "owner_mapping_changed";
 
 export type AuditEventRecord = {
   id: string;
@@ -280,5 +289,5 @@ export function confidenceCanBlock(confidence: FactConfidence): boolean {
 }
 
 export function policyModeAllowsBlocking(mode: PolicyMode): boolean {
-  return mode === "enforce";
+  return mode === "enforce" || mode === "optimize";
 }

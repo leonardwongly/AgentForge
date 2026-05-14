@@ -105,11 +105,41 @@ function latestApproval(
   return [...reviews]
     .filter(
       (review) =>
-        review.state === "APPROVED" &&
-        review.reviewer.toLowerCase() === reviewer.toLowerCase() &&
-        (review.reviewerType ?? reviewerType) === reviewerType
+        review.state === "APPROVED" && reviewMatchesReviewer(review, reviewer, reviewerType)
     )
     .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))[0];
+}
+
+function reviewMatchesReviewer(
+  review: PullRequestReview,
+  reviewer: string,
+  reviewerType: ReviewerRequirement["reviewerType"]
+): boolean {
+  if (reviewerType === "team") {
+    return reviewMatchesTeam(review, reviewer);
+  }
+  return (
+    (review.reviewerType ?? "user") === "user" &&
+    review.reviewer.toLowerCase() === reviewer.toLowerCase()
+  );
+}
+
+function reviewMatchesTeam(review: PullRequestReview, reviewer: string): boolean {
+  const requiredTeam = normalizeTeamSlug(reviewer);
+  if (!requiredTeam) {
+    return false;
+  }
+  if (
+    (review.reviewerType ?? "user") === "team" &&
+    normalizeTeamSlug(review.reviewer) === requiredTeam
+  ) {
+    return true;
+  }
+  return (review.teamSlugs ?? []).some((teamSlug) => normalizeTeamSlug(teamSlug) === requiredTeam);
+}
+
+function normalizeTeamSlug(value: string): string {
+  return value.trim().replace(/^@/u, "").split("/").at(-1)?.toLowerCase() ?? "";
 }
 
 function reviewerTierRank(tier: ReviewerRequirement["tier"]): number {

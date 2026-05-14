@@ -4,6 +4,7 @@ import { createApp, createInitialState } from "../src/index.js";
 
 afterEach(() => {
   delete process.env.GITHUB_WEBHOOK_SECRET;
+  delete process.env.ALLOW_UNSIGNED_GITHUB_WEBHOOKS;
 });
 
 describe("GitHub webhook API", () => {
@@ -75,5 +76,36 @@ describe("GitHub webhook API", () => {
 
     expect(response.statusCode).toBe(401);
     await app.close();
+  });
+
+  it("rejects unsigned webhooks unless explicit local unsigned mode is enabled", async () => {
+    const rejected = createApp(createInitialState());
+    const response = await rejected.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload: JSON.stringify({ action: "opened" }),
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-no-secret",
+        "x-github-event": "pull_request"
+      }
+    });
+    expect(response.statusCode).toBe(401);
+    await rejected.close();
+
+    process.env.ALLOW_UNSIGNED_GITHUB_WEBHOOKS = "true";
+    const allowed = createApp(createInitialState());
+    const localOnly = await allowed.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload: JSON.stringify({ action: "opened" }),
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-unsigned-local",
+        "x-github-event": "pull_request"
+      }
+    });
+    expect(localOnly.statusCode).toBe(202);
+    await allowed.close();
   });
 });
