@@ -79,6 +79,51 @@ type RepositoryDataHandlingState = {
   auditRecordRetentionDays: number;
 };
 
+type RepositorySummaryRow = {
+  id: string;
+  fullName: string;
+  enabled: boolean;
+  mode: ChangeControlRecord["mode"] | null;
+  protected: boolean;
+  defaultBranch: string;
+  currentPolicyVersion: {
+    contentYaml: string;
+    version: string;
+    mode: ChangeControlRecord["mode"] | null;
+  } | null;
+  settings: {
+    sourceCodeStorage: boolean;
+    fullDiffRetention: string;
+    redactSecrets: boolean;
+    llmFeatures: boolean;
+    auditRecordRetentionDays: number;
+  } | null;
+};
+
+type OwnerMappingRow = {
+  id: string;
+  organizationId: string;
+  repositoryId: string | null;
+  ownerKey: string;
+  reviewer: string;
+  reviewerType: string;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type AuditEventRow = {
+  id: string;
+  organizationId: string;
+  repositoryId: string | null;
+  pullRequestId: string | null;
+  actor: string;
+  action: string;
+  targetType: string;
+  targetId: string;
+  metadataJson: unknown;
+  createdAt: Date;
+};
+
 type RepositorySettingsState = {
   repositoryId: string;
   enabled: boolean;
@@ -1043,7 +1088,7 @@ async function listRepositorySummaries(
       include: { currentPolicyVersion: true, settings: true },
       orderBy: { fullName: "asc" }
     });
-    return rows.map((row) => {
+    return rows.map((row: RepositorySummaryRow) => {
       const parsedPolicy = row.currentPolicyVersion
         ? parsePolicyYaml(row.currentPolicyVersion.contentYaml)
         : undefined;
@@ -1370,14 +1415,11 @@ async function listConfiguredOwnerMappings(
   repositoryId?: string
 ): Promise<OwnerMappingState[]> {
   if (prisma) {
-    const findArgs: Parameters<typeof prisma.ownerMapping.findMany>[0] = {
+    const rows = await prisma.ownerMapping.findMany({
+      ...(repositoryId ? { where: { repositoryId } } : {}),
       orderBy: [{ repositoryId: "asc" }, { ownerKey: "asc" }]
-    };
-    if (repositoryId) {
-      findArgs.where = { repositoryId };
-    }
-    const rows = await prisma.ownerMapping.findMany(findArgs);
-    return rows.map((row) => {
+    });
+    return rows.map((row: OwnerMappingRow) => {
       const output: OwnerMappingState = {
         id: row.id,
         organizationId: row.organizationId,
@@ -1835,7 +1877,7 @@ async function listAuditEvents(
     orderBy: { createdAt: "desc" },
     take: 250
   });
-  return rows.map((row) => ({
+  return rows.map((row: AuditEventRow) => ({
     id: row.id,
     organizationId: row.organizationId,
     repositoryId: row.repositoryId ?? undefined,
