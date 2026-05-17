@@ -4,7 +4,15 @@ import tsParser from "@typescript-eslint/parser";
 
 export default [
   {
-    ignores: ["**/dist/**", "**/.next/**", "**/node_modules/**", "**/coverage/**", "pnpm-lock.yaml"]
+    ignores: [
+      "**/dist/**",
+      "**/.next/**",
+      "**/node_modules/**",
+      "**/coverage/**",
+      "**/playwright-report/**",
+      "**/test-results/**",
+      "pnpm-lock.yaml"
+    ]
   },
   {
     files: ["**/*.{ts,tsx}"],
