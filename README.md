@@ -35,7 +35,7 @@ docs/        Product, setup, security, policy, and testing docs
 
 Prerequisites:
 
-- Node.js 20 or newer
+- Node.js 22.13 or newer
 - Corepack enabled for pnpm
 - Docker for local Postgres, Redis, and optional MinIO exports
 
