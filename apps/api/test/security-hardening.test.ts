@@ -6,7 +6,22 @@ import { createApp, createInitialState } from "../src/index.js";
 
 const rawGithubToken = "ghp_123456789012345678901234567890123456";
 const rawSource = "export const checkoutToken = process.env.CHECKOUT_TOKEN;";
-const originalNodeEnv = process.env.NODE_ENV;
+const mutableEnvKeys = [
+  "DATABASE_URL",
+  "REDIS_URL",
+  "NODE_ENV",
+  "GITHUB_WEBHOOK_SECRET",
+  "SOURCE_CODE_STORAGE",
+  "FULL_DIFF_RETENTION",
+  "REDACT_SECRETS",
+  "LLM_FEATURES",
+  "ALLOW_UNSIGNED_GITHUB_WEBHOOKS",
+  "AGENTFORGE_API_TRUST_PROXY_HEADERS",
+  "AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS"
+] as const;
+const originalEnv = new Map<string, string | undefined>(
+  mutableEnvKeys.map((key) => [key, process.env[key]])
+);
 
 const policyYaml = `
 version: 1
@@ -78,22 +93,27 @@ async function createPreviewRecord() {
 }
 
 afterEach(() => {
-  delete process.env.GITHUB_WEBHOOK_SECRET;
-  delete process.env.SOURCE_CODE_STORAGE;
-  delete process.env.FULL_DIFF_RETENTION;
-  delete process.env.REDACT_SECRETS;
-  delete process.env.LLM_FEATURES;
-  delete process.env.ALLOW_UNSIGNED_GITHUB_WEBHOOKS;
-  delete process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS;
-  delete process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS;
-  if (originalNodeEnv === undefined) {
-    delete process.env.NODE_ENV;
-  } else {
-    process.env.NODE_ENV = originalNodeEnv;
+  for (const key of mutableEnvKeys) {
+    const originalValue = originalEnv.get(key);
+    if (originalValue === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = originalValue;
+    }
   }
 });
 
 describe("security and audit hardening", () => {
+  it("does not leak local database defaults into process env during in-memory test runs", async () => {
+    process.env.NODE_ENV = "test";
+    delete process.env.DATABASE_URL;
+
+    const app = createApp(createInitialState());
+
+    expect(process.env.DATABASE_URL).toBeUndefined();
+    await app.close();
+  });
+
   it("keeps unauthenticated policy preview read-only and rejects unauthenticated persistence", async () => {
     const state = createInitialState();
     const app = createApp(state);

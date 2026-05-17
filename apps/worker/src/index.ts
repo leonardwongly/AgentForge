@@ -62,10 +62,10 @@ export async function processMergeGuardEvaluationJob(
   data: MergeGuardEvaluationJobData
 ): Promise<MergeGuardEvaluationJobResult> {
   const config = loadConfig();
-  const prisma = config.databaseUrl && config.nodeEnv !== "test" ? new PrismaClient() : undefined;
-  if (config.databaseUrl && config.nodeEnv !== "test") {
-    process.env.DATABASE_URL = config.databaseUrl;
-  }
+  const prisma =
+    config.databaseUrl && config.nodeEnv !== "test"
+      ? new PrismaClient({ datasourceUrl: config.databaseUrl })
+      : undefined;
 
   try {
     const githubContext = await resolvePullRequestForJob(data, config);
