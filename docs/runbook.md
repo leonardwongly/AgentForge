@@ -55,7 +55,7 @@ Set `AGENTFORGE_API_TRUST_PROXY_HEADERS=true` for deployed API traffic after the
 1. Stop the worker or pause queue consumption.
 2. Back up PostgreSQL.
 3. Run `pnpm prisma:validate`.
-4. Run `pnpm db:migrate`.
+4. Run `pnpm db:deploy` for deployed environments. Use `pnpm db:migrate` only for local development migrations.
 5. Run `pnpm db:seed` when built-in policy packs changed.
 6. Start API and web.
 7. Start worker.
@@ -113,6 +113,7 @@ pnpm format:check
 pnpm typecheck
 pnpm test
 pnpm prisma:validate
+pnpm db:generate
 pnpm build
 pnpm test:e2e
 pnpm audit --audit-level high

@@ -76,6 +76,7 @@ integration and E2E runs expect the local Compose services to be running and
 seeded with `pnpm db:migrate && pnpm db:seed`.
 
 Production launch and rollback steps are documented in `docs/runbook.md`.
+Railway-specific service setup, migration, and webhook cutover steps are documented in `docs/railway-deployment.md`.
 
 ## Environment Variables
 
