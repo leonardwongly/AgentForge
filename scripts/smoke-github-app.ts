@@ -1,6 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { cwd } from "node:process";
 import { loadConfig } from "../packages/config/src/index.ts";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "../packages/detectors/src/index.ts";
 import {
@@ -31,9 +28,10 @@ async function main(): Promise<void> {
     printUsage();
     return;
   }
-  validateOptions(options);
 
   const config = loadConfig();
+  options.installationId ??= config.github.installationId;
+  validateOptions(options);
   const missing = [
     ["GITHUB_APP_ID", config.github.appId],
     ["GITHUB_APP_PRIVATE_KEY", config.github.privateKey],
@@ -107,7 +105,6 @@ async function main(): Promise<void> {
 
 function parseArgs(argv: string[]): SmokeOptions {
   const options: SmokeOptions = {
-    installationId: readRuntimeValue("GITHUB_INSTALLATION_ID"),
     publishCheck: false,
     help: false
   };
@@ -178,58 +175,6 @@ function parsePositiveInteger(value: string, flag: string): number {
 
 function isSafeGithubName(value: string): boolean {
   return /^[A-Za-z0-9_.-]+$/u.test(value);
-}
-
-function readRuntimeValue(key: string): string | undefined {
-  const fromEnv = process.env[key]?.trim();
-  if (fromEnv) {
-    return fromEnv;
-  }
-  const dotEnvPath = findDotEnv(cwd());
-  if (!dotEnvPath) {
-    return undefined;
-  }
-  for (const rawLine of readFileSync(dotEnvPath, "utf8").split(/\r?\n/u)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) {
-      continue;
-    }
-    const separator = line.indexOf("=");
-    if (separator <= 0) {
-      continue;
-    }
-    if (line.slice(0, separator).trim() !== key) {
-      continue;
-    }
-    const value = unquote(line.slice(separator + 1).trim()).trim();
-    return value || undefined;
-  }
-  return undefined;
-}
-
-function findDotEnv(start: string): string | undefined {
-  let current = start;
-  for (;;) {
-    const candidate = join(current, ".env");
-    if (existsSync(candidate)) {
-      return candidate;
-    }
-    const parent = dirname(current);
-    if (parent === current) {
-      return undefined;
-    }
-    current = parent;
-  }
-}
-
-function unquote(value: string): string {
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    return value.slice(1, -1);
-  }
-  return value;
 }
 
 function printUsage(): void {

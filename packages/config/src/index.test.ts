@@ -34,4 +34,13 @@ describe("AgentForge runtime config", () => {
     );
     expect(config.redisUrl).toBe("redis://localhost:6379");
   });
+
+  it("loads optional GitHub installation id for local smoke tests", () => {
+    const config = loadConfig({
+      NODE_ENV: "development",
+      GITHUB_INSTALLATION_ID: "12345"
+    });
+
+    expect(config.github.installationId).toBe("12345");
+  });
 });
