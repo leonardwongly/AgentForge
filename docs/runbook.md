@@ -105,6 +105,14 @@ pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.
 curl -fsS "$API_BASE_URL/health"
 ```
 
+Run the GitHub App read-only smoke test against a test PR before sending real webhooks:
+
+```bash
+pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-id <installation-id>
+```
+
+This verifies that the installed GitHub App can mint an installation token, read PR metadata, files, commits, reviews, manifest contents, and evaluate policy without publishing a check. After the read-only smoke passes, re-run with `--publish-check` on the same test PR to verify `Checks: read/write` and check-run output.
+
 Then create a test PR that changes a sensitive path and confirm:
 
 - the webhook delivery is accepted once and duplicates are ignored;

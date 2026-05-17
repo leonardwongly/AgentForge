@@ -25,6 +25,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "fixtures:run": "tsx scripts/run-fixtures.ts",
+    "github:smoke": "tsx scripts/smoke-github-app.ts",
     "policy:validate": "tsx scripts/validate-policy.ts",
     "policy:preview": "tsx scripts/preview-policy.ts",
     "prisma:validate": "pnpm --filter @agentforge/db prisma:validate"
