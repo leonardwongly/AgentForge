@@ -4,6 +4,7 @@ import {
   buildCheckRunPayload,
   enrichPullRequestReviewsWithTeamMemberships,
   fetchPullRequestInputFromGithub,
+  MERGE_GUARD_CHECK_NAME,
   normalizeGithubWebhook,
   pullRequestInputFromFixture,
   shouldEnqueueEvaluation,
@@ -105,6 +106,12 @@ describe("github integration", () => {
       shouldEnqueueEvaluation({
         ...checkEnvelope,
         checkRun: { ...checkEnvelope.checkRun!, pullRequests: [] }
+      })
+    ).toBe(false);
+    expect(
+      shouldEnqueueEvaluation({
+        ...checkEnvelope,
+        checkRun: { ...checkEnvelope.checkRun!, name: MERGE_GUARD_CHECK_NAME }
       })
     ).toBe(false);
     expect(installationEnvelope.installation).toMatchObject({

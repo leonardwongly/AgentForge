@@ -72,6 +72,8 @@ export type CheckRunPayload = {
   };
 };
 
+export const MERGE_GUARD_CHECK_NAME = "AgentForge Merge Guard";
+
 type GithubRequest<TData> = (params: Record<string, unknown>) => Promise<{ data: TData }>;
 
 export type GithubAdapterClient = {
@@ -162,6 +164,7 @@ export function shouldEnqueueEvaluation(envelope: GithubWebhookEnvelope): boolea
   }
   if (envelope.event === "check_run" && envelope.checkRun) {
     return (
+      envelope.checkRun.name !== MERGE_GUARD_CHECK_NAME &&
       envelope.checkRun.pullRequests.length > 0 &&
       ["completed", "rerequested", "requested_action"].includes(envelope.action ?? "")
     );
@@ -371,7 +374,7 @@ export function buildCheckRunPayload(
   result: PolicyResult
 ): CheckRunPayload {
   return {
-    name: "AgentForge Merge Guard",
+    name: MERGE_GUARD_CHECK_NAME,
     headSha: pr.headSha,
     status: "completed",
     conclusion: githubConclusionForPolicyResult(result),
