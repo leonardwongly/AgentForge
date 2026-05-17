@@ -86,6 +86,23 @@ Branch protection should require the `AgentForge Merge Guard` check before enfor
 
 If `Members: read` is missing or the membership lookup fails, team reviewer requirements remain pending. This is intentional fail-closed behavior; do not move repositories into enforce mode until a test PR proves team approvals clear correctly.
 
+## Repository Protection Gate
+
+Before launch, enable branch protection on `main` and require these GitHub checks:
+
+- `CI`
+- `Security`
+- `E2E`
+- `AgentForge Merge Guard` after the GitHub App publish smoke passes
+
+Verify protection is active:
+
+```bash
+gh api repos/<owner>/<repo>/branches/main/protection --jq '.required_status_checks.contexts'
+```
+
+The protection endpoint must not return `404 Branch not protected` before any repository moves to `enforce` or `optimize`.
+
 ## Launch Smoke Tests
 
 Run these before enabling protected-branch enforcement:
