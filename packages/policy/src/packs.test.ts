@@ -21,6 +21,7 @@ describe("built-in policy packs", () => {
     for (const pack of builtinPolicyPacks) {
       const parsed = parsePolicyYaml(pack.contentYaml);
 
+      expect(parsed.errors).toEqual([]);
       expect(parsed.config.data_retention).toMatchObject({
         source_code_storage: false,
         full_diff_retention: "disabled",
