@@ -36,12 +36,16 @@ docs/        Product, setup, security, policy, and testing docs
 Prerequisites:
 
 - Node.js 22.13 or newer
-- Corepack enabled for pnpm
+- Corepack enabled for pnpm, or a globally installed `pnpm@11.1.1` when your Node build does not ship Corepack
 - Docker for local Postgres, Redis, and optional MinIO exports
 
 ```bash
-corepack enable
-corepack prepare pnpm@11.1.1 --activate
+if command -v corepack >/dev/null 2>&1; then
+  corepack enable
+  corepack prepare pnpm@11.1.1 --activate
+else
+  npm install -g pnpm@11.1.1
+fi
 pnpm install
 docker compose up -d postgres redis minio
 cp .env.example .env
