@@ -6,9 +6,6 @@ on:
     branches:
       - main
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -30,14 +27,11 @@ jobs:
       DATABASE_URL: postgresql://agentforge:agentforge@localhost:5432/agentforge
     steps:
       - uses: actions/checkout@v5
-      - uses: pnpm/action-setup@v4
-        with:
-          version: "11.1.1"
-          run_install: false
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
-          cache: "pnpm"
+      - run: corepack enable
+      - run: corepack prepare pnpm@11.1.1 --activate
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec prisma generate --schema packages/db/prisma/schema.prisma
       - run: pnpm exec prisma migrate deploy --schema packages/db/prisma/schema.prisma
