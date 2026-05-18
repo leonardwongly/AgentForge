@@ -1,10 +1,32 @@
 import { createHmac } from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp, createInitialState } from "../src/index.js";
 
+const mutableEnvKeys = [
+  "NODE_ENV",
+  "GITHUB_WEBHOOK_SECRET",
+  "ALLOW_UNSIGNED_GITHUB_WEBHOOKS"
+] as const;
+const originalEnv = new Map<string, string | undefined>(
+  mutableEnvKeys.map((key) => [key, process.env[key]])
+);
+
+beforeEach(() => {
+  for (const key of mutableEnvKeys) {
+    process.env[key] = "";
+  }
+  process.env.NODE_ENV = "test";
+});
+
 afterEach(() => {
-  delete process.env.GITHUB_WEBHOOK_SECRET;
-  delete process.env.ALLOW_UNSIGNED_GITHUB_WEBHOOKS;
+  for (const key of mutableEnvKeys) {
+    const originalValue = originalEnv.get(key);
+    if (originalValue === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = originalValue;
+    }
+  }
 });
 
 describe("GitHub webhook API", () => {
