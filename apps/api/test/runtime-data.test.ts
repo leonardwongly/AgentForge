@@ -39,6 +39,26 @@ const pullRequest: PullRequestInput = {
 };
 
 describe("runtime data surfaces", () => {
+  it("exposes a readiness endpoint for deployment smoke checks", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+
+    const ready = await app.inject({ method: "GET", url: "/ready" });
+
+    expect(ready.statusCode).toBe(200);
+    expect(ready.json()).toEqual(
+      expect.objectContaining({
+        status: "ready",
+        runtimeStore: "in_memory",
+        database: expect.stringMatching(/^(configured|not_configured)$/u),
+        workerQueue: expect.stringMatching(/^(configured|in_memory)$/u),
+        version: "0.1.0"
+      })
+    );
+
+    await app.close();
+  });
+
   it("starts empty and only exposes repository policy after explicit runtime save", async () => {
     const state = createInitialState();
     const app = createApp(state);

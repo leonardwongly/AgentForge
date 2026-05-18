@@ -317,6 +317,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     version: "0.1.0"
   }));
 
+  app.get("/ready", async () => ({
+    status: "ready",
+    database: config.databaseUrl ? "configured" : "not_configured",
+    workerQueue: config.redisUrl ? "configured" : "in_memory",
+    runtimeStore: prisma ? "postgres" : "in_memory",
+    version: "0.1.0"
+  }));
+
   app.post("/webhooks/github", async (request, reply) => {
     const deliveryId = headerValue(request.headers["x-github-delivery"]);
     const event = headerValue(request.headers["x-github-event"]);
