@@ -11,7 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "tsx dist/apps/api/src/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run test"
+    "test": "cd ../.. && vitest run apps/api/test"
   },
   "dependencies": {
     "@agentforge/config": "workspace:*",
