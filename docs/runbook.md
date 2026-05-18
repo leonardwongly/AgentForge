@@ -1,6 +1,7 @@
 # Merge Guard Launch Runbook
 
 This runbook is the production handoff checklist for AgentForge Merge Guard.
+Initial V1 launch-readiness evidence is recorded in `docs/launch-readiness-evidence.md`.
 
 ## Runtime Topology
 

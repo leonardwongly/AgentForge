@@ -1,9 +1,21 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PolicyResult, PullRequestInput } from "@agentforge/core";
 import type { GithubAdapterClient, GithubWebhookEnvelope } from "@agentforge/github";
 import { processMergeGuardEvaluationJob } from "../src/index.js";
+
+const mutableEnvKeys = [
+  "NODE_ENV",
+  "DATABASE_URL",
+  "REDIS_URL",
+  "GITHUB_APP_ID",
+  "GITHUB_APP_PRIVATE_KEY",
+  "GITHUB_INSTALLATION_ID"
+] as const;
+const originalEnv = new Map<string, string | undefined>(
+  mutableEnvKeys.map((key) => [key, process.env[key]])
+);
 
 async function loadPr(name: string): Promise<PullRequestInput> {
   return JSON.parse(
@@ -17,11 +29,21 @@ async function loadPolicy(name: string): Promise<string> {
 
 describe("Merge Guard worker evaluation jobs", () => {
   beforeEach(() => {
+    for (const key of mutableEnvKeys) {
+      process.env[key] = "";
+    }
     process.env.NODE_ENV = "test";
-    delete process.env.DATABASE_URL;
-    delete process.env.REDIS_URL;
-    delete process.env.GITHUB_APP_ID;
-    delete process.env.GITHUB_APP_PRIVATE_KEY;
+  });
+
+  afterEach(() => {
+    for (const key of mutableEnvKeys) {
+      const originalValue = originalEnv.get(key);
+      if (originalValue === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = originalValue;
+      }
+    }
   });
 
   it("processes a high-risk PR fixture into a Change Control Record result", async () => {

@@ -77,6 +77,7 @@ seeded with `pnpm db:migrate && pnpm db:seed`.
 
 Production launch and rollback steps are documented in `docs/runbook.md`.
 Railway-specific service setup, migration, and webhook cutover steps are documented in `docs/railway-deployment.md`.
+Launch-readiness evidence for the initial production-integrated V1 rollout is documented in `docs/launch-readiness-evidence.md`.
 
 ## Environment Variables
 
