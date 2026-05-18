@@ -65,6 +65,7 @@ export type CheckRunPayload = {
   headSha: string;
   status: "completed";
   conclusion: "success" | "neutral" | "failure";
+  detailsUrl?: string | undefined;
   output: {
     title: string;
     summary: string;
@@ -371,13 +372,15 @@ export function formatMergeGuardCheck(result: PolicyResult): CheckRunPayload["ou
 
 export function buildCheckRunPayload(
   pr: Pick<PullRequestInput, "headSha">,
-  result: PolicyResult
+  result: PolicyResult,
+  options: { detailsUrl?: string | undefined } = {}
 ): CheckRunPayload {
   return {
     name: MERGE_GUARD_CHECK_NAME,
     headSha: pr.headSha,
     status: "completed",
     conclusion: githubConclusionForPolicyResult(result),
+    detailsUrl: options.detailsUrl,
     output: formatMergeGuardCheck(result)
   };
 }
@@ -412,13 +415,15 @@ export async function publishMergeGuardCheck(input: {
   repo: string;
   pr: Pick<PullRequestInput, "headSha">;
   result: PolicyResult;
+  detailsUrl?: string | undefined;
 }): Promise<{ id: number | undefined; conclusion: CheckRunPayload["conclusion"] }> {
   return publishMergeGuardCheckWithClient({
     client: createGithubClient(input.token),
     owner: input.owner,
     repo: input.repo,
     pr: input.pr,
-    result: input.result
+    result: input.result,
+    detailsUrl: input.detailsUrl
   });
 }
 
@@ -428,8 +433,9 @@ export async function publishMergeGuardCheckWithClient(input: {
   repo: string;
   pr: Pick<PullRequestInput, "headSha">;
   result: PolicyResult;
+  detailsUrl?: string | undefined;
 }): Promise<{ id: number | undefined; conclusion: CheckRunPayload["conclusion"] }> {
-  const payload = buildCheckRunPayload(input.pr, input.result);
+  const payload = buildCheckRunPayload(input.pr, input.result, { detailsUrl: input.detailsUrl });
   const response = await input.client.checks.create({
     owner: input.owner,
     repo: input.repo,
@@ -437,6 +443,7 @@ export async function publishMergeGuardCheckWithClient(input: {
     head_sha: payload.headSha,
     status: payload.status,
     conclusion: payload.conclusion,
+    details_url: payload.detailsUrl,
     output: payload.output
   });
   return { id: numberValue(response.data.id), conclusion: payload.conclusion };

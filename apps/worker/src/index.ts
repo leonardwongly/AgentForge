@@ -35,6 +35,7 @@ type CheckPublisher = (input: {
   repo: string;
   pr: Pick<PullRequestInput, "headSha">;
   result: ReturnType<typeof evaluateMergeGuard>;
+  detailsUrl?: string | undefined;
 }) => Promise<{ id?: number | undefined; conclusion: CheckRunPayload["conclusion"] }>;
 
 let workerPrisma: PrismaClient | undefined;
@@ -110,7 +111,8 @@ export async function processMergeGuardEvaluationJob(
     data,
     githubContext,
     result,
-    pr
+    pr,
+    detailsUrl: recordDetailsUrl(config.appBaseUrl, record.id)
   });
 
   if (prisma) {
@@ -483,13 +485,15 @@ async function publishCheckIfConfigured(input: {
   };
   pr: PullRequestInput;
   result: ReturnType<typeof evaluateMergeGuard>;
+  detailsUrl?: string | undefined;
 }): Promise<{ published: boolean; id?: number | undefined }> {
   if (input.data.githubCheckPublisher) {
     const published = await input.data.githubCheckPublisher({
       owner: input.githubContext.owner,
       repo: input.githubContext.repo,
       pr: input.pr,
-      result: input.result
+      result: input.result,
+      detailsUrl: input.detailsUrl
     });
     return { published: true, id: published.id };
   }
@@ -499,11 +503,16 @@ async function publishCheckIfConfigured(input: {
       owner: input.githubContext.owner,
       repo: input.githubContext.repo,
       pr: input.pr,
-      result: input.result
+      result: input.result,
+      detailsUrl: input.detailsUrl
     });
     return { published: true, id: published.id };
   }
   return { published: false };
+}
+
+function recordDetailsUrl(appBaseUrl: string, recordId: string): string {
+  return new URL(`/records/${encodeURIComponent(recordId)}`, appBaseUrl).toString();
 }
 
 function applyEnvelopeLifecycle(

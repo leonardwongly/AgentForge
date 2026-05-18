@@ -72,7 +72,8 @@ async function main(): Promise<void> {
         owner: options.owner!,
         repo: options.repo!,
         pr,
-        result
+        result,
+        detailsUrl: dashboardUrl(config.appBaseUrl)
       })
     : undefined;
 
@@ -192,6 +193,10 @@ Required environment:
 
 By default this command fetches PR facts, evaluates the built-in fintech policy, and prints only
 metadata counts. It does not print source code, patches, credentials, or installation tokens.`);
+}
+
+function dashboardUrl(appBaseUrl: string): string {
+  return new URL("/dashboard", appBaseUrl).toString();
 }
 
 void main().catch((error: unknown) => {
