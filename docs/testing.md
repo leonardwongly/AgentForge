@@ -39,3 +39,26 @@ pnpm test:integration
 pnpm test:e2e
 pnpm format:check
 ```
+
+## Runtime Dependencies
+
+`pnpm test` is expected to be deterministic from a clean shell and should not
+require Postgres or Redis unless a test explicitly opts into a runtime-backed
+path. Test cases that exercise in-memory API state set `NODE_ENV=test`; the API
+and worker must not leak local `DATABASE_URL` or `REDIS_URL` defaults back into
+`process.env` during those runs.
+
+Database-backed validation uses the local Compose services:
+
+```bash
+docker compose up -d postgres redis minio
+pnpm db:migrate
+pnpm db:seed
+pnpm test:integration
+pnpm test:e2e
+```
+
+The local Postgres URL is
+`postgresql://agentforge:agentforge@localhost:15432/agentforge`. Keep DB-backed
+tests explicit so production-mode auth and config tests can verify fail-closed
+behavior without depending on a live local database by accident.

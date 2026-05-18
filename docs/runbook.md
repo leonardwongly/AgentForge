@@ -55,7 +55,7 @@ Set `AGENTFORGE_API_TRUST_PROXY_HEADERS=true` for deployed API traffic after the
 1. Stop the worker or pause queue consumption.
 2. Back up PostgreSQL.
 3. Run `pnpm prisma:validate`.
-4. Run `pnpm db:migrate`.
+4. Run `pnpm db:deploy` for deployed environments. Use `pnpm db:migrate` only for local development migrations.
 5. Run `pnpm db:seed` when built-in policy packs changed.
 6. Start API and web.
 7. Start worker.
@@ -86,6 +86,23 @@ Branch protection should require the `AgentForge Merge Guard` check before enfor
 
 If `Members: read` is missing or the membership lookup fails, team reviewer requirements remain pending. This is intentional fail-closed behavior; do not move repositories into enforce mode until a test PR proves team approvals clear correctly.
 
+## Repository Protection Gate
+
+Before launch, enable branch protection on `main` and require these GitHub checks:
+
+- `CI`
+- `Security`
+- `E2E`
+- `AgentForge Merge Guard` after the GitHub App publish smoke passes
+
+Verify protection is active:
+
+```bash
+gh api repos/<owner>/<repo>/branches/main/protection --jq '.required_status_checks.contexts'
+```
+
+The protection endpoint must not return `404 Branch not protected` before any repository moves to `enforce` or `optimize`.
+
 ## Launch Smoke Tests
 
 Run these before enabling protected-branch enforcement:
@@ -96,6 +113,7 @@ pnpm format:check
 pnpm typecheck
 pnpm test
 pnpm prisma:validate
+pnpm db:generate
 pnpm build
 pnpm test:e2e
 pnpm audit --audit-level high
@@ -104,6 +122,14 @@ pnpm policy:validate fixtures/policies/fintech.yaml
 pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.json
 curl -fsS "$API_BASE_URL/health"
 ```
+
+Run the GitHub App read-only smoke test against a test PR before sending real webhooks:
+
+```bash
+pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-id <installation-id>
+```
+
+This verifies that the installed GitHub App can mint an installation token, read PR metadata, files, commits, reviews, manifest contents, and evaluate policy without publishing a check. After the read-only smoke passes, re-run with `--publish-check` on the same test PR to verify `Checks: read/write` and check-run output.
 
 Then create a test PR that changes a sensitive path and confirm:
 

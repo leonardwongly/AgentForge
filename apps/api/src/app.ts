@@ -210,16 +210,16 @@ const policyPreviewSchema = z
 
 export function createApp(state: AppState = createInitialState()): FastifyInstance {
   const config = loadConfig();
-  if (config.databaseUrl) {
-    process.env.DATABASE_URL = config.databaseUrl;
-  }
   const storagePolicy: MetadataStoragePolicy = {
     sourceCodeStorage: config.sourceCodeStorage,
     fullDiffRetention: config.fullDiffRetention,
     redactSecrets: config.redactSecrets
   };
   const safe = <T>(value: T): T => sanitizeForMetadataStorage(value, storagePolicy);
-  const prisma = config.databaseUrl && config.nodeEnv !== "test" ? new PrismaClient() : undefined;
+  const prisma =
+    config.databaseUrl && config.nodeEnv !== "test"
+      ? new PrismaClient({ datasourceUrl: config.databaseUrl })
+      : undefined;
   const queueConnection =
     config.redisUrl && config.nodeEnv !== "test"
       ? new Redis(config.redisUrl, { maxRetriesPerRequest: null })

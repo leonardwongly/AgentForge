@@ -43,6 +43,14 @@ Set the webhook URL to the tunnel URL plus `/webhooks/github`. Generate a webhoo
 
 Webhook signature verification fails closed by default. If `GITHUB_WEBHOOK_SECRET` is missing, AgentForge rejects webhook deliveries unless `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=true` is explicitly set for local fixture replay. Do not enable unsigned webhook mode on shared or deployed endpoints.
 
+Read-only GitHub App smoke test:
+
+```bash
+pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-id <installation-id>
+```
+
+The smoke command creates an installation token, fetches the PR through GitHub App credentials, evaluates the built-in fintech policy, and prints only metadata counts. It does not publish a check run unless `--publish-check` is passed. Use `--publish-check` only against a test PR after confirming the app has `Checks: read/write`.
+
 Private key setup:
 
 1. Generate a private key in GitHub App settings.

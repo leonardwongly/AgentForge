@@ -34,6 +34,7 @@ const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   GITHUB_APP_ID: optionalStringFromEnv,
   GITHUB_APP_PRIVATE_KEY: optionalStringFromEnv,
+  GITHUB_INSTALLATION_ID: optionalStringFromEnv,
   GITHUB_WEBHOOK_SECRET: optionalStringFromEnv,
   ALLOW_UNSIGNED_GITHUB_WEBHOOKS: booleanFromEnv.default(false),
   GITHUB_CLIENT_ID: optionalStringFromEnv,
@@ -58,6 +59,7 @@ export type AgentForgeConfig = {
   github: {
     appId: string | undefined;
     privateKey: string | undefined;
+    installationId: string | undefined;
     webhookSecret: string | undefined;
     allowUnsignedWebhooks: boolean;
     clientId: string | undefined;
@@ -86,6 +88,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConf
     github: {
       appId: parsed.GITHUB_APP_ID,
       privateKey: parsed.GITHUB_APP_PRIVATE_KEY,
+      installationId: parsed.GITHUB_INSTALLATION_ID,
       webhookSecret: parsed.GITHUB_WEBHOOK_SECRET,
       allowUnsignedWebhooks: parsed.ALLOW_UNSIGNED_GITHUB_WEBHOOKS ?? false,
       clientId: parsed.GITHUB_CLIENT_ID,

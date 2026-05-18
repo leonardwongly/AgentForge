@@ -62,7 +62,12 @@ describe("Merge Guard worker evaluation jobs", () => {
   it("fetches live GitHub PR facts before evaluating webhook jobs and publishing checks", async () => {
     const pr = await loadPr("billing-path.json");
     const envelope = webhookEnvelope(pr);
-    const published: Array<{ owner: string; repo: string; result: PolicyResult }> = [];
+    const published: Array<{
+      owner: string;
+      repo: string;
+      result: PolicyResult;
+      detailsUrl?: string | undefined;
+    }> = [];
 
     const result = await processMergeGuardEvaluationJob({
       deliveryId: envelope.deliveryId,
@@ -73,7 +78,8 @@ describe("Merge Guard worker evaluation jobs", () => {
         published.push({
           owner: input.owner,
           repo: input.repo,
-          result: input.result
+          result: input.result,
+          detailsUrl: input.detailsUrl
         });
         return { id: 42, conclusion: "neutral" };
       }
@@ -89,6 +95,7 @@ describe("Merge Guard worker evaluation jobs", () => {
     });
     expect(published).toHaveLength(1);
     expect(published[0]).toMatchObject({ owner: "acme", repo: "payments" });
+    expect(published[0]?.detailsUrl).toBeUndefined();
     expect(published[0]?.result.findings.map((finding) => finding.type)).toContain(
       "sensitive_path_changed"
     );

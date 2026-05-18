@@ -112,6 +112,7 @@ export type SettingsData = {
 };
 
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:4000";
+const API_FETCH_TIMEOUT_MS = 5_000;
 
 export async function loadDashboardData(): Promise<DashboardData> {
   try {
@@ -412,7 +413,8 @@ async function fetchApiJson<T>(path: string): Promise<T> {
     cache: "no-store",
     headers: {
       accept: "application/json"
-    }
+    },
+    signal: AbortSignal.timeout(API_FETCH_TIMEOUT_MS)
   });
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);

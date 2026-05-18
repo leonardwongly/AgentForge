@@ -4,6 +4,7 @@ import {
   buildCheckRunPayload,
   enrichPullRequestReviewsWithTeamMemberships,
   fetchPullRequestInputFromGithub,
+  MERGE_GUARD_CHECK_NAME,
   normalizeGithubWebhook,
   pullRequestInputFromFixture,
   shouldEnqueueEvaluation,
@@ -105,6 +106,12 @@ describe("github integration", () => {
       shouldEnqueueEvaluation({
         ...checkEnvelope,
         checkRun: { ...checkEnvelope.checkRun!, pullRequests: [] }
+      })
+    ).toBe(false);
+    expect(
+      shouldEnqueueEvaluation({
+        ...checkEnvelope,
+        checkRun: { ...checkEnvelope.checkRun!, name: MERGE_GUARD_CHECK_NAME }
       })
     ).toBe(false);
     expect(installationEnvelope.installation).toMatchObject({
@@ -361,6 +368,23 @@ describe("github integration", () => {
     const payload = buildCheckRunPayload({ headSha: "sha" }, result);
     expect(payload.conclusion).toBe("neutral");
     expect(payload.output.text).toContain("Non-blocking warning");
+  });
+
+  it("includes an explicit dashboard details URL when provided", () => {
+    const result: PolicyResult = {
+      mode: "warn",
+      status: "warn",
+      policyVersion: "fintech@1.0.0",
+      findings: [],
+      requiredEvidence: [],
+      requiredReviewers: [],
+      explanation: [],
+      evaluatedAt: "2026-05-12T00:00:00.000Z"
+    };
+    const payload = buildCheckRunPayload({ headSha: "sha" }, result, {
+      detailsUrl: "https://agentforge.example.com/records/record-1"
+    });
+    expect(payload.detailsUrl).toBe("https://agentforge.example.com/records/record-1");
   });
 
   it("keeps optimize mode blocking semantics in check conclusions", () => {

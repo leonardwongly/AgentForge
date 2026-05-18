@@ -35,7 +35,7 @@ docs/        Product, setup, security, policy, and testing docs
 
 Prerequisites:
 
-- Node.js 20 or newer
+- Node.js 22.13 or newer
 - Corepack enabled for pnpm
 - Docker for local Postgres, Redis, and optional MinIO exports
 
@@ -71,7 +71,12 @@ pnpm policy:validate fixtures/policies/fintech.yaml
 pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.json
 ```
 
+`pnpm test` should be safe to run from a clean shell. DB-backed checks such as
+integration and E2E runs expect the local Compose services to be running and
+seeded with `pnpm db:migrate && pnpm db:seed`.
+
 Production launch and rollback steps are documented in `docs/runbook.md`.
+Railway-specific service setup, migration, and webhook cutover steps are documented in `docs/railway-deployment.md`.
 
 ## Environment Variables
 

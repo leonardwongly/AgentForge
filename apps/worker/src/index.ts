@@ -35,7 +35,17 @@ type CheckPublisher = (input: {
   repo: string;
   pr: Pick<PullRequestInput, "headSha">;
   result: ReturnType<typeof evaluateMergeGuard>;
+  detailsUrl?: string | undefined;
 }) => Promise<{ id?: number | undefined; conclusion: CheckRunPayload["conclusion"] }>;
+
+type PersistedWorkerRecordRefs = {
+  organizationId: string;
+  repositoryId: string;
+  pullRequestId: string;
+  recordId: string;
+};
+
+let workerPrisma: PrismaClient | undefined;
 
 export type MergeGuardEvaluationJobData = {
   deliveryId: string;
@@ -62,84 +72,97 @@ export async function processMergeGuardEvaluationJob(
   data: MergeGuardEvaluationJobData
 ): Promise<MergeGuardEvaluationJobResult> {
   const config = loadConfig();
-  const prisma = config.databaseUrl && config.nodeEnv !== "test" ? new PrismaClient() : undefined;
-  if (config.databaseUrl && config.nodeEnv !== "test") {
-    process.env.DATABASE_URL = config.databaseUrl;
+  const prisma = getWorkerPrisma(config);
+
+  const githubContext = await resolvePullRequestForJob(data, config);
+  let pr = githubContext.pr;
+  const runtime = await resolveRuntimeEvaluationContext({
+    prisma,
+    pr,
+    config,
+    policyYaml: data.policyYaml
+  });
+
+  const parsed = parsePolicyYaml(runtime.policyYaml);
+  if (parsed.errors.length > 0) {
+    throw new Error(`Policy validation failed: ${parsed.errors.join("; ")}`);
   }
 
-  try {
-    const githubContext = await resolvePullRequestForJob(data, config);
-    let pr = githubContext.pr;
-    const runtime = await resolveRuntimeEvaluationContext({
-      prisma,
-      pr,
-      config,
-      policyYaml: data.policyYaml
-    });
-
-    const parsed = parsePolicyYaml(runtime.policyYaml);
-    if (parsed.errors.length > 0) {
-      throw new Error(`Policy validation failed: ${parsed.errors.join("; ")}`);
-    }
-
-    const policy = applyRuntimePolicyAdjustments(parsed.config, {
-      modeOverride: runtime.modeOverride,
-      ownerMappings: runtime.ownerMappings
-    });
-    pr = await enrichReviewTeamMemberships({
-      pr,
-      owner: githubContext.owner,
-      client: githubContext.githubClient,
-      policy
-    });
-    const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(policy));
-    const result = evaluateMergeGuard(pr, facts, policy);
-    const record = applyEnvelopeLifecycle(
-      sanitizeForMetadataStorage(
-        createChangeControlRecord({
-          organizationId: runtime.organizationId,
-          repositoryId: runtime.repositoryId,
-          pr,
-          policyResult: result,
-          storagePolicy: runtime.storagePolicy
-        }),
-        runtime.storagePolicy
-      ),
-      data.envelope
-    );
-    const checkRun = buildCheckRunPayload(pr, result);
-    const published = await publishCheckIfConfigured({
-      data,
-      githubContext,
-      result,
-      pr
-    });
-
-    if (prisma) {
-      await persistWorkerRecord({
+  const policy = applyRuntimePolicyAdjustments(parsed.config, {
+    modeOverride: runtime.modeOverride,
+    ownerMappings: runtime.ownerMappings
+  });
+  pr = await enrichReviewTeamMemberships({
+    pr,
+    owner: githubContext.owner,
+    client: githubContext.githubClient,
+    policy
+  });
+  const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(policy));
+  const result = evaluateMergeGuard(pr, facts, policy);
+  const record = applyEnvelopeLifecycle(
+    sanitizeForMetadataStorage(
+      createChangeControlRecord({
+        organizationId: runtime.organizationId,
+        repositoryId: runtime.repositoryId,
+        pr,
+        policyResult: result,
+        storagePolicy: runtime.storagePolicy
+      }),
+      runtime.storagePolicy
+    ),
+    data.envelope
+  );
+  const persistedRecord = prisma
+    ? await ensureWorkerRecord({
         prisma,
         record,
         pr,
-        checkConclusion: checkRun.conclusion,
-        publishedCheckRunId: published.id,
         envelope: data.envelope
-      });
-    }
+      })
+    : undefined;
+  const checkRun = buildCheckRunPayload(pr, result);
+  const published = await publishCheckIfConfigured({
+    data,
+    githubContext,
+    result,
+    pr,
+    detailsUrl: persistedRecord
+      ? recordDetailsUrl(config.appBaseUrl, persistedRecord.recordId)
+      : undefined
+  });
 
-    return {
-      processedAt: new Date().toISOString(),
-      recordId: record.id,
-      repositoryFullName: record.repositoryFullName,
-      pullRequestNumber: record.pullRequestNumber,
-      status: record.checkStatus,
-      lifecycle: record.lifecycle,
+  if (prisma) {
+    await persistWorkerRecord({
+      prisma,
+      record,
+      pr,
       checkConclusion: checkRun.conclusion,
-      checkPublished: published.published,
-      publishedCheckRunId: published.id
-    };
-  } finally {
-    await prisma?.$disconnect();
+      publishedCheckRunId: published.id,
+      envelope: data.envelope,
+      persistedRecord
+    });
   }
+
+  return {
+    processedAt: new Date().toISOString(),
+    recordId: persistedRecord?.recordId ?? record.id,
+    repositoryFullName: record.repositoryFullName,
+    pullRequestNumber: record.pullRequestNumber,
+    status: record.checkStatus,
+    lifecycle: record.lifecycle,
+    checkConclusion: checkRun.conclusion,
+    checkPublished: published.published,
+    publishedCheckRunId: published.id
+  };
+}
+
+function getWorkerPrisma(config: ReturnType<typeof loadConfig>): PrismaClient | undefined {
+  if (!config.databaseUrl || config.nodeEnv === "test") {
+    return undefined;
+  }
+  workerPrisma ??= new PrismaClient({ datasourceUrl: config.databaseUrl });
+  return workerPrisma;
 }
 
 function startWorker(): void {
@@ -480,13 +503,15 @@ async function publishCheckIfConfigured(input: {
   };
   pr: PullRequestInput;
   result: ReturnType<typeof evaluateMergeGuard>;
+  detailsUrl?: string | undefined;
 }): Promise<{ published: boolean; id?: number | undefined }> {
   if (input.data.githubCheckPublisher) {
     const published = await input.data.githubCheckPublisher({
       owner: input.githubContext.owner,
       repo: input.githubContext.repo,
       pr: input.pr,
-      result: input.result
+      result: input.result,
+      detailsUrl: input.detailsUrl
     });
     return { published: true, id: published.id };
   }
@@ -496,11 +521,16 @@ async function publishCheckIfConfigured(input: {
       owner: input.githubContext.owner,
       repo: input.githubContext.repo,
       pr: input.pr,
-      result: input.result
+      result: input.result,
+      detailsUrl: input.detailsUrl
     });
     return { published: true, id: published.id };
   }
   return { published: false };
+}
+
+function recordDetailsUrl(appBaseUrl: string, recordId: string): string {
+  return new URL(`/records/${encodeURIComponent(recordId)}`, appBaseUrl).toString();
 }
 
 function applyEnvelopeLifecycle(
@@ -544,8 +574,68 @@ async function persistWorkerRecord(input: {
   checkConclusion: string;
   publishedCheckRunId?: number | undefined;
   envelope?: GithubWebhookEnvelope | undefined;
+  persistedRecord?: PersistedWorkerRecordRefs | undefined;
 }): Promise<void> {
   const { prisma, record, pr, checkConclusion, publishedCheckRunId, envelope } = input;
+  const persistedRecord =
+    input.persistedRecord ??
+    (await ensureWorkerRecord({
+      prisma,
+      record,
+      pr,
+      envelope
+    }));
+  await persistWorkerEvaluationSnapshot({
+    prisma,
+    organizationId: persistedRecord.organizationId,
+    repositoryId: persistedRecord.repositoryId,
+    pullRequestId: persistedRecord.pullRequestId,
+    record,
+    checkConclusion,
+    publishedCheckRunId
+  });
+
+  const audit = createAuditEvent({
+    organizationId: persistedRecord.organizationId,
+    repositoryId: persistedRecord.repositoryId,
+    pullRequestId: persistedRecord.pullRequestId,
+    actor: "system",
+    action: "check_published",
+    targetType: "change_control_record",
+    targetId: persistedRecord.recordId,
+    metadataJson: {
+      conclusion: checkConclusion,
+      githubCheckRunId: publishedCheckRunId,
+      status: record.checkStatus,
+      mode: record.mode,
+      policyVersion: record.policyVersion
+    }
+  });
+  await prisma.auditEvent.upsert({
+    where: { id: audit.id },
+    update: {},
+    create: {
+      id: audit.id,
+      organizationId: audit.organizationId,
+      repositoryId: audit.repositoryId ?? null,
+      pullRequestId: audit.pullRequestId ?? null,
+      actor: audit.actor,
+      action: audit.action,
+      targetType: audit.targetType,
+      targetId: audit.targetId,
+      metadataJson: audit.metadataJson as never,
+      createdAt: new Date(audit.createdAt)
+    }
+  });
+}
+
+async function ensureWorkerRecord(input: {
+  prisma: PrismaClient;
+  record: ChangeControlRecord;
+  pr: PullRequestInput;
+  envelope?: GithubWebhookEnvelope | undefined;
+}): Promise<PersistedWorkerRecordRefs> {
+  const { prisma, record, pr, envelope } = input;
   const organization = await prisma.organization.upsert({
     where: { id: record.organizationId },
     update: {},
@@ -612,7 +702,7 @@ async function persistWorkerRecord(input: {
     }
   });
 
-  await prisma.changeControlRecord.upsert({
+  const persistedRecord = await prisma.changeControlRecord.upsert({
     where: { pullRequestId: pullRequest.id },
     update: {
       repositoryFullName: record.repositoryFullName,
@@ -653,48 +743,12 @@ async function persistWorkerRecord(input: {
       updatedAt: new Date(record.updatedAt)
     }
   });
-  await persistWorkerEvaluationSnapshot({
-    prisma,
+  return {
     organizationId: organization.id,
     repositoryId: repository.id,
     pullRequestId: pullRequest.id,
-    record,
-    checkConclusion,
-    publishedCheckRunId
-  });
-
-  const audit = createAuditEvent({
-    organizationId: organization.id,
-    repositoryId: repository.id,
-    pullRequestId: pullRequest.id,
-    actor: "system",
-    action: "check_published",
-    targetType: "change_control_record",
-    targetId: record.id,
-    metadataJson: {
-      conclusion: checkConclusion,
-      githubCheckRunId: publishedCheckRunId,
-      status: record.checkStatus,
-      mode: record.mode,
-      policyVersion: record.policyVersion
-    }
-  });
-  await prisma.auditEvent.upsert({
-    where: { id: audit.id },
-    update: {},
-    create: {
-      id: audit.id,
-      organizationId: audit.organizationId,
-      repositoryId: audit.repositoryId ?? null,
-      pullRequestId: audit.pullRequestId ?? null,
-      actor: audit.actor,
-      action: audit.action,
-      targetType: audit.targetType,
-      targetId: audit.targetId,
-      metadataJson: audit.metadataJson as never,
-      createdAt: new Date(audit.createdAt)
-    }
-  });
+    recordId: persistedRecord.id
+  };
 }
 
 async function persistWorkerEvaluationSnapshot(input: {

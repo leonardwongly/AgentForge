@@ -9,7 +9,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prisma:generate": "DATABASE_URL=${DATABASE_URL:-postgresql://agentforge:agentforge@localhost:15432/agentforge} prisma generate --schema prisma/schema.prisma",
     "prisma:validate": "DATABASE_URL=${DATABASE_URL:-postgresql://agentforge:agentforge@localhost:15432/agentforge} prisma validate --schema prisma/schema.prisma",
+    "prisma:deploy": "DATABASE_URL=${DATABASE_URL:-postgresql://agentforge:agentforge@localhost:15432/agentforge} prisma migrate deploy --schema prisma/schema.prisma",
     "prisma:migrate": "DATABASE_URL=${DATABASE_URL:-postgresql://agentforge:agentforge@localhost:15432/agentforge} prisma migrate dev --schema prisma/schema.prisma",
     "prisma:seed": "DATABASE_URL=${DATABASE_URL:-postgresql://agentforge:agentforge@localhost:15432/agentforge} tsx prisma/seed.ts"
   },

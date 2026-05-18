@@ -21,6 +21,14 @@ jobs:
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --audit-level high
+      - name: Repository hygiene scan
+        run: |
+          tracked_artifacts="$(git ls-files | grep -E '(^|/)\.DS_Store$|(^|/)playwright-report/|(^|/)test-results/' || true)"
+          if [ -n "$tracked_artifacts" ]; then
+            echo "Generated local artifacts must not be committed:"
+            echo "$tracked_artifacts"
+            exit 1
+          fi
       - name: Secret scan
         run: |
           if git grep -nE 'ghp_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN .*PRIVATE KEY-----' -- . ':!**/*.test.ts' ':!fixtures/repos/secret-like-token.json' ':!packages/security/src/redaction.ts' ':!.github/workflows/security.yml'; then
