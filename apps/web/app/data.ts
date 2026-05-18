@@ -346,6 +346,29 @@ export function hasAgentSignal(record: ChangeControlRecord): boolean {
   return record.verifiedFindings.some((finding) => finding.type === "agent_signal_detected");
 }
 
+export function summarizeFindings(findings: VerifiedFact[], limit = 3): string {
+  return summarizeLabels(
+    findings
+      .filter((finding) => finding.type !== "agent_signal_detected")
+      .map((finding) => humanize(finding.type)),
+    limit
+  );
+}
+
+export function summarizeEvidenceRequirements(evidence: EvidenceRequirement[], limit = 3): string {
+  return summarizeLabels(
+    evidence.map((item) => humanize(item.kind)),
+    limit
+  );
+}
+
+export function summarizeReviewerRequirements(reviewers: ReviewerRequirement[], limit = 3): string {
+  return summarizeLabels(
+    reviewers.map((reviewer) => reviewer.reviewer),
+    limit
+  );
+}
+
 export function findingGroups(records: DashboardRecord[] = []) {
   const groups = new Map<
     VerifiedFact["type"],
@@ -515,6 +538,22 @@ function checkMessage(record: ChangeControlRecord): string {
     return "Non-blocking warning; this shows what would block in enforce mode.";
   }
   return "Configured policy requirements are satisfied.";
+}
+
+function summarizeLabels(labels: string[], limit: number): string {
+  if (labels.length === 0) {
+    return "none";
+  }
+  const counts = new Map<string, number>();
+  for (const label of labels) {
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const visible = entries.slice(0, limit).map(([label, count]) => {
+    return count > 1 ? `${label} x${count}` : label;
+  });
+  const remaining = entries.length - visible.length;
+  return remaining > 0 ? `${visible.join(", ")} +${remaining} more` : visible.join(", ");
 }
 
 function priorityRank(item: DashboardRecord): number {

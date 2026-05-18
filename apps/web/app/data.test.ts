@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadDashboardData, loadSettings } from "./data";
+import {
+  loadDashboardData,
+  loadSettings,
+  summarizeEvidenceRequirements,
+  summarizeFindings,
+  summarizeReviewerRequirements
+} from "./data";
 
 describe("dashboard API data loaders", () => {
   afterEach(() => {
@@ -59,6 +65,36 @@ describe("dashboard API data loaders", () => {
     });
     expect(data.message).toContain("Settings API unavailable");
   });
+
+  it("summarizes repeated findings and requirements for dense tables", () => {
+    expect(
+      summarizeFindings([
+        fact("1", "sensitive_path_changed"),
+        fact("2", "sensitive_path_changed"),
+        fact("3", "agent_signal_detected"),
+        fact("4", "migration_added"),
+        fact("5", "dependency_added"),
+        fact("6", "test_deleted")
+      ])
+    ).toBe("sensitive path changed x2, dependency added, migration added +1 more");
+
+    expect(
+      summarizeEvidenceRequirements([
+        evidence("1", "rollback_plan"),
+        evidence("2", "rollback_plan"),
+        evidence("3", "security_note"),
+        evidence("4", "migration_dry_run")
+      ])
+    ).toBe("rollback plan x2, migration dry run, security note");
+
+    expect(
+      summarizeReviewerRequirements([
+        reviewer("1", "security-team"),
+        reviewer("2", "security-team"),
+        reviewer("3", "platform-team")
+      ])
+    ).toBe("security-team x2, platform-team");
+  });
 });
 
 function jsonResponse(payload: unknown): Response {
@@ -68,4 +104,45 @@ function jsonResponse(payload: unknown): Response {
       "content-type": "application/json"
     }
   });
+}
+
+function fact(
+  id: string,
+  type: Parameters<typeof summarizeFindings>[0][number]["type"]
+): Parameters<typeof summarizeFindings>[0][number] {
+  return {
+    id,
+    type,
+    source: "github_diff",
+    evidence: "test",
+    confidence: "verified",
+    severity: "medium"
+  };
+}
+
+function evidence(
+  id: string,
+  kind: Parameters<typeof summarizeEvidenceRequirements>[0][number]["kind"]
+): Parameters<typeof summarizeEvidenceRequirements>[0][number] {
+  return {
+    id,
+    kind,
+    status: "missing",
+    requiredByFindingId: "finding-1"
+  };
+}
+
+function reviewer(
+  id: string,
+  name: string
+): Parameters<typeof summarizeReviewerRequirements>[0][number] {
+  return {
+    id,
+    reviewer: name,
+    reviewerType: "team",
+    tier: "required",
+    reason: "required",
+    triggeredByFindingId: "finding-1",
+    approved: false
+  };
 }

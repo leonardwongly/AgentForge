@@ -4,10 +4,12 @@ import { MetricCard, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../../data-source-notice";
 import {
   hasAgentSignal,
-  humanize,
   loadDashboardData,
   missingEvidence,
-  pendingRequiredReviewers
+  pendingRequiredReviewers,
+  summarizeEvidenceRequirements,
+  summarizeFindings,
+  summarizeReviewerRequirements
 } from "../../../data";
 
 type PageProps = {
@@ -43,7 +45,7 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
           <MetricCard
             label="Would block"
             value={String(wouldBlock.length)}
-            detail="PRs with required evidence or reviewer approval still open."
+            detail="PRs that would block only in enforce or optimize mode."
             tone="block"
           />
           <MetricCard
@@ -101,6 +103,8 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
                 const blockers =
                   missingEvidence(record).length + pendingRequiredReviewers(record).length;
                 const previewStatus = blockers > 0 ? "block" : record.checkStatus;
+                const previewLabel =
+                  blockers > 0 ? "would block in enforce" : `would ${previewStatus}`;
                 return (
                   <tr key={record.id}>
                     <td>
@@ -110,23 +114,11 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
                       <p className="muted">{item.title}</p>
                     </td>
                     <td>
-                      <StatusBadge status={previewStatus} label={`would ${previewStatus}`} />
+                      <StatusBadge status={previewStatus} label={previewLabel} />
                     </td>
-                    <td>
-                      {record.verifiedFindings
-                        .filter((finding) => finding.type !== "agent_signal_detected")
-                        .map((finding) => humanize(finding.type))
-                        .join(", ") || "none"}
-                    </td>
-                    <td>
-                      {record.requiredEvidence
-                        .map((evidence) => humanize(evidence.kind))
-                        .join(", ") || "none"}
-                    </td>
-                    <td>
-                      {record.requiredReviewers.map((reviewer) => reviewer.reviewer).join(", ") ||
-                        "none"}
-                    </td>
+                    <td>{summarizeFindings(record.verifiedFindings)}</td>
+                    <td>{summarizeEvidenceRequirements(record.requiredEvidence)}</td>
+                    <td>{summarizeReviewerRequirements(record.requiredReviewers)}</td>
                     <td>{hasAgentSignal(record) ? "recorded" : "none"}</td>
                   </tr>
                 );

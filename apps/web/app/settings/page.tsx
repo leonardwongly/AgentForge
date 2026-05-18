@@ -1,10 +1,16 @@
 import { Download, GitBranch, Save, ShieldCheck } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
 import { loadSettings, type SettingsData } from "../data";
+import { createRecordExport } from "../records/actions";
 import { saveRepositorySettings } from "./actions";
 
 type SettingsPageProps = {
-  searchParams?: Promise<{ updated?: string; error?: string }>;
+  searchParams?: Promise<{
+    updated?: string;
+    exportId?: string;
+    recordCount?: string;
+    error?: string;
+  }>;
 };
 
 export default async function SettingsPage({ searchParams }: SettingsPageProps) {
@@ -59,11 +65,23 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
             </div>
           </section>
         ) : null}
+        {params?.updated === "records-export" ? (
+          <section className="notice">
+            <Download size={18} aria-hidden="true" />
+            <div>
+              <h2>Audit export created</h2>
+              <p>
+                Job {params.exportId ?? "created"} contains {params.recordCount ?? "0"} Change
+                Control Records.
+              </p>
+            </div>
+          </section>
+        ) : null}
         {params?.error ? (
           <section className="notice notice--unavailable">
             <GitBranch size={18} aria-hidden="true" />
             <div>
-              <h2>Settings were not saved</h2>
+              <h2>Action failed</h2>
               <p>{params.error}</p>
             </div>
           </section>
@@ -110,6 +128,13 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                         .join(" · ") || "GitHub App credentials are configured."
                     : "No GitHub installation is connected in the runtime data."}
                 </p>
+                {settings?.githubInstallation.connected &&
+                !settings.githubInstallation.accountLogin &&
+                !settings.githubInstallation.githubInstallationId ? (
+                  <p className="muted">
+                    Credentials are configured, but no installation account has been verified yet.
+                  </p>
+                ) : null}
               </li>
               <li>
                 <div className="list-row">
@@ -346,7 +371,10 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                 </div>
               ))}
               {repositoryOwnerMappings.length === 0 ? (
-                <p className="muted">No owner mappings are configured for this repository yet.</p>
+                <p className="muted">
+                  Use the blank rows above to create owner mappings. Setup is not enforce-ready
+                  until at least one reviewer route is saved.
+                </p>
               ) : null}
             </div>
           </section>
@@ -360,9 +388,13 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                 Exports include records, findings, evidence, reviewers, overrides, and decisions.
               </p>
             </div>
-            <button className="button" type="button">
-              <Download size={16} aria-hidden="true" /> Create export
-            </button>
+            <form action={createRecordExport}>
+              <input name="returnTo" type="hidden" value="/settings" />
+              <input name="format" type="hidden" value="json" />
+              <button className="button" type="submit">
+                <Download size={16} aria-hidden="true" /> Create export
+              </button>
+            </form>
           </div>
           <ul className="compact-list">
             <li>

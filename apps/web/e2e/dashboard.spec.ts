@@ -124,3 +124,38 @@ test("settings form persists repository mode, retention, and owner mappings", as
     ])
   );
 });
+
+test("first-user actions create exports and route to preview/configuration", async ({
+  page,
+  request
+}) => {
+  const record = await seedMergeGuardRecord(request);
+
+  await page.goto("/records");
+  await page.getByRole("button", { name: "Export records" }).click();
+  await expect(page.getByRole("heading", { name: "Export created" })).toBeVisible();
+  await expect(page).toHaveURL(/updated=records-export.*exportId=/u);
+  await expect(page.getByText(/contains \d+ Change Control Records/u)).toBeVisible();
+
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Create export" }).click();
+  await expect(page.getByRole("heading", { name: "Audit export created" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Audit exports" })).toBeVisible();
+
+  await page.goto("/onboarding");
+  await page.getByRole("link", { name: "Run preview" }).click();
+  await expect(page).toHaveURL(
+    new RegExp(`/repositories/${record.repositoryId}/policy-preview$`, "u")
+  );
+  await expect(page.getByRole("heading", { name: "Policy Preview" })).toBeVisible();
+
+  await page.goto("/repositories/repo_without_policy/policy");
+  await expect(page.getByRole("heading", { name: "No active policy version yet" })).toBeVisible();
+  await expect(page.getByLabel("Repository policy YAML")).toContainText(
+    "policy_pack_id: startup-default"
+  );
+
+  await page.goto("/dashboard/blocked-prs");
+  await page.getByRole("link", { name: "Tune filters" }).click();
+  await expect(page).toHaveURL(/\/settings$/u);
+});

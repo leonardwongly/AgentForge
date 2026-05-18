@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Save, ShieldCheck, WandSparkles } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
-import { loadPolicyYaml } from "../../../data";
+import { loadPolicyPacks, loadPolicyYaml } from "../../../data";
 import { saveRepositoryPolicy } from "./actions";
 
 type PageProps = {
@@ -10,7 +10,13 @@ type PageProps = {
 
 export default async function PolicyEditorPage({ params }: PageProps) {
   const { id } = await params;
-  const policy = await loadPolicyYaml(id);
+  const [policy, packs] = await Promise.all([loadPolicyYaml(id), loadPolicyPacks()]);
+  const bootstrapPack =
+    packs.policyPacks.find((pack) => pack.id === policy.policyPackId) ??
+    packs.policyPacks.find((pack) => pack.id === "startup-default") ??
+    packs.policyPacks[0];
+  const editorPolicy = policy.policy || bootstrapPack?.contentYaml || "";
+  const isBootstrapPolicy = !policy.policy && Boolean(editorPolicy);
 
   return (
     <>
@@ -29,7 +35,19 @@ export default async function PolicyEditorPage({ params }: PageProps) {
       </header>
 
       <section className="page">
-        {policy.source !== "api" ? (
+        {isBootstrapPolicy ? (
+          <section className="notice">
+            <ShieldCheck size={18} aria-hidden="true" />
+            <div>
+              <h2>No active policy version yet</h2>
+              <p>
+                The editor is prefilled from{" "}
+                {bootstrapPack?.name ?? "the first available policy pack"}. Save to create the first
+                immutable repository policy version.
+              </p>
+            </div>
+          </section>
+        ) : policy.source !== "api" ? (
           <section className={`notice notice--${policy.source}`}>
             <ShieldCheck size={18} aria-hidden="true" />
             <div>
@@ -46,15 +64,17 @@ export default async function PolicyEditorPage({ params }: PageProps) {
           </div>
           <div>
             <span>Policy pack</span>
-            <strong>{policy.policyPackId ?? "not configured"}</strong>
+            <strong>{policy.policyPackId ?? bootstrapPack?.id ?? "not configured"}</strong>
           </div>
           <div>
             <span>Current mode</span>
-            <strong>{policy.mode ?? "not configured"}</strong>
+            <strong>{policy.mode ?? bootstrapPack?.defaultMode ?? "not configured"}</strong>
           </div>
           <div>
             <span>Version</span>
-            <strong>{policy.version ?? "not configured"}</strong>
+            <strong>
+              {policy.version ?? (isBootstrapPolicy ? "new draft" : "not configured")}
+            </strong>
           </div>
         </div>
 
@@ -78,7 +98,7 @@ export default async function PolicyEditorPage({ params }: PageProps) {
               <textarea
                 aria-label="Repository policy YAML"
                 className="code-pane code-pane--editor"
-                defaultValue={policy.policy}
+                defaultValue={editorPolicy}
                 name="contentYaml"
                 spellCheck={false}
               />
@@ -95,17 +115,23 @@ export default async function PolicyEditorPage({ params }: PageProps) {
                   <div className="list-row">
                     <span>Schema version</span>
                     <StatusBadge
-                      status={policy.policy ? "approved" : "low"}
-                      label={policy.policy ? "loaded" : "not loaded"}
+                      status={editorPolicy ? "approved" : "low"}
+                      label={editorPolicy ? (isBootstrapPolicy ? "draft" : "loaded") : "not loaded"}
                     />
                   </div>
                 </li>
                 <li>
                   <div className="list-row">
                     <span>Mode</span>
-                    {policy.mode ? (
+                    {policy.mode || bootstrapPack?.defaultMode ? (
                       <StatusBadge
-                        status={policy.mode as "observe" | "warn" | "enforce" | "optimize"}
+                        status={
+                          (policy.mode ?? bootstrapPack?.defaultMode) as
+                            | "observe"
+                            | "warn"
+                            | "enforce"
+                            | "optimize"
+                        }
                       />
                     ) : (
                       <StatusBadge status="low" label="not configured" />

@@ -6,10 +6,12 @@ import {
   actionRequiredRecords,
   blockingModeBadge,
   hasAgentSignal,
-  humanize,
   loadDashboardData,
   missingEvidence,
-  pendingRequiredReviewers
+  pendingRequiredReviewers,
+  summarizeEvidenceRequirements,
+  summarizeFindings,
+  summarizeReviewerRequirements
 } from "../../data";
 
 export default async function BlockedPrsPage() {
@@ -23,9 +25,9 @@ export default async function BlockedPrsPage() {
           <h1>Blocked PRs</h1>
           <p>PRs where required policy evidence or required reviewer approval is still open.</p>
         </div>
-        <button className="button" type="button">
-          <Filter size={16} aria-hidden="true" /> Repository, mode, severity
-        </button>
+        <Link className="button" href="/settings">
+          <Filter size={16} aria-hidden="true" /> Tune filters
+        </Link>
       </header>
 
       <section className="page">
@@ -74,34 +76,27 @@ export default async function BlockedPrsPage() {
                       <p className="muted">{item.title}</p>
                     </td>
                     <td>
-                      {record.verifiedFindings
-                        .filter((finding) => finding.type !== "agent_signal_detected")
-                        .slice(0, 2)
-                        .map((finding) => humanize(finding.type))
-                        .join(", ") || "No blocking policy finding"}
+                      {summarizeFindings(record.verifiedFindings)}
                       {hasAgentSignal(record) ? (
                         <p className="muted">Agent signal recorded</p>
                       ) : null}
                     </td>
                     <td>
                       {missing.length > 0 ? (
-                        missing.map((item) => (
-                          <div key={item.id}>
-                            <StatusBadge status="missing" label={humanize(item.kind)} />
-                          </div>
-                        ))
+                        <StatusBadge
+                          status="missing"
+                          label={summarizeEvidenceRequirements(missing)}
+                        />
                       ) : (
                         <StatusBadge status="approved" label="complete" />
                       )}
                     </td>
                     <td>
                       {pendingReviewers.length > 0 ? (
-                        pendingReviewers.map((reviewer) => (
-                          <div key={reviewer.id} className="inline-list">
-                            <UserCheck size={14} aria-hidden="true" />
-                            <span>{reviewer.reviewer}</span>
-                          </div>
-                        ))
+                        <div className="inline-list">
+                          <UserCheck size={14} aria-hidden="true" />
+                          <span>{summarizeReviewerRequirements(pendingReviewers)}</span>
+                        </div>
                       ) : (
                         <span>None pending</span>
                       )}

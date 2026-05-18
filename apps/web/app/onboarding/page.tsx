@@ -1,7 +1,7 @@
+import Link from "next/link";
 import { CheckCircle2, GitBranch, Play, ShieldCheck } from "lucide-react";
 import { ProgressBar, StatusBadge } from "@agentforge/ui";
 import {
-  humanize,
   loadDashboardData,
   loadOnboardingStatus,
   loadPolicyPacks,
@@ -9,6 +9,8 @@ import {
   loadSettings,
   missingEvidence,
   pendingRequiredReviewers,
+  summarizeEvidenceRequirements,
+  summarizeReviewerRequirements,
   type SettingsData
 } from "../data";
 import { saveRepositorySettings } from "../settings/actions";
@@ -78,6 +80,9 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
               <h2>Setup settings saved</h2>
               <p>
                 Repository mode, policy pack, owner mappings, and retention settings were saved.
+                {repositoryOwnerMappings.length === 0
+                  ? " Add at least one owner mapping before treating setup as enforce-ready."
+                  : ""}
               </p>
             </div>
           </section>
@@ -301,7 +306,8 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
                 ))}
                 {repositoryOwnerMappings.length === 0 ? (
                   <p className="muted">
-                    Configure owner mappings before moving high-risk rules to enforce mode.
+                    Fill in at least one owner key and reviewer before moving high-risk rules to
+                    enforce mode.
                   </p>
                 ) : null}
               </div>
@@ -393,9 +399,18 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
                   <h2>Preview recent PRs</h2>
                   <p>Preview shows would pass, warn, or block before enabling required checks.</p>
                 </div>
-                <button className="button button--primary" type="button">
-                  <Play size={16} aria-hidden="true" /> Run preview
-                </button>
+                {selectedRepository ? (
+                  <Link
+                    className="button button--primary"
+                    href={`/repositories/${selectedRepository.id}/policy-preview`}
+                  >
+                    <Play size={16} aria-hidden="true" /> Run preview
+                  </Link>
+                ) : (
+                  <button className="button button--primary" disabled type="button">
+                    <Play size={16} aria-hidden="true" /> Run preview
+                  </button>
+                )}
               </div>
               <ul className="compact-list">
                 {dashboard.records.length === 0 ? (
@@ -415,13 +430,11 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
                         <StatusBadge status={previewStatus} label={`would ${previewStatus}`} />
                       </div>
                       <p>
-                        {missing
-                          .map((evidence) => `${humanize(evidence.kind)} missing`)
-                          .join(", ") ||
-                          reviewers
-                            .map((reviewer) => `${reviewer.reviewer} approval pending`)
-                            .join(", ") ||
-                          "Configured policy requirements are satisfied."}
+                        {missing.length > 0
+                          ? `Missing evidence: ${summarizeEvidenceRequirements(missing)}`
+                          : reviewers.length > 0
+                            ? `Pending reviewers: ${summarizeReviewerRequirements(reviewers)}`
+                            : "Configured policy requirements are satisfied."}
                       </p>
                     </li>
                   );

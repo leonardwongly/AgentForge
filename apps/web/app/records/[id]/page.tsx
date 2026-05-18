@@ -8,15 +8,24 @@ import {
   humanize,
   loadRecord,
   missingEvidence,
-  pendingRequiredReviewers
+  pendingRequiredReviewers,
+  summarizeFindings
 } from "../../data";
+import { createRecordExport } from "../actions";
 
 type PageProps = {
   params: Promise<{ id: string }>;
+  searchParams?: Promise<{
+    updated?: string;
+    exportId?: string;
+    recordCount?: string;
+    error?: string;
+  }>;
 };
 
-export default async function RecordDetailPage({ params }: PageProps) {
+export default async function RecordDetailPage({ params, searchParams }: PageProps) {
   const { id } = await params;
+  const query = await searchParams;
   const data = await loadRecord(id);
   const item = data.item;
   if (!item) {
@@ -63,14 +72,53 @@ export default async function RecordDetailPage({ params }: PageProps) {
           <Link className="button" href={item.githubUrl}>
             <GitBranch size={16} aria-hidden="true" /> GitHub PR
           </Link>
-          <button className="button button--primary" type="button">
-            <Download size={16} aria-hidden="true" /> Export
-          </button>
+          <form action={createRecordExport}>
+            <input name="returnTo" type="hidden" value={`/records/${id}`} />
+            <input name="format" type="hidden" value="json" />
+            <button className="button button--primary" type="submit">
+              <Download size={16} aria-hidden="true" /> Export
+            </button>
+          </form>
         </div>
       </header>
 
       <section className="page">
+        {query?.updated === "records-export" ? (
+          <section className="notice">
+            <Download size={18} aria-hidden="true" />
+            <div>
+              <h2>Export created</h2>
+              <p>
+                Job {query.exportId ?? "created"} contains {query.recordCount ?? "0"} Change Control
+                Records.
+              </p>
+            </div>
+          </section>
+        ) : null}
+        {query?.error ? (
+          <section className="notice notice--unavailable">
+            <Download size={18} aria-hidden="true" />
+            <div>
+              <h2>Export was not created</h2>
+              <p>{query.error}</p>
+            </div>
+          </section>
+        ) : null}
         <DataSourceNotice {...data} />
+
+        {record.checkStatus === "pass" && (missing.length > 0 || pendingReviewers.length > 0) ? (
+          <section className="notice">
+            <ShieldCheck size={18} aria-hidden="true" />
+            <div>
+              <h2>Passing because policy is observing</h2>
+              <p>
+                {missing.length} evidence requirement(s) and {pendingReviewers.length} reviewer
+                approval(s) remain open. They would block only after this policy moves to enforce or
+                optimize.
+              </p>
+            </div>
+          </section>
+        ) : null}
 
         <div className="metrics-grid">
           <MetricCard
@@ -111,6 +159,9 @@ export default async function RecordDetailPage({ params }: PageProps) {
               <h2>{item.title}</h2>
               <p>
                 Author {item.author} · Team {item.team} · Policy pack {record.policyPackId}
+              </p>
+              <p className="muted">
+                Findings summary: {summarizeFindings(record.verifiedFindings)}
               </p>
             </div>
             <div className="inline-list">
