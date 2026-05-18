@@ -95,7 +95,7 @@ describe("Merge Guard worker evaluation jobs", () => {
     });
     expect(published).toHaveLength(1);
     expect(published[0]).toMatchObject({ owner: "acme", repo: "payments" });
-    expect(published[0]?.detailsUrl).toMatch(/^http:\/\/localhost:3000\/records\//u);
+    expect(published[0]?.detailsUrl).toBeUndefined();
     expect(published[0]?.result.findings.map((finding) => finding.type)).toContain(
       "sensitive_path_changed"
     );

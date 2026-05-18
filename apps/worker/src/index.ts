@@ -38,6 +38,13 @@ type CheckPublisher = (input: {
   detailsUrl?: string | undefined;
 }) => Promise<{ id?: number | undefined; conclusion: CheckRunPayload["conclusion"] }>;
 
+type PersistedWorkerRecordRefs = {
+  organizationId: string;
+  repositoryId: string;
+  pullRequestId: string;
+  recordId: string;
+};
+
 let workerPrisma: PrismaClient | undefined;
 
 export type MergeGuardEvaluationJobData = {
@@ -106,13 +113,23 @@ export async function processMergeGuardEvaluationJob(
     ),
     data.envelope
   );
+  const persistedRecord = prisma
+    ? await ensureWorkerRecord({
+        prisma,
+        record,
+        pr,
+        envelope: data.envelope
+      })
+    : undefined;
   const checkRun = buildCheckRunPayload(pr, result);
   const published = await publishCheckIfConfigured({
     data,
     githubContext,
     result,
     pr,
-    detailsUrl: recordDetailsUrl(config.appBaseUrl, record.id)
+    detailsUrl: persistedRecord
+      ? recordDetailsUrl(config.appBaseUrl, persistedRecord.recordId)
+      : undefined
   });
 
   if (prisma) {
@@ -122,13 +139,14 @@ export async function processMergeGuardEvaluationJob(
       pr,
       checkConclusion: checkRun.conclusion,
       publishedCheckRunId: published.id,
-      envelope: data.envelope
+      envelope: data.envelope,
+      persistedRecord
     });
   }
 
   return {
     processedAt: new Date().toISOString(),
-    recordId: record.id,
+    recordId: persistedRecord?.recordId ?? record.id,
     repositoryFullName: record.repositoryFullName,
     pullRequestNumber: record.pullRequestNumber,
     status: record.checkStatus,
@@ -556,8 +574,68 @@ async function persistWorkerRecord(input: {
   checkConclusion: string;
   publishedCheckRunId?: number | undefined;
   envelope?: GithubWebhookEnvelope | undefined;
+  persistedRecord?: PersistedWorkerRecordRefs | undefined;
 }): Promise<void> {
   const { prisma, record, pr, checkConclusion, publishedCheckRunId, envelope } = input;
+  const persistedRecord =
+    input.persistedRecord ??
+    (await ensureWorkerRecord({
+      prisma,
+      record,
+      pr,
+      envelope
+    }));
+  await persistWorkerEvaluationSnapshot({
+    prisma,
+    organizationId: persistedRecord.organizationId,
+    repositoryId: persistedRecord.repositoryId,
+    pullRequestId: persistedRecord.pullRequestId,
+    record,
+    checkConclusion,
+    publishedCheckRunId
+  });
+
+  const audit = createAuditEvent({
+    organizationId: persistedRecord.organizationId,
+    repositoryId: persistedRecord.repositoryId,
+    pullRequestId: persistedRecord.pullRequestId,
+    actor: "system",
+    action: "check_published",
+    targetType: "change_control_record",
+    targetId: persistedRecord.recordId,
+    metadataJson: {
+      conclusion: checkConclusion,
+      githubCheckRunId: publishedCheckRunId,
+      status: record.checkStatus,
+      mode: record.mode,
+      policyVersion: record.policyVersion
+    }
+  });
+  await prisma.auditEvent.upsert({
+    where: { id: audit.id },
+    update: {},
+    create: {
+      id: audit.id,
+      organizationId: audit.organizationId,
+      repositoryId: audit.repositoryId ?? null,
+      pullRequestId: audit.pullRequestId ?? null,
+      actor: audit.actor,
+      action: audit.action,
+      targetType: audit.targetType,
+      targetId: audit.targetId,
+      metadataJson: audit.metadataJson as never,
+      createdAt: new Date(audit.createdAt)
+    }
+  });
+}
+
+async function ensureWorkerRecord(input: {
+  prisma: PrismaClient;
+  record: ChangeControlRecord;
+  pr: PullRequestInput;
+  envelope?: GithubWebhookEnvelope | undefined;
+}): Promise<PersistedWorkerRecordRefs> {
+  const { prisma, record, pr, envelope } = input;
   const organization = await prisma.organization.upsert({
     where: { id: record.organizationId },
     update: {},
@@ -624,7 +702,7 @@ async function persistWorkerRecord(input: {
     }
   });
 
-  await prisma.changeControlRecord.upsert({
+  const persistedRecord = await prisma.changeControlRecord.upsert({
     where: { pullRequestId: pullRequest.id },
     update: {
       repositoryFullName: record.repositoryFullName,
@@ -665,48 +743,12 @@ async function persistWorkerRecord(input: {
       updatedAt: new Date(record.updatedAt)
     }
   });
-  await persistWorkerEvaluationSnapshot({
-    prisma,
+  return {
     organizationId: organization.id,
     repositoryId: repository.id,
     pullRequestId: pullRequest.id,
-    record,
-    checkConclusion,
-    publishedCheckRunId
-  });
-
-  const audit = createAuditEvent({
-    organizationId: organization.id,
-    repositoryId: repository.id,
-    pullRequestId: pullRequest.id,
-    actor: "system",
-    action: "check_published",
-    targetType: "change_control_record",
-    targetId: record.id,
-    metadataJson: {
-      conclusion: checkConclusion,
-      githubCheckRunId: publishedCheckRunId,
-      status: record.checkStatus,
-      mode: record.mode,
-      policyVersion: record.policyVersion
-    }
-  });
-  await prisma.auditEvent.upsert({
-    where: { id: audit.id },
-    update: {},
-    create: {
-      id: audit.id,
-      organizationId: audit.organizationId,
-      repositoryId: audit.repositoryId ?? null,
-      pullRequestId: audit.pullRequestId ?? null,
-      actor: audit.actor,
-      action: audit.action,
-      targetType: audit.targetType,
-      targetId: audit.targetId,
-      metadataJson: audit.metadataJson as never,
-      createdAt: new Date(audit.createdAt)
-    }
-  });
+    recordId: persistedRecord.id
+  };
 }
 
 async function persistWorkerEvaluationSnapshot(input: {
