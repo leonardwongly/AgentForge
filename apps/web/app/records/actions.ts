@@ -92,7 +92,7 @@ function readExportFormat(formData: FormData): ExportFormat {
 }
 
 function safeReturnPath(path: string): string {
-  if (path === "/records" || path === "/settings") {
+  if (path === "/dashboard" || path === "/records" || path === "/settings") {
     return path;
   }
   if (/^\/records\/[A-Za-z0-9_-]+$/u.test(path)) {

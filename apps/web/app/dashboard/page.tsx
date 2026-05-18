@@ -16,6 +16,8 @@ import {
   blockingModeBadge,
   evidenceByKind,
   findingGroups,
+  governanceDisposition,
+  hasOpenRequirements,
   getDashboardSummary,
   hasAgentSignal,
   humanize,
@@ -23,8 +25,19 @@ import {
   loadDashboardData,
   pendingRequiredReviewers
 } from "../data";
+import { createRecordExport } from "../records/actions";
 
-export default async function DashboardPage() {
+type DashboardPageProps = {
+  searchParams?: Promise<{
+    updated?: string;
+    exportId?: string;
+    recordCount?: string;
+    error?: string;
+  }>;
+};
+
+export default async function DashboardPage({ searchParams }: DashboardPageProps) {
+  const params = await searchParams;
   const data = await loadDashboardData();
   const summary = getDashboardSummary(data.records);
   const actionRequired = actionRequiredRecords(data.records);
@@ -41,16 +54,41 @@ export default async function DashboardPage() {
           </p>
         </div>
         <div className="control-row">
-          <button className="button" type="button">
-            <Filter size={16} aria-hidden="true" /> Filters
-          </button>
-          <button className="button button--primary" type="button">
-            <Download size={16} aria-hidden="true" /> Export records
-          </button>
+          <Link className="button" href="/dashboard/blocked-prs">
+            <Filter size={16} aria-hidden="true" /> Action queues
+          </Link>
+          <form action={createRecordExport}>
+            <input name="returnTo" type="hidden" value="/dashboard" />
+            <input name="format" type="hidden" value="json" />
+            <button className="button button--primary" type="submit">
+              <Download size={16} aria-hidden="true" /> Export records
+            </button>
+          </form>
         </div>
       </header>
 
       <section className="page">
+        {params?.updated === "records-export" ? (
+          <section className="notice">
+            <Download size={18} aria-hidden="true" />
+            <div>
+              <h2>Export created</h2>
+              <p>
+                Job {params.exportId ?? "created"} contains {params.recordCount ?? "0"} Change
+                Control Records.
+              </p>
+            </div>
+          </section>
+        ) : null}
+        {params?.error ? (
+          <section className="notice notice--unavailable">
+            <Download size={18} aria-hidden="true" />
+            <div>
+              <h2>Export was not created</h2>
+              <p>{params.error}</p>
+            </div>
+          </section>
+        ) : null}
         <DataSourceNotice {...data} />
 
         <div className="metrics-grid" aria-label="Governance summary">
@@ -102,6 +140,7 @@ export default async function DashboardPage() {
                 const record = item.record;
                 const missing = missingEvidence(record);
                 const pendingReviewers = pendingRequiredReviewers(record);
+                const disposition = governanceDisposition(record);
                 return (
                   <li key={record.id}>
                     <div className="record-title">
@@ -114,9 +153,14 @@ export default async function DashboardPage() {
                           {record.repositoryFullName} · {item.team} · {item.age}
                         </p>
                       </div>
-                      <StatusBadge status={record.checkStatus} />
+                      <StatusBadge status={disposition.status} label={disposition.label} />
                     </div>
                     <div className="inline-list" aria-label="Open requirements">
+                      {hasOpenRequirements(record) ? (
+                        <span className="status-badge status-badge--warn">
+                          would block in enforce
+                        </span>
+                      ) : null}
                       {missing.length > 0 ? (
                         <span className="status-badge status-badge--missing">
                           {missing.length} required evidence missing

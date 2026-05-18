@@ -370,6 +370,40 @@ describe("github integration", () => {
     expect(payload.output.text).toContain("Non-blocking warning");
   });
 
+  it("keeps observe mode successful while surfacing open requirements", () => {
+    const result: PolicyResult = {
+      mode: "observe",
+      status: "pass",
+      policyVersion: "fintech@1.0.0",
+      findings: [],
+      requiredEvidence: [
+        {
+          id: "evidence-1",
+          kind: "rollback_plan",
+          status: "missing",
+          requiredByFindingId: "finding-1"
+        }
+      ],
+      requiredReviewers: [
+        {
+          id: "reviewer-1",
+          reviewer: "security-team",
+          reviewerType: "team",
+          tier: "required",
+          reason: "Security-owned path changed.",
+          triggeredByFindingId: "finding-1",
+          approved: false
+        }
+      ],
+      explanation: [],
+      evaluatedAt: "2026-05-12T00:00:00.000Z"
+    };
+    const payload = buildCheckRunPayload({ headSha: "sha" }, result);
+    expect(payload.conclusion).toBe("success");
+    expect(payload.output.summary).toContain("2 requirement(s) remain open");
+    expect(payload.output.text).toContain("observe mode records them without blocking");
+  });
+
   it("includes an explicit dashboard details URL when provided", () => {
     const result: PolicyResult = {
       mode: "warn",

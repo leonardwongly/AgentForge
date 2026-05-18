@@ -25,6 +25,12 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
       missingEvidence(item.record).length > 0 ||
       pendingRequiredReviewers(item.record).length > 0
   );
+  const wouldPass = data.records.filter(
+    (item) =>
+      item.record.checkStatus === "pass" &&
+      missingEvidence(item.record).length === 0 &&
+      pendingRequiredReviewers(item.record).length === 0
+  );
 
   return (
     <>
@@ -56,8 +62,8 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
           />
           <MetricCard
             label="Would pass"
-            value={String(data.records.filter((item) => item.record.checkStatus === "pass").length)}
-            detail="Configured policy requirements are satisfied."
+            value={String(wouldPass.length)}
+            detail="Configured policy requirements are satisfied with no open evidence or reviewer requirements."
             tone="pass"
           />
           <MetricCard
