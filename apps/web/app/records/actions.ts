@@ -23,11 +23,8 @@ export async function createRecordExport(formData: FormData): Promise<void> {
       { method: "POST", body: JSON.stringify({ format }) }
     );
   } catch (error) {
-    redirect(
-      `${returnTo}?error=${encodeURIComponent(
-        error instanceof Error ? error.message.slice(0, 180) : "Record export could not be created."
-      )}`
-    );
+    void error;
+    redirectWithError(returnTo, "record-export-failed");
   }
 
   revalidatePath("/records");
@@ -45,9 +42,7 @@ export async function submitEvidence(formData: FormData): Promise<void> {
   const kind = readString(formData, "kind");
   const content = readString(formData, "content");
   if (!recordId || !content || (!evidenceId && !kind)) {
-    redirect(
-      `${returnTo}?error=${encodeURIComponent("Evidence requirement and content are required.")}`
-    );
+    redirectWithError(returnTo, "evidence-submission-required");
   }
 
   try {
@@ -57,11 +52,8 @@ export async function submitEvidence(formData: FormData): Promise<void> {
       body: JSON.stringify({ evidenceId, kind, content })
     });
   } catch (error) {
-    redirect(
-      `${returnTo}?error=${encodeURIComponent(
-        error instanceof Error ? error.message.slice(0, 180) : "Evidence could not be submitted."
-      )}`
-    );
+    void error;
+    redirectWithError(returnTo, "evidence-submission-failed");
   }
 
   revalidateEvidencePaths(returnTo);
@@ -73,7 +65,7 @@ export async function approveEvidence(formData: FormData): Promise<void> {
   const evidenceId = readString(formData, "evidenceId");
   const recordId = readString(formData, "recordId");
   if (!evidenceId) {
-    redirect(`${returnTo}?error=${encodeURIComponent("Evidence requirement is required.")}`);
+    redirectWithError(returnTo, "evidence-approval-required");
   }
 
   try {
@@ -83,11 +75,8 @@ export async function approveEvidence(formData: FormData): Promise<void> {
       body: JSON.stringify({ recordId })
     });
   } catch (error) {
-    redirect(
-      `${returnTo}?error=${encodeURIComponent(
-        error instanceof Error ? error.message.slice(0, 180) : "Evidence could not be approved."
-      )}`
-    );
+    void error;
+    redirectWithError(returnTo, "evidence-approval-failed");
   }
 
   revalidateEvidencePaths(returnTo);
@@ -100,9 +89,7 @@ export async function rejectEvidence(formData: FormData): Promise<void> {
   const recordId = readString(formData, "recordId");
   const reason = readString(formData, "reason");
   if (!evidenceId || !reason) {
-    redirect(
-      `${returnTo}?error=${encodeURIComponent("Evidence requirement and reason are required.")}`
-    );
+    redirectWithError(returnTo, "evidence-rejection-required");
   }
 
   try {
@@ -112,11 +99,8 @@ export async function rejectEvidence(formData: FormData): Promise<void> {
       body: JSON.stringify({ recordId, reason })
     });
   } catch (error) {
-    redirect(
-      `${returnTo}?error=${encodeURIComponent(
-        error instanceof Error ? error.message.slice(0, 180) : "Evidence could not be rejected."
-      )}`
-    );
+    void error;
+    redirectWithError(returnTo, "evidence-rejection-failed");
   }
 
   revalidateEvidencePaths(returnTo);
@@ -128,7 +112,7 @@ export async function approveReviewer(formData: FormData): Promise<void> {
   const reviewerId = readString(formData, "reviewerId");
   const recordId = readString(formData, "recordId");
   if (!reviewerId) {
-    redirect(`${returnTo}?error=${encodeURIComponent("Reviewer requirement is required.")}`);
+    redirectWithError(returnTo, "reviewer-approval-required");
   }
 
   try {
@@ -138,11 +122,8 @@ export async function approveReviewer(formData: FormData): Promise<void> {
       body: JSON.stringify({ recordId })
     });
   } catch (error) {
-    redirect(
-      `${returnTo}?error=${encodeURIComponent(
-        error instanceof Error ? error.message.slice(0, 180) : "Reviewer could not be approved."
-      )}`
-    );
+    void error;
+    redirectWithError(returnTo, "reviewer-approval-failed");
   }
 
   revalidateEvidencePaths(returnTo);
@@ -208,6 +189,10 @@ function revalidateEvidencePaths(returnTo: string): void {
   revalidatePath("/dashboard");
   revalidatePath("/dashboard/evidence-completion");
   revalidatePath("/dashboard/blocked-prs");
+}
+
+function redirectWithError(returnTo: string, code: string): never {
+  redirect(`${returnTo}?error=${encodeURIComponent(code)}`);
 }
 
 function safeReturnPath(path: string): string {

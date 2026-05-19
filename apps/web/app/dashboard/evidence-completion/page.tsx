@@ -22,6 +22,8 @@ export default async function EvidenceCompletionPage({
   searchParams
 }: EvidenceCompletionPageProps) {
   const query = await searchParams;
+  const updateNotice = query?.updated ? evidenceQueueNotice(query.updated) : undefined;
+  const errorNotice = query?.error ? evidenceQueueErrorNotice(query.error) : undefined;
   const data = await loadDashboardData();
   const summary = getDashboardSummary(data.records);
   const evidenceGroups = evidenceByKind(data.records);
@@ -43,21 +45,21 @@ export default async function EvidenceCompletionPage({
       </header>
 
       <section className="page">
-        {query?.updated ? (
+        {updateNotice ? (
           <section className="notice">
             <CheckCircle2 size={18} aria-hidden="true" />
             <div>
-              <h2>{evidenceQueueNotice(query.updated)}</h2>
+              <h2>{updateNotice}</h2>
               <p>Evidence queues and Change Control Record summaries have been revalidated.</p>
             </div>
           </section>
         ) : null}
-        {query?.error ? (
+        {errorNotice ? (
           <section className="notice notice--unavailable">
             <XCircle size={18} aria-hidden="true" />
             <div>
               <h2>Evidence action failed</h2>
-              <p>{query.error}</p>
+              <p>{errorNotice}</p>
             </div>
           </section>
         ) : null}
@@ -260,12 +262,20 @@ export default async function EvidenceCompletionPage({
   );
 }
 
-function evidenceQueueNotice(updated: string): string {
-  if (updated === "evidence-approved") {
-    return "Evidence approved";
-  }
-  if (updated === "evidence-rejected") {
-    return "Evidence rejected";
-  }
-  return "Evidence queue updated";
+function evidenceQueueNotice(updated: string): string | undefined {
+  const notices: Record<string, string> = {
+    "evidence-approved": "Evidence approved",
+    "evidence-rejected": "Evidence rejected"
+  };
+  return notices[updated];
+}
+
+function evidenceQueueErrorNotice(error: string): string | undefined {
+  const notices: Record<string, string> = {
+    "evidence-approval-required": "Select an evidence requirement before approving it.",
+    "evidence-approval-failed": "Evidence could not be approved. Refresh the queue and try again.",
+    "evidence-rejection-required": "Select an evidence requirement and provide a rejection reason.",
+    "evidence-rejection-failed": "Evidence could not be rejected. Refresh the queue and try again."
+  };
+  return notices[error];
 }

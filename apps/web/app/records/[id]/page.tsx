@@ -64,6 +64,7 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
   const missing = missingEvidence(record);
   const pendingReviewers = pendingRequiredReviewers(record);
   const updateNotice = query?.updated ? evidenceUpdateNotice(query.updated) : undefined;
+  const errorNotice = query?.error ? recordErrorNotice(query.error) : undefined;
 
   return (
     <>
@@ -111,12 +112,12 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
             </div>
           </section>
         ) : null}
-        {query?.error ? (
+        {errorNotice ? (
           <section className="notice notice--unavailable">
-            <Download size={18} aria-hidden="true" />
+            <XCircle size={18} aria-hidden="true" />
             <div>
-              <h2>Export was not created</h2>
-              <p>{query.error}</p>
+              <h2>{errorNotice.title}</h2>
+              <p>{errorNotice.detail}</p>
             </div>
           </section>
         ) : null}
@@ -462,6 +463,58 @@ function evidenceUpdateNotice(updated: string): { title: string; detail: string 
       return {
         title: "Reviewer approved",
         detail: "Merge Guard re-evaluated the record after the reviewer requirement was cleared."
+      };
+    default:
+      return undefined;
+  }
+}
+
+function recordErrorNotice(error: string): { title: string; detail: string } | undefined {
+  switch (error) {
+    case "record-export-failed":
+      return {
+        title: "Export was not created",
+        detail: "The export request failed. Refresh the record and try again."
+      };
+    case "evidence-submission-required":
+      return {
+        title: "Evidence was not submitted",
+        detail: "Select an evidence requirement and provide at least 10 characters of content."
+      };
+    case "evidence-submission-failed":
+      return {
+        title: "Evidence was not submitted",
+        detail: "The evidence request failed. Refresh the record and try again."
+      };
+    case "evidence-approval-required":
+      return {
+        title: "Evidence was not approved",
+        detail: "Select an evidence requirement before approving it."
+      };
+    case "evidence-approval-failed":
+      return {
+        title: "Evidence was not approved",
+        detail: "The approval request failed. Refresh the record and try again."
+      };
+    case "evidence-rejection-required":
+      return {
+        title: "Evidence was not rejected",
+        detail: "Select an evidence requirement and provide a rejection reason."
+      };
+    case "evidence-rejection-failed":
+      return {
+        title: "Evidence was not rejected",
+        detail: "The rejection request failed. Refresh the record and try again."
+      };
+    case "reviewer-approval-required":
+      return {
+        title: "Reviewer was not approved",
+        detail: "Select a reviewer requirement before approving it."
+      };
+    case "reviewer-approval-failed":
+      return {
+        title: "Reviewer was not approved",
+        detail: "The reviewer approval request failed. Refresh the record and try again."
       };
     default:
       return undefined;
