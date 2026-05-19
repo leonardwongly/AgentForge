@@ -38,6 +38,7 @@ import {
   createAuditEvent,
   exportChangeControlRecordsCsv,
   exportChangeControlRecordsJson,
+  exportComplianceEvidencePackageJson,
   explainChangeControlRecord,
   generatePolicyTuningReport,
   sanitizeChangeControlRecord
@@ -244,6 +245,8 @@ const DASHBOARD_DEFAULT_PAGE_SIZE = 50;
 const DASHBOARD_MAX_PAGE_SIZE = 100;
 const EXPORT_DEFAULT_RECORD_LIMIT = 500;
 const EXPORT_MAX_RECORD_LIMIT = 1_000;
+const COMPLIANCE_EXPORT_DEFAULT_RECORD_LIMIT = 250;
+const COMPLIANCE_EXPORT_MAX_RECORD_LIMIT = 500;
 
 const optionalQueryString = z.string().trim().min(1).max(240).optional();
 const policyModeSchema = z.enum(["observe", "warn", "enforce", "optimize"]);
@@ -296,6 +299,33 @@ const exportRequestSchema = z
     offset: z.coerce.number().int().min(0).default(0)
   })
   .strict();
+const compliancePackageRequestSchema = z
+  .object({
+    format: z.literal("json").default("json"),
+    maxRecords: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(COMPLIANCE_EXPORT_MAX_RECORD_LIMIT)
+      .default(COMPLIANCE_EXPORT_DEFAULT_RECORD_LIMIT),
+    offset: z.coerce.number().int().min(0).default(0),
+    repositoryId: optionalQueryString,
+    policyPackId: optionalQueryString,
+    policyVersion: optionalQueryString,
+    startDate: z.string().datetime().optional(),
+    endDate: z.string().datetime().optional()
+  })
+  .strict()
+  .refine(
+    (value) =>
+      !value.startDate ||
+      !value.endDate ||
+      Date.parse(value.startDate) <= Date.parse(value.endDate),
+    {
+      path: ["endDate"],
+      message: "endDate must be greater than or equal to startDate"
+    }
+  );
 const evidenceKindSchema = z.enum([
   "rollback_plan",
   "migration_dry_run",
@@ -1776,6 +1806,110 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       truncated: job.truncated
     });
   });
+
+  app.post("/api/exports/compliance-evidence-package", async (request, reply) => {
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const allowed = requireRole(
+      actor,
+      ["auditor", "platform_admin"],
+      "Compliance evidence package export"
+    );
+    if (!allowed.ok) {
+      return reply.code(allowed.statusCode).send({ error: allowed.reason });
+    }
+    const parsedBody = compliancePackageRequestSchema.safeParse(request.body ?? {});
+    if (!parsedBody.success) {
+      return reply.code(400).send({
+        error: "Invalid compliance evidence package request",
+        details: parsedBody.error.flatten().fieldErrors
+      });
+    }
+    const {
+      format,
+      maxRecords,
+      offset,
+      repositoryId,
+      policyPackId,
+      policyVersion,
+      startDate,
+      endDate
+    } = parsedBody.data;
+    const matchingRecords = (await listRecords())
+      .filter((record) => record.organizationId === actor.organizationId)
+      .filter((record) => !repositoryId || record.repositoryId === repositoryId)
+      .filter((record) => !policyPackId || record.policyPackId === policyPackId)
+      .filter((record) => !policyVersion || record.policyVersion === policyVersion)
+      .filter((record) => !startDate || Date.parse(record.updatedAt) >= Date.parse(startDate))
+      .filter((record) => !endDate || Date.parse(record.updatedAt) <= Date.parse(endDate))
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    const records = matchingRecords.slice(offset, offset + maxRecords);
+    const jobId = randomUUID();
+    const auditEvents = await listAuditEventsForRecordExport(state, prisma, records);
+    const filters = {
+      repositoryId,
+      policyPackId,
+      policyVersion,
+      startDate,
+      endDate,
+      maxRecords,
+      offset,
+      totalMatchingRecords: matchingRecords.length,
+      truncated: offset + records.length < matchingRecords.length
+    };
+    const exportAuditEvent = createAuditEvent({
+      organizationId: actor.organizationId,
+      actor: actor.login,
+      action: "record_exported",
+      targetType: "compliance_evidence_package_export",
+      targetId: jobId,
+      actorRole: actor.role,
+      requestId: request.id,
+      metadataJson: {
+        format,
+        recordCount: records.length,
+        totalMatchingRecords: matchingRecords.length,
+        offset,
+        maxRecords,
+        truncated: offset + records.length < matchingRecords.length,
+        recordIds: records.map((record) => record.id),
+        repositoryIds: [...new Set(records.map((record) => record.repositoryId))],
+        policyPackIds: [...new Set(records.map((record) => record.policyPackId).filter(Boolean))],
+        controlPackage: "compliance_evidence",
+        actorRole: actor.role
+      }
+    });
+    const content = exportComplianceEvidencePackageJson({
+      records,
+      storagePolicy,
+      auditEvents: [...auditEvents, exportAuditEvent],
+      filters
+    });
+    const job: ExportJob = {
+      id: jobId,
+      organizationId: actor.organizationId,
+      status: "completed",
+      format,
+      recordCount: records.length,
+      totalMatchingRecords: matchingRecords.length,
+      truncated: offset + records.length < matchingRecords.length,
+      content,
+      createdAt: new Date().toISOString()
+    };
+    await saveExportJob(state, prisma, job, actor.login, actor.role);
+    await saveAuditEvent(state, prisma, exportAuditEvent);
+    return reply.code(201).send({
+      id: job.id,
+      status: job.status,
+      recordCount: job.recordCount,
+      totalMatchingRecords: job.totalMatchingRecords,
+      truncated: job.truncated,
+      packageType: "compliance_evidence"
+    });
+  });
+
   app.get("/api/exports/:id", async (request, reply) => {
     const actor = requireApiActor(request);
     if (isAuthzFailure(actor)) {

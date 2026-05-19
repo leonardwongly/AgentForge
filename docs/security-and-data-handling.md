@@ -40,12 +40,14 @@ Audit readiness:
 - Change Control Record exports and audit-event access require `auditor`, `platform_admin`, or `engineering_manager` and are filtered to the authenticated actor organization.
 - Dashboard record APIs default to 50 records per page and reject page sizes above 100. Query filters are server-validated for status, lifecycle, mode, repository, policy version, and sort order.
 - Change Control Record exports default to 500 records and reject `maxRecords` values above 1,000. Export responses report `totalMatchingRecords` and `truncated` so operators can page exports deliberately instead of allocating an unbounded dataset.
+- Compliance evidence packages are JSON-only export jobs for `auditor` and `platform_admin` roles. They default to 250 records, reject `maxRecords` values above 500, and can be filtered by repository id, policy pack id, policy version, and updated-at time range.
 - GitHub webhooks fail closed when `GITHUB_WEBHOOK_SECRET` is not configured. Unsigned fixture replay requires explicit local-only `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=true`.
 - Production configuration fails closed if unsigned webhooks, source-code storage, unredacted secrets, missing trusted proxy auth, local actor fallbacks, or missing ingress header-stripping acknowledgement are detected.
 - Audit events are emitted for policy changes, repository settings changes, owner mapping changes, overrides, evidence updates, reviewer approvals, check publishing, exports, and retention changes.
 - Audit events use schema version `1` and expose actor role, source, request id, correlation id, and policy identity as first-class fields when available. The same values are repeated in sanitized metadata for export compatibility.
 - JSON and CSV Change Control Record exports include the matching append-only audit event trail so auditors can reconstruct evidence, reviewer, override, check-publication, and settings lifecycle changes without relying on mutable record snapshots alone.
 - JSON and CSV exports are sanitized through the same metadata-only storage policy used for dashboard/API output.
+- Compliance evidence packages include a manifest, deterministic control-family mappings, sanitized record summaries, an audit timeline, and a redaction report. Control mappings are governance aids for audit preparation; they do not replace human auditor judgment and do not mutate policy.
 
 Current compliance limitations and non-goals:
 

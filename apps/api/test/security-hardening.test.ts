@@ -696,6 +696,69 @@ describe("security and audit hardening", () => {
     await app.close();
   });
 
+  it("exports auditor-scoped compliance evidence packages", async () => {
+    const { app } = await createPreviewRecord();
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/exports/compliance-evidence-package",
+      payload: JSON.stringify({ maxRecords: 250, policyPackId: "security-test" }),
+      headers: { "content-type": "application/json", ...actorHeaders("auditor-a", "auditor") }
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      recordCount: 1,
+      packageType: "compliance_evidence",
+      truncated: false
+    });
+
+    const job = await app.inject({
+      method: "GET",
+      url: `/api/exports/${created.json().id}`,
+      headers: actorHeaders("auditor-a", "auditor")
+    });
+    expect(job.statusCode).toBe(200);
+    const packageContent = JSON.parse(job.json().content) as {
+      packageType: string;
+      manifest: { recordCount: number };
+    };
+    expect(packageContent).toMatchObject({
+      packageType: "compliance_evidence",
+      manifest: { recordCount: 1 }
+    });
+    expect(job.body).toContain("SOC2_CC6_ACCESS_CONTROL");
+    expect(job.body).toContain("redactionReport");
+    expect(job.body).toContain("record_exported");
+    expect(job.body).not.toContain(rawGithubToken);
+    expect(job.body).not.toContain(rawSource);
+    expect(job.body).not.toContain("currentContent");
+    expect(job.body).not.toContain("previousContent");
+
+    const wrongRole = await app.inject({
+      method: "POST",
+      url: "/api/exports/compliance-evidence-package",
+      payload: JSON.stringify({ maxRecords: 250 }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("morgan", "engineering_manager")
+      }
+    });
+    expect(wrongRole.statusCode).toBe(403);
+
+    const invalidRange = await app.inject({
+      method: "POST",
+      url: "/api/exports/compliance-evidence-package",
+      payload: JSON.stringify({
+        startDate: "2026-05-13T00:00:00.000Z",
+        endDate: "2026-05-12T00:00:00.000Z"
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("auditor-a", "auditor") }
+    });
+    expect(invalidRange.statusCode).toBe(400);
+
+    await app.close();
+  });
+
   it("enforces organization isolation for evidence, exports, and audit access", async () => {
     const state = createInitialState();
     const { app } = await createPreviewRecord({ state, organizationId: "org-a" });
