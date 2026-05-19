@@ -986,6 +986,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       requestId: request.id,
       metadataJson: {
         kind: evidence.kind,
+        recordId: record.id,
         evidenceSource: "manual_attestation",
         actorRole: actor.role
       }
@@ -1050,7 +1051,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           targetType: "evidence_requirement",
           targetId: evidence.id,
           requestId: request.id,
-          metadataJson: { kind: evidence.kind, actorRole: actor.role }
+          metadataJson: { kind: evidence.kind, recordId: record.id, actorRole: actor.role }
         });
         await auditReevaluation(savedRecord, actor, previousStatus, request.id);
         return {
@@ -1114,7 +1115,12 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           targetType: "evidence_requirement",
           targetId: evidence.id,
           requestId: request.id,
-          metadataJson: { kind: evidence.kind, reason: reasonSummary, actorRole: actor.role }
+          metadataJson: {
+            kind: evidence.kind,
+            reason: reasonSummary,
+            recordId: record.id,
+            actorRole: actor.role
+          }
         });
         await auditReevaluation(savedRecord, actor, previousStatus, request.id);
         return {
@@ -1169,7 +1175,12 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           targetType: "reviewer_requirement",
           targetId: reviewer.id,
           requestId: request.id,
-          metadataJson: { reviewer: reviewer.reviewer, tier: reviewer.tier, actorRole: actor.role }
+          metadataJson: {
+            reviewer: reviewer.reviewer,
+            tier: reviewer.tier,
+            recordId: record.id,
+            actorRole: actor.role
+          }
         });
         await auditReevaluation(savedRecord, actor, previousStatus, request.id);
         return {

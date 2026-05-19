@@ -34,6 +34,3 @@ SET "metadataJson" = jsonb_strip_nulls(
     'recordId', CASE WHEN "targetType" = 'change_control_record' THEN "targetId" ELSE "metadataJson"->>'recordId' END
   )
 );
-
-CREATE INDEX "AuditEvent_targetType_targetId_createdAt_idx" ON "AuditEvent"("targetType", "targetId", "createdAt");
-CREATE INDEX "AuditEvent_correlationId_idx" ON "AuditEvent"("correlationId");

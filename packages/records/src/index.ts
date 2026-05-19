@@ -229,6 +229,9 @@ export function exportChangeControlRecordsCsv(
   ];
   const rows = records.map((inputRecord) => {
     const record = sanitizeChangeControlRecord(inputRecord, storagePolicy);
+    const recordAuditEvents = auditEvents
+      .filter((event) => auditEventBelongsToRecord(event, inputRecord))
+      .map((event) => sanitizeAuditEvent(event, storagePolicy));
     return [
       record.id,
       record.repositoryFullName,
@@ -245,11 +248,7 @@ export function exportChangeControlRecordsCsv(
       JSON.stringify(record.verifiedFindings),
       JSON.stringify(record.requiredEvidence),
       JSON.stringify(record.requiredReviewers),
-      JSON.stringify(
-        auditEvents
-          .filter((event) => auditEventBelongsToRecord(event, record))
-          .map((event) => sanitizeAuditEvent(event, storagePolicy))
-      ),
+      JSON.stringify(recordAuditEvents),
       record.decision?.status ?? "",
       JSON.stringify(record.decision ?? {}),
       explainChangeControlRecord(record).join(" "),
@@ -280,7 +279,13 @@ export function createAuditEvent(input: {
   createdAt?: string | undefined;
 }): AuditEventRecord {
   const metadata = input.metadataJson ? sanitizeForMetadataStorage(input.metadataJson) : {};
-  const actorRole = input.actorRole ?? stringFromMetadata(metadata.actorRole) ?? "system";
+  const actorRole =
+    stringFromMetadata(input.actorRole) ??
+    stringFromMetadata(metadata.actorRole) ??
+    (input.actor === "system" ? "system" : undefined);
+  if (!actorRole) {
+    throw new Error(`Audit event ${input.action} is missing required metadata fields: actorRole`);
+  }
   const source =
     input.source ??
     auditSourceFromMetadata(metadata.source) ??
@@ -293,7 +298,7 @@ export function createAuditEvent(input: {
   const correlationId = input.correlationId ?? stringFromMetadata(metadata.correlationId);
   const recordId =
     stringFromMetadata(metadata.recordId) ??
-    (input.targetType === "change_control_record" ? input.targetId : input.pullRequestId);
+    (input.targetType === "change_control_record" ? input.targetId : undefined);
 
   const event: AuditEventRecord = {
     id: randomUUID(),
@@ -360,8 +365,12 @@ export function missingAuditMetadataFields(event: AuditEventRecord): string[] {
   const required = requiredAuditMetadataFields(event.action);
   const metadata = event.metadataJson ?? {};
   return required.filter((field) => {
-    if (field in event && event[field as keyof AuditEventRecord] !== undefined) {
-      return false;
+    if (field in event) {
+      const value = event[field as keyof AuditEventRecord];
+      if (typeof value === "string") {
+        return value.trim() === "";
+      }
+      return value === undefined || value === null;
     }
     const value = metadata[field];
     return value === undefined || value === null || value === "";
