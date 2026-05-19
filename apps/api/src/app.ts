@@ -39,6 +39,7 @@ import {
   exportChangeControlRecordsCsv,
   exportChangeControlRecordsJson,
   explainChangeControlRecord,
+  generatePolicyTuningReport,
   sanitizeChangeControlRecord
 } from "@agentforge/records";
 import { previewCodeowners } from "@agentforge/reviewers";
@@ -1682,6 +1683,20 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     const page = await listChangeControlRecordPage(state, prisma, query.data);
     return {
       reviewers: safe(page.records.flatMap((record) => record.requiredReviewers)),
+      pageInfo: page.pageInfo
+    };
+  });
+  app.get("/api/dashboard/policy-insights", async (request, reply) => {
+    const query = recordPageQuerySchema.safeParse({ limit: 100, ...(request.query ?? {}) });
+    if (!query.success) {
+      return reply.code(400).send({
+        error: "Invalid policy insight query parameters",
+        details: query.error.flatten().fieldErrors
+      });
+    }
+    const page = await listChangeControlRecordPage(state, prisma, query.data);
+    return {
+      ...safe(generatePolicyTuningReport(page.records)),
       pageInfo: page.pageInfo
     };
   });

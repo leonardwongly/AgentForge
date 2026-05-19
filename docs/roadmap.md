@@ -43,6 +43,13 @@
 - Retention settings
 - Data handling docs
 - Design partner feedback
+- Advisory policy tuning insights from override rate, evidence rejection, repeated findings,
+  reviewer bottlenecks, and observe/warn open requirements
+
+Policy tuning remains deterministic and read-only in V1. Insights cite Change Control Records
+and help platform owners decide where to narrow rules, improve evidence instructions, add reviewer
+fallbacks, or preview mode changes. Generated YAML diffs should only be produced after an explicit
+authorized platform-admin request; insights must never block, unblock, or mutate policy on their own.
 
 ## V2 Or Later Backlog
 

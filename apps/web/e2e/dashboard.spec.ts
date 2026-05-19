@@ -67,6 +67,7 @@ test("governance drill-down routes render careful change-control language", asyn
     ["/dashboard/policy-violations", "Policy Violations", "policy findings"],
     ["/dashboard/overrides", "Overrides", "Authorized override activity"],
     ["/dashboard/evidence-completion", "Evidence Completion", "Required evidence missing"],
+    ["/dashboard/policy-insights", "Policy Insights", "Advisory recommendations"],
     ["/records", "Change Control Records", "Record index"],
     [`/records/${record.id}`, "Change Control Record", "Verified findings"],
     [`/repositories/${record.repositoryId}/policy`, "Policy Editor", "Active repository policy"],
