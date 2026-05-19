@@ -347,7 +347,8 @@ function codeownersPatternToRegExp(pattern: string): RegExp {
     ? normalizedPattern.replace(/\/+$/u, "")
     : normalizedPattern;
   const body = globToRegexBody(withoutTrailingSlash || "**");
-  const prefix = anchored ? "^" : "^(?:.*/)?";
+  const slashQualified = withoutTrailingSlash.includes("/");
+  const prefix = anchored || (!directoryPattern && slashQualified) ? "^" : "^(?:.*/)?";
   if (directoryPattern) {
     return new RegExp(`${prefix}${body}(?:/.*)?$`, "u");
   }
@@ -357,6 +358,9 @@ function codeownersPatternToRegExp(pattern: string): RegExp {
 function codeownersPatternRejectionReason(pattern: string): string | undefined {
   if (pattern.length > MAX_CODEOWNERS_PATTERN_LENGTH) {
     return `pattern exceeds ${MAX_CODEOWNERS_PATTERN_LENGTH} characters`;
+  }
+  if (pattern.startsWith("\\#")) {
+    return "escaped leading # patterns are ignored by GitHub CODEOWNERS";
   }
   if (/\[[^\]]*\]/u.test(pattern)) {
     return "unsupported bracket patterns are ignored by GitHub CODEOWNERS";
@@ -369,8 +373,14 @@ function codeownersPatternRejectionReason(pattern: string): string | undefined {
 }
 
 function codeownersOwnersRejectionReason(owners: string[]): string | undefined {
-  const malformedOwner = owners.find((owner) => !normalizeCodeownersOwner(owner));
+  const malformedOwner = owners.find(
+    (owner) => !normalizeCodeownersOwner(owner) && !codeownersEmailOwner(owner)
+  );
   return malformedOwner ? `malformed owner "${malformedOwner}"` : undefined;
+}
+
+function codeownersEmailOwner(owner: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(owner.trim());
 }
 
 function globToRegexBody(glob: string): string {

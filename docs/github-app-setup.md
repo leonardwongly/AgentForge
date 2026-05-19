@@ -37,7 +37,7 @@ curl -sS \
   http://localhost:4000/api/codeowners/preview
 ```
 
-The preview uses last-match-wins CODEOWNERS precedence, preserves ownerless override rules, normalizes `@org/team` to `org/team`, and reports unsupported negated patterns, unsupported bracket patterns, missing `@` owner prefixes, and malformed owners as diagnostics instead of silently treating them as owner routes.
+The preview uses last-match-wins CODEOWNERS precedence, preserves ownerless override rules, normalizes `@org/team` to `org/team`, skips email owners that cannot become GitHub reviewer routes, and reports unsupported negated patterns, unsupported bracket patterns, unsupported escaped leading-`#` patterns, missing `@` owner prefixes, and malformed owners as diagnostics instead of silently treating them as owner routes.
 
 Webhook URL:
 

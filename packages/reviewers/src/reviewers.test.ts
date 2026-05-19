@@ -364,4 +364,37 @@ describe("CODEOWNERS preview", () => {
       })
     ]);
   });
+
+  it("keeps slash-containing CODEOWNERS patterns root-relative", () => {
+    const preview = previewCodeowners("docs/* @acme/docs-team", [
+      "docs/readme.md",
+      "src/docs/readme.md"
+    ]);
+
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        reviewer: "acme/docs-team",
+        matchedPaths: ["docs/readme.md"]
+      })
+    ]);
+  });
+
+  it("allows CODEOWNERS email owners without producing reviewer suggestions", () => {
+    const preview = previewCodeowners("*.go docs@example.com @acme/go-team", ["main.go"]);
+
+    expect(preview.diagnostics).toEqual([]);
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        reviewer: "acme/go-team",
+        matchedPaths: ["main.go"]
+      })
+    ]);
+  });
+
+  it("rejects escaped leading-hash CODEOWNERS patterns that GitHub ignores", () => {
+    const preview = previewCodeowners("\\#secrets @acme/security-team", ["#secrets"]);
+
+    expect(preview.diagnostics[0]).toContain("escaped leading # patterns");
+    expect(preview.suggestions).toEqual([]);
+  });
 });
