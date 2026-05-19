@@ -297,4 +297,44 @@ describe("CODEOWNERS preview", () => {
     expect(preview.diagnostics[0]).toContain("too many wildcard groups");
     expect(preview.suggestions).toEqual([]);
   });
+
+  it("rejects CODEOWNERS bracket patterns that GitHub ignores", () => {
+    const preview = previewCodeowners("src/[ab]/** @acme/platform-team", ["src/a/index.ts"]);
+
+    expect(preview.diagnostics[0]).toContain("unsupported bracket patterns");
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("requires CODEOWNERS owner tokens to use @ prefixes", () => {
+    const preview = previewCodeowners("src/** acme/platform-team", ["src/index.ts"]);
+
+    expect(preview.diagnostics[0]).toContain('malformed owner "acme/platform-team"');
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("invalidates CODEOWNERS lines with any malformed owner", () => {
+    const preview = previewCodeowners("src/** @acme/platform-team bad@@owner", ["src/index.ts"]);
+
+    expect(preview.diagnostics[0]).toContain('malformed owner "bad@@owner"');
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("rejects malformed CODEOWNERS team owners with extra path segments", () => {
+    const preview = previewCodeowners("src/** @acme/platform/team", ["src/index.ts"]);
+
+    expect(preview.diagnostics[0]).toContain('malformed owner "@acme/platform/team"');
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("deduplicates CODEOWNERS user owners case-insensitively", () => {
+    const preview = previewCodeowners("* @Alice @alice");
+
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        ownerKey: "alice",
+        reviewer: "alice",
+        reviewerType: "user"
+      })
+    ]);
+  });
 });

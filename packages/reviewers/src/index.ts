@@ -171,6 +171,17 @@ export function parseCodeowners(content: string): CodeownersRule[] {
           reason: patternRejectionReason
         };
       }
+      const ownerRejectionReason = codeownersOwnersRejectionReason(owners);
+      if (ownerRejectionReason) {
+        return {
+          lineNumber: index + 1,
+          pattern: rawPattern,
+          owners,
+          negated: false,
+          valid: false,
+          reason: ownerRejectionReason
+        };
+      }
       return {
         lineNumber: index + 1,
         pattern: rawPattern,
@@ -290,12 +301,20 @@ function addSuggestion(
 function normalizeCodeownersOwner(
   owner: string
 ): Pick<CodeownersOwnerSuggestion, "reviewer" | "reviewerType"> | undefined {
-  const normalized = owner.trim().replace(/^@/u, "");
+  const trimmed = owner.trim();
+  if (!trimmed.startsWith("@")) {
+    return undefined;
+  }
+  const normalized = trimmed.slice(1);
   if (!normalized || normalized.includes("@")) {
     return undefined;
   }
   if (normalized.includes("/")) {
-    const [org, team] = normalized.split("/");
+    const parts = normalized.split("/");
+    if (parts.length !== 2) {
+      return undefined;
+    }
+    const [org, team] = parts;
     if (!githubSlug(org) || !teamSlug(team)) {
       return undefined;
     }
@@ -304,7 +323,7 @@ function normalizeCodeownersOwner(
   if (!githubLogin(normalized)) {
     return undefined;
   }
-  return { reviewer: normalized, reviewerType: "user" };
+  return { reviewer: normalized.toLowerCase(), reviewerType: "user" };
 }
 
 function ownerKeyFromReviewer(reviewer: string): string {
@@ -340,11 +359,19 @@ function codeownersPatternRejectionReason(pattern: string): string | undefined {
   if (pattern.length > MAX_CODEOWNERS_PATTERN_LENGTH) {
     return `pattern exceeds ${MAX_CODEOWNERS_PATTERN_LENGTH} characters`;
   }
+  if (/\[[^\]]*\]/u.test(pattern)) {
+    return "unsupported bracket patterns are ignored by GitHub CODEOWNERS";
+  }
   const globstarCount = pattern.match(/\*\*/gu)?.length ?? 0;
   if (globstarCount > MAX_CODEOWNERS_GLOBSTARS || /\*{3,}/u.test(pattern)) {
     return "pattern uses too many wildcard groups for safe preview matching";
   }
   return undefined;
+}
+
+function codeownersOwnersRejectionReason(owners: string[]): string | undefined {
+  const malformedOwner = owners.find((owner) => !normalizeCodeownersOwner(owner));
+  return malformedOwner ? `malformed owner "${malformedOwner}"` : undefined;
 }
 
 function globToRegexBody(glob: string): string {
