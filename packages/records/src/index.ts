@@ -398,9 +398,11 @@ export function requiredAuditMetadataFields(action: AuditEventAction): string[] 
 
 function auditEventBelongsToRecord(event: AuditEventRecord, record: ChangeControlRecord): boolean {
   const metadataRecordId = event.metadataJson && stringFromMetadata(event.metadataJson.recordId);
+  const metadataRecordIds = metadataStringArray(event.metadataJson?.recordIds);
   return (
     event.targetId === record.id ||
     metadataRecordId === record.id ||
+    metadataRecordIds.includes(record.id) ||
     (event.repositoryId === record.repositoryId &&
       isRepositoryLifecycleAuditEvent(event) &&
       event.createdAt <= record.updatedAt) ||
@@ -420,6 +422,12 @@ function isRepositoryLifecycleAuditEvent(event: AuditEventRecord): boolean {
 
 function stringFromMetadata(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function metadataStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => stringFromMetadata(item) !== undefined)
+    : [];
 }
 
 function auditSourceFromMetadata(value: unknown): AuditEventRecord["source"] | undefined {

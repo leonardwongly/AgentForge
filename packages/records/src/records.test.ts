@@ -232,6 +232,36 @@ describe("records", () => {
     expect(json).not.toContain('"mode": "observe"');
   });
 
+  it("links export lifecycle events to each exported record", () => {
+    const record = createChangeControlRecord({
+      organizationId: "org",
+      repositoryId: "repo",
+      pr,
+      policyResult: result,
+      now: "2026-05-12T01:00:00.000Z"
+    });
+    const event = createAuditEvent({
+      organizationId: "org",
+      actor: "alex",
+      actorRole: "auditor",
+      action: "record_exported",
+      targetType: "change_control_records_export",
+      targetId: "export-1",
+      metadataJson: {
+        format: "json",
+        recordCount: 1,
+        recordIds: [record.id]
+      },
+      createdAt: "2026-05-12T01:05:00.000Z"
+    });
+
+    const json = exportChangeControlRecordsJson([record], undefined, [event]);
+    const csv = exportChangeControlRecordsCsv([record], undefined, [event]);
+
+    expect(json).toContain('"action": "record_exported"');
+    expect(csv).toContain("record_exported");
+  });
+
   it("creates redacted audit events for governance actions", () => {
     const event = createAuditEvent({
       organizationId: "org",

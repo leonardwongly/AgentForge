@@ -8,29 +8,109 @@ ALTER TABLE "AuditEvent"
   ADD COLUMN "policyPackId" TEXT,
   ADD COLUMN "policyPackVersion" TEXT;
 
-UPDATE "AuditEvent"
+UPDATE "AuditEvent" AS audit
 SET
-  "actorRole" = COALESCE(NULLIF("metadataJson"->>'actorRole', ''), "actorRole"),
-  "source" = COALESCE(NULLIF("metadataJson"->>'source', ''), "source"),
-  "requestId" = COALESCE(NULLIF("metadataJson"->>'requestId', ''), "requestId"),
-  "correlationId" = COALESCE(NULLIF("metadataJson"->>'correlationId', ''), "correlationId"),
-  "policyVersion" = COALESCE(NULLIF("metadataJson"->>'policyVersion', ''), "policyVersion"),
-  "policyPackId" = COALESCE(NULLIF("metadataJson"->>'policyPackId', ''), "policyPackId"),
-  "policyPackVersion" = COALESCE(NULLIF("metadataJson"->>'policyPackVersion', ''), "policyPackVersion")
-WHERE "metadataJson" IS NOT NULL;
+  "actorRole" = COALESCE(NULLIF(audit."metadataJson"->>'actorRole', ''), audit."actorRole"),
+  "source" = COALESCE(
+    NULLIF(audit."metadataJson"->>'source', ''),
+    CASE
+      WHEN audit."actor" = 'system' AND audit."action" = 'check_published' THEN 'worker'
+      ELSE audit."source"
+    END
+  ),
+  "requestId" = COALESCE(NULLIF(audit."metadataJson"->>'requestId', ''), audit."requestId"),
+  "correlationId" = COALESCE(NULLIF(audit."metadataJson"->>'correlationId', ''), audit."correlationId"),
+  "policyVersion" = COALESCE(
+    NULLIF(audit."metadataJson"->>'policyVersion', ''),
+    audit."policyVersion",
+    (
+      SELECT ccr."policyVersion"
+      FROM "ChangeControlRecord" AS ccr
+      WHERE ccr."id" = audit."targetId"
+      LIMIT 1
+    ),
+    (
+      SELECT pv."version"
+      FROM "PolicyVersion" AS pv
+      WHERE pv."contentHash" = audit."targetId"
+        AND (audit."repositoryId" IS NULL OR pv."repositoryId" = audit."repositoryId")
+      ORDER BY pv."createdAt" DESC
+      LIMIT 1
+    )
+  ),
+  "policyPackId" = COALESCE(
+    NULLIF(audit."metadataJson"->>'policyPackId', ''),
+    audit."policyPackId",
+    (
+      SELECT ccr."policyPackId"
+      FROM "ChangeControlRecord" AS ccr
+      WHERE ccr."id" = audit."targetId"
+      LIMIT 1
+    ),
+    (
+      SELECT pv."policyPackId"
+      FROM "PolicyVersion" AS pv
+      WHERE pv."contentHash" = audit."targetId"
+        AND (audit."repositoryId" IS NULL OR pv."repositoryId" = audit."repositoryId")
+      ORDER BY pv."createdAt" DESC
+      LIMIT 1
+    )
+  ),
+  "policyPackVersion" = COALESCE(
+    NULLIF(audit."metadataJson"->>'policyPackVersion', ''),
+    audit."policyPackVersion",
+    (
+      SELECT ccr."policyPackVersion"
+      FROM "ChangeControlRecord" AS ccr
+      WHERE ccr."id" = audit."targetId"
+      LIMIT 1
+    ),
+    (
+      SELECT pp."version"
+      FROM "PolicyVersion" AS pv
+      JOIN "PolicyPack" AS pp ON pp."id" = pv."policyPackId"
+      WHERE pv."contentHash" = audit."targetId"
+        AND (audit."repositoryId" IS NULL OR pv."repositoryId" = audit."repositoryId")
+      ORDER BY pv."createdAt" DESC
+      LIMIT 1
+    )
+  );
 
-UPDATE "AuditEvent"
+UPDATE "AuditEvent" AS audit
 SET "metadataJson" = jsonb_strip_nulls(
-  COALESCE("metadataJson", '{}'::jsonb) ||
+  COALESCE(audit."metadataJson", '{}'::jsonb) ||
   jsonb_build_object(
-    'schemaVersion', "schemaVersion",
-    'actorRole', "actorRole",
-    'source', "source",
-    'requestId', "requestId",
-    'correlationId', "correlationId",
-    'policyVersion', "policyVersion",
-    'policyPackId', "policyPackId",
-    'policyPackVersion', "policyPackVersion",
-    'recordId', CASE WHEN "targetType" = 'change_control_record' THEN "targetId" ELSE "metadataJson"->>'recordId' END
+    'schemaVersion', audit."schemaVersion",
+    'actorRole', audit."actorRole",
+    'source', audit."source",
+    'requestId', audit."requestId",
+    'correlationId', audit."correlationId",
+    'policyVersion', audit."policyVersion",
+    'policyPackId', audit."policyPackId",
+    'policyPackVersion', audit."policyPackVersion",
+    'recordId', COALESCE(
+      audit."metadataJson"->>'recordId',
+      CASE WHEN audit."targetType" = 'change_control_record' THEN audit."targetId" END,
+      CASE
+        WHEN audit."targetType" = 'evidence_requirement' THEN (
+          SELECT ccr."id"
+          FROM "EvidenceRequirementRecord" AS evidence
+          JOIN "Evaluation" AS evaluation ON evaluation."id" = evidence."evaluationId"
+          JOIN "ChangeControlRecord" AS ccr ON ccr."pullRequestId" = evaluation."pullRequestId"
+          WHERE evidence."id" = audit."targetId"
+          LIMIT 1
+        )
+      END,
+      CASE
+        WHEN audit."targetType" = 'reviewer_requirement' THEN (
+          SELECT ccr."id"
+          FROM "ReviewerRequirementRecord" AS reviewer
+          JOIN "Evaluation" AS evaluation ON evaluation."id" = reviewer."evaluationId"
+          JOIN "ChangeControlRecord" AS ccr ON ccr."pullRequestId" = evaluation."pullRequestId"
+          WHERE reviewer."id" = audit."targetId"
+          LIMIT 1
+        )
+      END
+    )
   )
 );

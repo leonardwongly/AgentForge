@@ -1301,13 +1301,33 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     const body = request.body as { format?: "json" | "csv" };
     const format = body.format ?? "json";
     const records = await listRecords();
+    const jobId = randomUUID();
     const auditEvents = await listAuditEventsForRecordExport(state, prisma, records);
+    const exportAuditEvent = createAuditEvent({
+      organizationId: "org_local",
+      actor: actor.login,
+      action: "record_exported",
+      targetType: "change_control_records_export",
+      targetId: jobId,
+      actorRole: actor.role,
+      requestId: request.id,
+      metadataJson: {
+        format,
+        recordCount: records.length,
+        recordIds: records.map((record) => record.id),
+        repositoryIds: [...new Set(records.map((record) => record.repositoryId))],
+        actorRole: actor.role
+      }
+    });
     const content =
       format === "csv"
-        ? exportChangeControlRecordsCsv(records, storagePolicy, auditEvents)
-        : exportChangeControlRecordsJson(records, storagePolicy, auditEvents);
+        ? exportChangeControlRecordsCsv(records, storagePolicy, [...auditEvents, exportAuditEvent])
+        : exportChangeControlRecordsJson(records, storagePolicy, [
+            ...auditEvents,
+            exportAuditEvent
+          ]);
     const job: ExportJob = {
-      id: randomUUID(),
+      id: jobId,
       status: "completed",
       format,
       recordCount: records.length,
@@ -1315,16 +1335,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       createdAt: new Date().toISOString()
     };
     await saveExportJob(state, prisma, job, actor.login, actor.role);
-    await audit({
-      organizationId: "org_local",
-      actor: actor.login,
-      action: "record_exported",
-      targetType: "change_control_records_export",
-      targetId: job.id,
-      actorRole: actor.role,
-      requestId: request.id,
-      metadataJson: { format, recordCount: job.recordCount, actorRole: actor.role }
-    });
+    await saveAuditEvent(state, prisma, exportAuditEvent);
     return reply.code(201).send({ id: job.id, status: job.status, recordCount: job.recordCount });
   });
   app.get("/api/exports/:id", async (request, reply) => {

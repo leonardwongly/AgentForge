@@ -630,6 +630,7 @@ describe("security and audit hardening", () => {
       expect(job.body).toContain("security-test@1.0.0");
       expect(job.body).toContain(format === "csv" ? "auditEventsJson" : "auditEvents");
       expect(job.body).toContain("check_published");
+      expect(job.body).toContain("record_exported");
       expect(job.body).not.toContain(rawGithubToken);
       expect(job.body).not.toContain(rawSource);
       expect(job.body).not.toContain("currentContent");
