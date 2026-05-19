@@ -183,10 +183,9 @@ export function suggestOwnerMappingsFromCodeowners(
     return [...suggestions.values()];
   }
 
+  const rulesByPrecedence = [...rules].reverse();
   for (const path of sourcePaths) {
-    const rule = [...rules]
-      .reverse()
-      .find((item) => item.valid && codeownersRuleMatches(item, path));
+    const rule = rulesByPrecedence.find((item) => item.valid && codeownersRuleMatches(item, path));
     if (!rule) {
       continue;
     }
@@ -312,13 +311,11 @@ function codeownersPatternToRegExp(pattern: string): RegExp {
     ? normalizedPattern.replace(/\/+$/u, "")
     : normalizedPattern;
   const body = globToRegexBody(withoutTrailingSlash || "**");
+  const prefix = anchored ? "^" : "^(?:.*/)?";
   if (directoryPattern) {
-    return new RegExp(`^${body}(?:/.*)?$`, "u");
+    return new RegExp(`${prefix}${body}(?:/.*)?$`, "u");
   }
-  if (anchored || withoutTrailingSlash.includes("/")) {
-    return new RegExp(`^${body}$`, "u");
-  }
-  return new RegExp(`^(?:.*/)?${body}$`, "u");
+  return new RegExp(`${prefix}${body}$`, "u");
 }
 
 function globToRegexBody(glob: string): string {

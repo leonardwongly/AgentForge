@@ -283,6 +283,22 @@ export async function enrichPullRequestReviewsWithTeamMemberships(input: {
     );
   }
 
+  const membershipChecks = new Map<string, Promise<TeamMembershipCheck>>();
+  const cachedMembershipCheck = (teamSlug: string, username: string) => {
+    const key = `${username.toLowerCase()}:${teamSlug}`;
+    let check = membershipChecks.get(key);
+    if (!check) {
+      check = checkActiveTeamMember({
+        client: input.client,
+        org: input.org,
+        teamSlug,
+        username
+      });
+      membershipChecks.set(key, check);
+    }
+    return check;
+  };
+
   return Promise.all(
     input.reviews.map(async (review) => {
       const existing = uniqueNormalizedTeamSlugs(review.teamSlugs ?? []);
@@ -296,13 +312,7 @@ export async function enrichPullRequestReviewsWithTeamMemberships(input: {
 
       const memberships = await Promise.all(
         requiredTeamSlugs.map(
-          async (teamSlug) =>
-            await checkActiveTeamMember({
-              client: input.client,
-              org: input.org,
-              teamSlug,
-              username: review.reviewer
-            })
+          async (teamSlug) => await cachedMembershipCheck(teamSlug, review.reviewer)
         )
       );
       const failedMemberships = memberships.filter((membership) => membership.status === "failed");

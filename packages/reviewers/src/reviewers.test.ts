@@ -251,4 +251,18 @@ describe("CODEOWNERS preview", () => {
       })
     ]);
   });
+
+  it("matches unanchored directory patterns anywhere in the repository", () => {
+    const preview = previewCodeowners("docs/ @acme/docs-team", [
+      "docs/guide.md",
+      "src/docs/reference.md"
+    ]);
+
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        reviewer: "acme/docs-team",
+        matchedPaths: ["docs/guide.md", "src/docs/reference.md"]
+      })
+    ]);
+  });
 });

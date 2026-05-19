@@ -316,6 +316,45 @@ describe("github integration", () => {
     });
   });
 
+  it("caches team membership checks for duplicate approved reviews by the same user", async () => {
+    let checks = 0;
+    const reviews = await enrichPullRequestReviewsWithTeamMemberships({
+      client: {
+        pulls: {
+          get: async () => ({ data: {} }),
+          listFiles: async () => ({ data: [] }),
+          listReviews: async () => ({ data: [] }),
+          listCommits: async () => ({ data: [] })
+        },
+        teams: {
+          getMembershipForUserInOrg: async () => {
+            checks += 1;
+            return { data: { state: "active" } };
+          }
+        }
+      },
+      org: "acme",
+      teamSlugs: ["security-team", "platform-team"],
+      reviews: [
+        {
+          reviewer: "alice",
+          reviewerType: "user",
+          state: "APPROVED",
+          submittedAt: "2026-05-14T00:00:00.000Z"
+        },
+        {
+          reviewer: "alice",
+          reviewerType: "user",
+          state: "APPROVED",
+          submittedAt: "2026-05-15T00:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(checks).toBe(2);
+    expect(reviews.every((review) => review.teamSlugs?.includes("security-team"))).toBe(true);
+  });
+
   it("keeps PR extraction usable when manifest content fetch is unavailable", async () => {
     const client: GithubAdapterClient = {
       pulls: {
