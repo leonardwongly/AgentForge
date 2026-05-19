@@ -51,9 +51,10 @@ AGENTFORGE_API_TRUST_PROXY_HEADERS=false
 AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=false
 AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=false
 AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR=false
+AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS=false
 ```
 
-Only set `AGENTFORGE_API_TRUST_PROXY_HEADERS=true` or `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true` after the deployed ingress strips spoofed `x-agentforge-*` and `x-agentforge-authenticated-*` headers before injecting trusted identity headers.
+Only set `AGENTFORGE_API_TRUST_PROXY_HEADERS=true`, `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true`, and `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS=true` after the deployed ingress strips spoofed `x-agentforge-*` and `x-agentforge-authenticated-*` headers before injecting trusted `x-agentforge-authenticated-actor`, `x-agentforge-authenticated-role`, and `x-agentforge-authenticated-organization` headers.
 
 Use Railway shared variables for duplicated non-public values when practical. Avoid printing `railway variable list --json` or `railway variable list --kv` output in logs because those modes include raw secret values.
 
@@ -155,7 +156,8 @@ public deployments:
 ```bash
 curl -fsS "$API_BASE_URL/api/admin/queue" \
   -H "x-agentforge-authenticated-actor: <operator-login>" \
-  -H "x-agentforge-authenticated-role: platform_admin"
+  -H "x-agentforge-authenticated-role: platform_admin" \
+  -H "x-agentforge-authenticated-organization: <organization-id>"
 ```
 
 Replay a specific stored webhook delivery only after confirming the failure is
@@ -166,5 +168,6 @@ curl -fsS -X POST "$API_BASE_URL/api/admin/queue/replay" \
   -H "content-type: application/json" \
   -H "x-agentforge-authenticated-actor: <operator-login>" \
   -H "x-agentforge-authenticated-role: platform_admin" \
+  -H "x-agentforge-authenticated-organization: <organization-id>" \
   --data '{"deliveryId":"<github-delivery-id>"}'
 ```

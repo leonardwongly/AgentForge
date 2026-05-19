@@ -108,12 +108,14 @@ Copy `.env.example` to `.env` and fill in values. The defaults are safe for loca
 - `SESSION_SECRET`: Session signing secret for deployed dashboard/API usage.
 - `AGENTFORGE_DASHBOARD_ACTOR`: Local dashboard server-action actor for settings/policy saves in non-production runs.
 - `AGENTFORGE_DASHBOARD_ROLE`: Local dashboard server-action role. Use `platform_admin` or `engineering_manager` for repository setup.
-- `AGENTFORGE_API_TRUST_PROXY_HEADERS`: Set `true` only when the API is behind a trusted auth proxy that injects `x-agentforge-authenticated-actor` and `x-agentforge-authenticated-role`.
-- `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS`: Explicit production-like local fallback for raw `x-agentforge-actor` / `x-agentforge-role` API headers. Keep `false` for deployed environments.
-- `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS`: Set `true` only when a trusted auth proxy injects `x-agentforge-authenticated-actor` and `x-agentforge-authenticated-role`.
-- `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR`: Explicit production-like local fallback for `AGENTFORGE_DASHBOARD_ACTOR` / `AGENTFORGE_DASHBOARD_ROLE`. Keep `false` for deployed environments.
+- `AGENTFORGE_DASHBOARD_ORGANIZATION`: Local dashboard organization id. Defaults to `org_local`.
+- `AGENTFORGE_API_TRUST_PROXY_HEADERS`: Set `true` only when the API is behind a trusted auth proxy that strips client-supplied identity headers and injects `x-agentforge-authenticated-actor`, `x-agentforge-authenticated-role`, and `x-agentforge-authenticated-organization`.
+- `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS`: Explicit local fallback for raw `x-agentforge-actor`, `x-agentforge-role`, and `x-agentforge-organization` API headers. Keep `false` for deployed environments.
+- `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS`: Set `true` only when a trusted auth proxy injects `x-agentforge-authenticated-actor`, `x-agentforge-authenticated-role`, and `x-agentforge-authenticated-organization`.
+- `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR`: Explicit local fallback for `AGENTFORGE_DASHBOARD_ACTOR`, `AGENTFORGE_DASHBOARD_ROLE`, and `AGENTFORGE_DASHBOARD_ORGANIZATION`. Keep `false` for deployed environments.
+- `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS`: Set `true` in production only after the ingress strips untrusted `x-agentforge-*` and `x-agentforge-authenticated-*` headers before injecting trusted identity.
 
-When `NODE_ENV=production`, startup fails closed if `GITHUB_WEBHOOK_SECRET` is missing, unsigned webhooks are enabled, source-code storage is enabled, or secret redaction is disabled.
+When `NODE_ENV=production`, startup fails closed if `GITHUB_WEBHOOK_SECRET` is missing, unsigned webhooks are enabled, source-code storage is enabled, secret redaction is disabled, trusted proxy headers are not configured for both API and dashboard, local actor fallbacks are enabled, or header stripping has not been acknowledged.
 
 ## GitHub App Setup
 
@@ -153,13 +155,14 @@ State-changing API calls require server-resolved actor context:
 ```text
 x-agentforge-authenticated-actor: <login>
 x-agentforge-authenticated-role: platform_admin | engineering_manager | auditor | security_reviewer | developer
+x-agentforge-authenticated-organization: <organization-id>
 ```
 
-The API ignores any `actorRole` value submitted in override request bodies; authorization is based on server-resolved headers. In production, raw local `x-agentforge-actor` and `x-agentforge-role` headers are rejected unless `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=true` is explicitly set for a local production-mode smoke test.
+The API ignores any `actorRole` value submitted in override request bodies; authorization is based on server-resolved headers. In production, raw local `x-agentforge-actor`, `x-agentforge-role`, and `x-agentforge-organization` headers are rejected. In local development outside tests, those raw headers resolve only when `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=true` is explicitly set.
 
-Policy/settings changes require `platform_admin` or `engineering_manager`. Repository settings are persisted as runtime state, including enabled status, repository mode, data-handling overrides, and configured owner mappings. Change Control Record exports and audit access require `auditor`, `platform_admin`, or `engineering_manager`. Overrides use the role allowlist configured by policy.
+Policy/settings changes require `platform_admin` or `engineering_manager`. Repository settings are persisted as runtime state, including enabled status, repository mode, data-handling overrides, and configured owner mappings. Change Control Record exports and audit access require `auditor`, `platform_admin`, or `engineering_manager` and are scoped to the actor organization. Overrides use the role allowlist configured by policy.
 
-The Next.js dashboard uses server actions for onboarding and settings changes. In development/test, those server actions can use `AGENTFORGE_DASHBOARD_ACTOR` and `AGENTFORGE_DASHBOARD_ROLE` as a local actor fallback. In production, server actions fail closed unless a trusted auth proxy is configured with `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true` and injects `x-agentforge-authenticated-actor` plus `x-agentforge-authenticated-role`, or `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR=true` is explicitly set for a production-like local run.
+The Next.js dashboard uses server actions for onboarding and settings changes. In development/test, those server actions can use `AGENTFORGE_DASHBOARD_ACTOR`, `AGENTFORGE_DASHBOARD_ROLE`, and `AGENTFORGE_DASHBOARD_ORGANIZATION` as a local actor fallback. In production, server actions fail closed unless a trusted auth proxy is configured with `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true` and injects actor, role, and organization identity headers.
 
 ## Policy Modes
 
