@@ -234,7 +234,7 @@ export type AuditEventAction =
 
 export type AuditEventRecord = {
   id: string;
-  schemaVersion: 1;
+  schemaVersion: number;
   organizationId: string;
   repositoryId?: string | undefined;
   pullRequestId?: string | undefined;

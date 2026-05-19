@@ -344,7 +344,8 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   const auditReevaluation = (
     record: ChangeControlRecord,
     actor: ApiActor,
-    previousStatus: ChangeControlRecord["checkStatus"]
+    previousStatus: ChangeControlRecord["checkStatus"],
+    requestId?: string | undefined
   ) =>
     audit({
       organizationId: record.organizationId,
@@ -354,6 +355,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       action: "record_reevaluated",
       targetType: "change_control_record",
       targetId: record.id,
+      requestId,
       metadataJson: {
         previousStatus,
         checkStatus: record.checkStatus,
@@ -988,7 +990,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         actorRole: actor.role
       }
     });
-    await auditReevaluation(savedRecord, actor, previousStatus);
+    await auditReevaluation(savedRecord, actor, previousStatus, request.id);
     return {
       evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id)),
       record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
@@ -1050,7 +1052,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           requestId: request.id,
           metadataJson: { kind: evidence.kind, actorRole: actor.role }
         });
-        await auditReevaluation(savedRecord, actor, previousStatus);
+        await auditReevaluation(savedRecord, actor, previousStatus, request.id);
         return {
           evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id)),
           record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
@@ -1114,7 +1116,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           requestId: request.id,
           metadataJson: { kind: evidence.kind, reason: reasonSummary, actorRole: actor.role }
         });
-        await auditReevaluation(savedRecord, actor, previousStatus);
+        await auditReevaluation(savedRecord, actor, previousStatus, request.id);
         return {
           evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id)),
           record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
@@ -1169,7 +1171,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           requestId: request.id,
           metadataJson: { reviewer: reviewer.reviewer, tier: reviewer.tier, actorRole: actor.role }
         });
-        await auditReevaluation(savedRecord, actor, previousStatus);
+        await auditReevaluation(savedRecord, actor, previousStatus, request.id);
         return {
           reviewer: safe(savedRecord.requiredReviewers.find((item) => item.id === reviewer.id)),
           record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
@@ -1214,6 +1216,11 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       const savedRecord = await saveRecord(output.record);
       await saveOverrideRecord(prisma, output.overrideRecord);
       if (output.auditEvent) {
+        output.auditEvent.requestId = request.id;
+        output.auditEvent.metadataJson = {
+          ...(output.auditEvent.metadataJson ?? {}),
+          requestId: request.id
+        };
         await saveAuditEvent(state, prisma, output.auditEvent);
       }
       return reply.code(201).send({
@@ -2181,7 +2188,7 @@ async function listAuditEvents(
   });
   return rows.map((row: AuditEventRow) => ({
     id: row.id,
-    schemaVersion: 1,
+    schemaVersion: row.schemaVersion,
     organizationId: row.organizationId,
     repositoryId: row.repositoryId ?? undefined,
     pullRequestId: row.pullRequestId ?? undefined,

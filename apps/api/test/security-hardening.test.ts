@@ -763,9 +763,12 @@ describe("security and audit hardening", () => {
         })
       );
     }
-    expect(
-      auditEvents.filter((event) => event.source === "api").map((event) => event.requestId)
-    ).toEqual(expect.arrayContaining([expect.stringMatching(/^req-/u)]));
+    const apiEvents = auditEvents.filter((event) => event.source === "api");
+    expect(apiEvents.length).toBeGreaterThan(0);
+    for (const event of apiEvents) {
+      expect(event.requestId).toBeDefined();
+      expect(event.requestId).toMatch(/^req-/u);
+    }
     expect(JSON.stringify(audit.json())).not.toContain(rawGithubToken);
     await app.close();
   });

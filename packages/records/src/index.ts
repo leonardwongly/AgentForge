@@ -391,7 +391,6 @@ function auditEventBelongsToRecord(event: AuditEventRecord, record: ChangeContro
   const metadataRecordId = event.metadataJson && stringFromMetadata(event.metadataJson.recordId);
   return (
     event.targetId === record.id ||
-    event.pullRequestId === record.id ||
     metadataRecordId === record.id ||
     (event.repositoryId === record.repositoryId &&
       stringFromMetadata(event.metadataJson?.headSha) === record.headSha)
