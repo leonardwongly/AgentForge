@@ -269,19 +269,29 @@ model CheckRun {
 }
 
 model WebhookDelivery {
-  id                 String   @id @default(uuid())
-  deliveryId         String   @unique
-  event              String
-  action             String?
-  repositoryFullName String?
-  pullRequestNumber  Int?
-  headSha            String?
-  enqueued           Boolean  @default(false)
-  payloadJson        Json?
-  createdAt          DateTime @default(now())
+  id                         String    @id @default(uuid())
+  deliveryId                 String    @unique
+  event                      String
+  action                     String?
+  repositoryFullName         String?
+  pullRequestNumber          Int?
+  headSha                    String?
+  enqueued                   Boolean   @default(false)
+  payloadJson                Json?
+  evaluationAttemptsMade     Int       @default(0)
+  evaluationTerminalFailure  Boolean   @default(false)
+  lastFailureClass           String?
+  lastFailureMessage         String?
+  lastFailureCorrelationId   String?
+  lastFailedAt               DateTime?
+  replayCount                Int       @default(0)
+  lastReplayedAt             DateTime?
+  lastReplayedBy             String?
+  createdAt                  DateTime  @default(now())
 
   @@index([event, action, createdAt])
   @@index([repositoryFullName, pullRequestNumber])
+  @@index([evaluationTerminalFailure, lastFailedAt])
 }
 
 model ExportJob {

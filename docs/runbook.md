@@ -146,10 +146,44 @@ Then create a test PR that changes a sensitive path and confirm:
 
 ## Queue Operations
 
-- Retry failed BullMQ jobs only after confirming the failure is idempotent.
-- A job may be retried for GitHub API timeout, transient database failure, or check publication timeout.
-- A job should not be retried blindly for invalid policy YAML, disabled repositories, missing GitHub installation credentials, or authorization/configuration failures.
-- Keep webhook delivery idempotency enabled through the `WebhookDelivery.deliveryId` unique constraint.
+- `/health` stays lightweight and safe for load balancers. `/ready` performs a
+  worker-queue probe; if `REDIS_URL` is configured but Redis or BullMQ is not
+  reachable, `/ready` returns `not_ready` while `/health` remains `ok`.
+- `GET /api/admin/queue` requires `platform_admin`, `engineering_manager`, or
+  `auditor`. It returns queue counts, bounded retry settings, and sanitized
+  failure summaries only. It must not include webhook payloads, source patches,
+  tokens, installation credentials, or raw BullMQ job data.
+- Evaluation jobs use three attempts with exponential backoff starting at 30
+  seconds. Completed jobs retain the last 100 job records; failed jobs retain
+  the last 500 job records for incident review.
+- Retry failed BullMQ jobs only after confirming the failure is idempotent. A
+  job may be retried for GitHub API timeout, transient database failure, or
+  check publication timeout.
+- Do not blindly retry invalid policy YAML, disabled/unconfigured repositories,
+  missing GitHub installation credentials, missing pull request payloads, or
+  authorization/configuration failures. These are terminal until configuration
+  or payload data changes.
+- Failed evaluations update `WebhookDelivery` with attempts, terminal-failure
+  state, a safe error class/message, and the webhook delivery ID as correlation
+  ID. Inspect these fields before replaying an incident.
+- `POST /api/admin/queue/replay` requires `platform_admin` or
+  `engineering_manager` and accepts either `{ "deliveryId": "..." }` or
+  `{ "repositoryFullName": "owner/repo", "pullRequestNumber": 123 }`.
+  Replay enqueues a new evaluation job using the stored delivery envelope,
+  increments replay counters, and emits a `webhook_replayed` audit event. The
+  original `WebhookDelivery.deliveryId` unique constraint remains the
+  idempotency source of truth.
+- For stuck jobs, first check `/ready`, then `GET /api/admin/queue`, then
+  Railway worker logs. If Redis is unavailable, restore Redis connectivity
+  before replaying. If GitHub API failures are transient, wait for bounded
+  retries before replaying. If the failure is terminal, fix the configuration,
+  repository policy, or GitHub App permissions first.
+- For failed GitHub API calls, verify installation permissions, repository
+  access, rate-limit status, and that the webhook delivery contains a pull
+  request number. Then replay only the affected delivery or PR.
+- For webhook replay, prefer delivery ID replay during incident response. PR
+  replay uses the most recent stored delivery for that PR and is useful when the
+  GitHub delivery ID is not immediately available.
 
 ## Incident Response
 

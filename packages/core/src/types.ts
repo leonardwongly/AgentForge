@@ -228,6 +228,7 @@ export type AuditEventAction =
   | "record_reevaluated"
   | "check_published"
   | "record_exported"
+  | "webhook_replayed"
   | "retention_changed"
   | "repository_settings_changed"
   | "owner_mapping_changed";

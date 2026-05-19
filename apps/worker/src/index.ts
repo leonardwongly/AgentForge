@@ -2,7 +2,13 @@ import { createHash } from "node:crypto";
 import { Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { loadConfig } from "@agentforge/config";
-import type { ChangeControlRecord, PolicyResult, PullRequestInput } from "@agentforge/core";
+import {
+  MERGE_GUARD_EVALUATION_ATTEMPTS,
+  MERGE_GUARD_EVALUATION_QUEUE,
+  type ChangeControlRecord,
+  type PolicyResult,
+  type PullRequestInput
+} from "@agentforge/core";
 import { PrismaClient } from "@agentforge/db";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/detectors";
 import {
@@ -28,7 +34,11 @@ import {
   createChangeControlRecord,
   explainChangeControlRecord
 } from "@agentforge/records";
-import { sanitizeForMetadataStorage, type MetadataStoragePolicy } from "@agentforge/security";
+import {
+  sanitizeForMetadataStorage,
+  summarizeSafeSnippet,
+  type MetadataStoragePolicy
+} from "@agentforge/security";
 
 type CheckPublisher = (input: {
   owner: string;
@@ -46,6 +56,8 @@ type PersistedWorkerRecordRefs = {
 };
 
 let workerPrisma: PrismaClient | undefined;
+
+const WORKER_FAILURE_MESSAGE_LIMIT = 500;
 
 export class RepositoryNotConfiguredError extends Error {
   constructor(repositoryFullName: string) {
@@ -75,6 +87,17 @@ export type MergeGuardEvaluationJobResult = {
   checkConclusion: ReturnType<typeof buildCheckRunPayload>["conclusion"];
   checkPublished: boolean;
   publishedCheckRunId?: number | undefined;
+};
+
+export type MergeGuardEvaluationFailureSummary = {
+  errorClass: string;
+  message: string;
+  retryable: boolean;
+  terminalFailure: boolean;
+  attemptsMade: number;
+  maxAttempts: number;
+  failedAt: string;
+  correlationId: string;
 };
 
 export async function processMergeGuardEvaluationJob(
@@ -250,7 +273,7 @@ function startWorker(): void {
   });
 
   const worker = new Worker<MergeGuardEvaluationJobData>(
-    "merge-guard-evaluations",
+    MERGE_GUARD_EVALUATION_QUEUE,
     async (job) => {
       console.log("Processing Merge Guard evaluation job", {
         jobId: job.id,
@@ -271,12 +294,108 @@ function startWorker(): void {
     });
   });
   worker.on("failed", (job, error) => {
+    const summary = classifyMergeGuardEvaluationFailure({
+      error,
+      deliveryId: job?.data.deliveryId,
+      attemptsMade: job?.attemptsMade ?? 0,
+      maxAttempts: job?.opts.attempts ?? MERGE_GUARD_EVALUATION_ATTEMPTS
+    });
     console.error("Merge Guard evaluation job failed", {
       jobId: job?.id,
       deliveryId: job?.data.deliveryId,
-      message: error.message
+      errorClass: summary.errorClass,
+      message: summary.message,
+      retryable: summary.retryable,
+      terminalFailure: summary.terminalFailure,
+      attemptsMade: summary.attemptsMade,
+      maxAttempts: summary.maxAttempts
     });
+    if (workerPrisma && job?.data.deliveryId) {
+      void recordMergeGuardEvaluationFailure({
+        prisma: workerPrisma,
+        deliveryId: job.data.deliveryId,
+        summary
+      }).catch((failureError) => {
+        const failureSummary = classifyMergeGuardEvaluationFailure({
+          error: failureError,
+          deliveryId: job.data.deliveryId
+        });
+        console.error("Failed to persist Merge Guard evaluation failure summary", {
+          deliveryId: job.data.deliveryId,
+          errorClass: failureSummary.errorClass,
+          message: failureSummary.message
+        });
+      });
+    }
   });
+}
+
+export function classifyMergeGuardEvaluationFailure(input: {
+  error: unknown;
+  deliveryId?: string | undefined;
+  attemptsMade?: number | undefined;
+  maxAttempts?: number | undefined;
+  failedAt?: string | undefined;
+}): MergeGuardEvaluationFailureSummary {
+  const errorClass = input.error instanceof Error ? input.error.name : "UnknownError";
+  const message = input.error instanceof Error ? input.error.message : String(input.error);
+  const attemptsMade = Math.max(0, input.attemptsMade ?? 0);
+  const maxAttempts = Math.max(1, input.maxAttempts ?? MERGE_GUARD_EVALUATION_ATTEMPTS);
+  const retryable = isRetryableEvaluationFailure(errorClass, message);
+  return {
+    errorClass: safeErrorClass(errorClass),
+    message: safeErrorMessage(message),
+    retryable,
+    terminalFailure: !retryable || attemptsMade >= maxAttempts,
+    attemptsMade,
+    maxAttempts,
+    failedAt: input.failedAt ?? new Date().toISOString(),
+    correlationId: input.deliveryId ?? "unknown_delivery"
+  };
+}
+
+export async function recordMergeGuardEvaluationFailure(input: {
+  prisma: PrismaClient;
+  deliveryId: string;
+  summary: MergeGuardEvaluationFailureSummary;
+}): Promise<void> {
+  await input.prisma.webhookDelivery.updateMany({
+    where: { deliveryId: input.deliveryId },
+    data: {
+      evaluationAttemptsMade: input.summary.attemptsMade,
+      evaluationTerminalFailure: input.summary.terminalFailure,
+      lastFailureClass: input.summary.errorClass,
+      lastFailureMessage: input.summary.message,
+      lastFailureCorrelationId: input.summary.correlationId,
+      lastFailedAt: new Date(input.summary.failedAt)
+    }
+  });
+}
+
+function isRetryableEvaluationFailure(errorClass: string, message: string): boolean {
+  const combined = `${errorClass} ${message}`.toLowerCase();
+  if (
+    combined.includes("policy validation failed") ||
+    combined.includes("requires a pull request payload") ||
+    combined.includes("requires a pull request number") ||
+    combined.includes("repositorynotconfigurederror") ||
+    combined.includes("not configured for merge guard") ||
+    combined.includes("credentials") ||
+    combined.includes("installation credentials") ||
+    combined.includes("authorization")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function safeErrorClass(value: string): string {
+  const trimmed = value.trim();
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/u.test(trimmed) ? trimmed : "Error";
+}
+
+function safeErrorMessage(value: string): string {
+  return summarizeSafeSnippet(value, WORKER_FAILURE_MESSAGE_LIMIT);
 }
 
 async function resolvePullRequestForJob(

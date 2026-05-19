@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createApp, createInitialState } from "../src/index.js";
+import { createApp, createInitialState, mergeGuardEvaluationJobOptions } from "../src/index.js";
 
 const mutableEnvKeys = [
   "NODE_ENV",
@@ -10,6 +10,13 @@ const mutableEnvKeys = [
 const originalEnv = new Map<string, string | undefined>(
   mutableEnvKeys.map((key) => [key, process.env[key]])
 );
+
+function actorHeaders(actor: string, role: string): Record<string, string> {
+  return {
+    "x-agentforge-actor": actor,
+    "x-agentforge-role": role
+  };
+}
 
 beforeEach(() => {
   for (const key of mutableEnvKeys) {
@@ -30,6 +37,19 @@ afterEach(() => {
 });
 
 describe("GitHub webhook API", () => {
+  it("uses bounded retry options for queued evaluation jobs", () => {
+    expect(mergeGuardEvaluationJobOptions("delivery-1")).toMatchObject({
+      jobId: "delivery-1",
+      attempts: 3,
+      backoff: {
+        type: "exponential",
+        delay: 30_000
+      },
+      removeOnComplete: 100,
+      removeOnFail: 500
+    });
+  });
+
   it("accepts valid pull_request events and deduplicates delivery IDs", async () => {
     process.env.GITHUB_WEBHOOK_SECRET = "secret";
     const state = createInitialState();
@@ -78,6 +98,103 @@ describe("GitHub webhook API", () => {
     expect(first.statusCode).toBe(202);
     expect(second.json()).toMatchObject({ duplicate: true });
     expect(state.queuedEvaluations).toHaveLength(1);
+    expect(state.deliveries).toEqual(new Set(["delivery-1"]));
+    await app.close();
+  });
+
+  it("replays an accepted delivery through an authenticated idempotent queue path", async () => {
+    process.env.GITHUB_WEBHOOK_SECRET = "secret";
+    const state = createInitialState();
+    const app = createApp(state);
+    const payload = {
+      action: "synchronize",
+      repository: { id: 1, full_name: "acme/payments", default_branch: "main" },
+      pull_request: {
+        id: 2,
+        number: 3,
+        title: "PR",
+        body: "",
+        state: "open",
+        merged: false,
+        user: { login: "sam" },
+        base: { ref: "main" },
+        head: { ref: "feature/demo", sha: "sha" }
+      }
+    };
+    const body = JSON.stringify(payload);
+    const signature = `sha256=${createHmac("sha256", "secret").update(body).digest("hex")}`;
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload: body,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-replay",
+        "x-github-event": "pull_request",
+        "x-hub-signature-256": signature
+      }
+    });
+    expect(accepted.statusCode).toBe(202);
+
+    const replay = await app.inject({
+      method: "POST",
+      url: "/api/admin/queue/replay",
+      payload: JSON.stringify({ deliveryId: "delivery-replay" }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("ops", "platform_admin")
+      }
+    });
+
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json()).toEqual(
+      expect.objectContaining({
+        replayed: true,
+        deliveryId: "delivery-replay",
+        backend: "in_memory",
+        payloadIncluded: false
+      })
+    );
+    expect(replay.body).not.toContain("pull_request");
+    const replayByPr = await app.inject({
+      method: "POST",
+      url: "/api/admin/queue/replay",
+      payload: JSON.stringify({ repositoryFullName: "acme/payments", pullRequestNumber: 3 }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("ops", "platform_admin")
+      }
+    });
+
+    expect(replayByPr.statusCode).toBe(202);
+    expect(replayByPr.json()).toEqual(
+      expect.objectContaining({
+        replayed: true,
+        deliveryId: "delivery-replay",
+        repositoryFullName: "acme/payments",
+        pullRequestNumber: 3,
+        payloadIncluded: false
+      })
+    );
+    expect(state.deliveries).toEqual(new Set(["delivery-replay"]));
+    expect(state.queuedEvaluations.map((item) => item.deliveryId)).toEqual([
+      "delivery-replay",
+      "delivery-replay",
+      "delivery-replay"
+    ]);
+    expect(state.auditEvents.filter((event) => event.action === "webhook_replayed")).toHaveLength(
+      2
+    );
+    expect(state.auditEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "webhook_replayed",
+          targetId: "delivery-replay",
+          actor: "ops"
+        })
+      ])
+    );
     await app.close();
   });
 

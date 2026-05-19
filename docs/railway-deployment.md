@@ -116,11 +116,15 @@ After deployment:
 
 ```bash
 curl -fsS "$API_BASE_URL/health"
+curl -fsS "$API_BASE_URL/ready"
 pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-id <installation-id>
 pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-id <installation-id> --publish-check
 ```
 
-Update the GitHub App webhook URL only after the API health check passes:
+Poll `/ready` with retry/backoff until it returns success. Do not update the
+GitHub App webhook URL until `/health`, `/ready`, and the GitHub smoke checks
+pass; `/ready` proves Redis/BullMQ are reachable before webhook traffic is cut
+over:
 
 ```text
 https://<api-host>/webhooks/github
@@ -130,6 +134,9 @@ Then use GitHub App settings to send a ping delivery or edit a test PR. Confirm:
 
 - GitHub reports a `2xx` webhook delivery.
 - `WebhookDelivery` records are written once per delivery ID.
+- `/ready` reports the Redis-backed worker queue as ready. If Redis is
+  configured but unavailable, `/ready` returns `not_ready` while `/health`
+  remains available for safe load-balancer checks.
 - The worker consumes the queued evaluation.
 - The `AgentForge Merge Guard` check run is published on the test PR.
 - Logs do not expose private keys, webhook secrets, source patches, or installation tokens.
@@ -139,3 +146,25 @@ Then use GitHub App settings to send a ping delivery or edit a test PR. Confirm:
 If the API or worker deployment fails before migrations run, roll back the failed Railway deployment. If `pnpm db:deploy` applied a migration, use a database restore or a reviewed backward migration before rolling back code that is not schema-compatible.
 
 If webhook delivery breaks after cutover, point the GitHub App webhook URL back to the previous known-good endpoint, keep `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=false`, and inspect Railway API logs plus `WebhookDelivery` rows before retrying.
+
+For queue incidents, use the admin queue API before shelling into Redis. In
+production, these headers should be injected by the trusted auth proxy with
+`AGENTFORGE_API_TRUST_PROXY_HEADERS=true`; do not use local actor headers on
+public deployments:
+
+```bash
+curl -fsS "$API_BASE_URL/api/admin/queue" \
+  -H "x-agentforge-authenticated-actor: <operator-login>" \
+  -H "x-agentforge-authenticated-role: platform_admin"
+```
+
+Replay a specific stored webhook delivery only after confirming the failure is
+safe to reprocess:
+
+```bash
+curl -fsS -X POST "$API_BASE_URL/api/admin/queue/replay" \
+  -H "content-type: application/json" \
+  -H "x-agentforge-authenticated-actor: <operator-login>" \
+  -H "x-agentforge-authenticated-role: platform_admin" \
+  --data '{"deliveryId":"<github-delivery-id>"}'
+```

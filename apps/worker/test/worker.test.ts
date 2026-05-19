@@ -5,7 +5,9 @@ import { loadConfig } from "@agentforge/config";
 import type { PolicyResult, PullRequestInput } from "@agentforge/core";
 import type { GithubAdapterClient, GithubWebhookEnvelope } from "@agentforge/github";
 import {
+  classifyMergeGuardEvaluationFailure,
   processMergeGuardEvaluationJob,
+  recordMergeGuardEvaluationFailure,
   RepositoryNotConfiguredError,
   resolveRuntimeEvaluationContext
 } from "../src/index.js";
@@ -238,6 +240,76 @@ describe("Merge Guard worker evaluation jobs", () => {
         deliveryId: "delivery-worker-non-pr"
       })
     ).rejects.toThrow("requires a pull request payload");
+  });
+
+  it("classifies transient GitHub failures as bounded retryable summaries", () => {
+    const summary = classifyMergeGuardEvaluationFailure({
+      error: new Error("GitHub API timeout while fetching files"),
+      deliveryId: "delivery-transient",
+      attemptsMade: 2,
+      maxAttempts: 3,
+      failedAt: "2026-05-19T00:00:00.000Z"
+    });
+
+    expect(summary).toEqual({
+      errorClass: "Error",
+      message: "GitHub API timeout while fetching files",
+      retryable: true,
+      terminalFailure: false,
+      attemptsMade: 2,
+      maxAttempts: 3,
+      failedAt: "2026-05-19T00:00:00.000Z",
+      correlationId: "delivery-transient"
+    });
+  });
+
+  it("treats invalid payload failures as terminal and redacts unsafe error text", () => {
+    const githubToken = ["gh", "p_", "1234567890", "1234567890", "1234567890", "123456"].join("");
+    const summary = classifyMergeGuardEvaluationFailure({
+      error: new Error(
+        `Merge Guard evaluation job requires a pull request payload. token=${githubToken}`
+      ),
+      deliveryId: "delivery-terminal",
+      attemptsMade: 1,
+      maxAttempts: 3
+    });
+
+    expect(summary.retryable).toBe(false);
+    expect(summary.terminalFailure).toBe(true);
+    expect(summary.message).toContain("requires a pull request payload");
+    expect(summary.message).not.toContain("ghp_123456");
+    expect(summary.message).not.toContain(githubToken);
+  });
+
+  it("records failed evaluation summaries without storing job payloads", async () => {
+    const updateMany = vi.fn().mockResolvedValue({ count: 1 });
+    const summary = classifyMergeGuardEvaluationFailure({
+      error: new Error("GitHub API timeout"),
+      deliveryId: "delivery-record-failure",
+      attemptsMade: 3,
+      maxAttempts: 3,
+      failedAt: "2026-05-19T00:00:00.000Z"
+    });
+
+    await recordMergeGuardEvaluationFailure({
+      prisma: { webhookDelivery: { updateMany } } as never,
+      deliveryId: "delivery-record-failure",
+      summary
+    });
+
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { deliveryId: "delivery-record-failure" },
+      data: expect.objectContaining({
+        evaluationAttemptsMade: 3,
+        evaluationTerminalFailure: true,
+        lastFailureClass: "Error",
+        lastFailureMessage: "GitHub API timeout",
+        lastFailureCorrelationId: "delivery-record-failure",
+        lastFailedAt: new Date("2026-05-19T00:00:00.000Z")
+      })
+    });
+    expect(JSON.stringify(updateMany.mock.calls)).not.toContain("envelope");
+    expect(JSON.stringify(updateMany.mock.calls)).not.toContain("payload");
   });
 });
 

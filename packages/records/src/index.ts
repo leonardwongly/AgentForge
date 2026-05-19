@@ -389,6 +389,7 @@ export function requiredAuditMetadataFields(action: AuditEventAction): string[] 
     record_reevaluated: ["previousStatus", "checkStatus", "lifecycle", "policyVersion", "recordId"],
     check_published: ["conclusion", "status", "mode", "policyVersion", "recordId"],
     record_exported: ["format", "recordCount"],
+    webhook_replayed: ["deliveryId", "replayJobId"],
     retention_changed: ["dataHandling"],
     repository_settings_changed: ["enabled", "mode"],
     owner_mapping_changed: ["ownerMappings"]
