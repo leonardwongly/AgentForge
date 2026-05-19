@@ -7,6 +7,7 @@ import {
   exportChangeControlRecordsCsv,
   exportChangeControlRecordsJson,
   explainChangeControlRecord,
+  generatePolicyTuningReport,
   updateRecordFromPolicyResult,
   validateOverride
 } from "./index.js";
@@ -367,6 +368,73 @@ describe("records", () => {
     expect(csv.split("\n")[1]).toContain(",1,");
     expect(explainChangeControlRecord(record)).toContain(
       "Required evidence awaiting approval: security note."
+    );
+  });
+
+  it("generates deterministic advisory policy tuning insights from operational records", () => {
+    const records = Array.from({ length: 4 }, (_, index) => {
+      const record = createChangeControlRecord({
+        organizationId: "org",
+        repositoryId: "repo",
+        pr: { ...pr, pullRequestNumber: index + 1 },
+        policyResult: {
+          ...result,
+          findings: [
+            {
+              ...result.findings[0]!,
+              id: `fact_secret_${index}`,
+              type: "dependency_added",
+              evidence: "package manifest changed"
+            }
+          ],
+          requiredEvidence: [
+            {
+              ...result.requiredEvidence[0]!,
+              id: `evidence_${index}`,
+              requiredByFindingId: `fact_secret_${index}`,
+              status: index === 0 ? "rejected" : "missing"
+            }
+          ],
+          requiredReviewers: [
+            {
+              ...result.requiredReviewers[0]!,
+              id: `reviewer_${index}`,
+              triggeredByFindingId: `fact_secret_${index}`,
+              approved: false
+            }
+          ]
+        },
+        now: `2026-05-12T00:00:0${index}.000Z`
+      });
+      return index < 2
+        ? {
+            ...record,
+            lifecycle: "overridden" as const,
+            decision: {
+              status: "override_approved" as const,
+              decidedAt: record.updatedAt,
+              decidedBy: "alex",
+              overrideBy: "alex",
+              overrideReason: "False positive accepted by platform."
+            }
+          }
+        : record;
+    });
+
+    const report = generatePolicyTuningReport(records, "2026-05-13T00:00:00.000Z");
+
+    expect(report.metrics.overrideRate).toBe(50);
+    expect(report.insights.map((insight) => insight.category)).toEqual(
+      expect.arrayContaining([
+        "override_noise",
+        "evidence_quality",
+        "reviewer_routing",
+        "finding_noise"
+      ])
+    );
+    expect(JSON.stringify(report)).not.toContain(fakeGithubToken);
+    expect(report.insights.every((insight) => insight.guardrail.includes("Advisory only"))).toBe(
+      true
     );
   });
 });

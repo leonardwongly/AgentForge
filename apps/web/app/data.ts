@@ -37,6 +37,45 @@ export type DashboardData = {
   message: string;
 };
 
+export type PolicyTuningData = {
+  generatedAt: string;
+  recordCount: number;
+  metrics: {
+    overrideRate: number;
+    rejectedEvidenceRate: number;
+    openEvidenceRate: number;
+    pendingReviewerRate: number;
+    medianReviewerApprovalHours?: number | undefined;
+    observeOrWarnOpenRequirementCount: number;
+  };
+  insights: PolicyTuningInsight[];
+  pageInfo?: PageInfo | undefined;
+  source: DashboardDataSource;
+  message: string;
+};
+
+export type PolicyTuningInsight = {
+  id: string;
+  category: string;
+  severity: "high" | "medium" | "low";
+  title: string;
+  recommendation: string;
+  rationale: string;
+  metric: {
+    label: string;
+    value: string;
+    detail: string;
+  };
+  citations: Array<{
+    recordId: string;
+    repositoryFullName: string;
+    pullRequestNumber: number;
+    policyVersion: string;
+    findingTypes: string[];
+  }>;
+  guardrail: string;
+};
+
 export type PageInfo = {
   limit: number;
   offset: number;
@@ -245,6 +284,40 @@ export async function loadRecord(
           ? `Dashboard API unavailable: ${error.message}. Start the API with pnpm dev:api.`
           : "Dashboard API unavailable. Start the API with pnpm dev:api.",
       item: undefined
+    };
+  }
+}
+
+export async function loadPolicyTuningInsights(): Promise<PolicyTuningData> {
+  try {
+    const payload = await fetchApiJson<
+      Omit<PolicyTuningData, "source" | "message"> & { pageInfo?: PageInfo }
+    >("/api/dashboard/policy-insights?limit=100&sort=updated_desc");
+    return {
+      ...payload,
+      source: payload.insights.length === 0 ? "empty" : "api",
+      message:
+        payload.insights.length === 0
+          ? "No policy tuning opportunities are available yet. Evaluate more pull requests to build an operational history."
+          : `Loaded ${payload.insights.length} advisory policy tuning insight${payload.insights.length === 1 ? "" : "s"} from ${payload.recordCount} records.`
+    };
+  } catch (error) {
+    return {
+      generatedAt: new Date(0).toISOString(),
+      recordCount: 0,
+      metrics: {
+        overrideRate: 0,
+        rejectedEvidenceRate: 0,
+        openEvidenceRate: 0,
+        pendingReviewerRate: 0,
+        observeOrWarnOpenRequirementCount: 0
+      },
+      insights: [],
+      source: "unavailable",
+      message:
+        error instanceof Error
+          ? `Policy insights API unavailable: ${error.message}.`
+          : "Policy insights API unavailable."
     };
   }
 }

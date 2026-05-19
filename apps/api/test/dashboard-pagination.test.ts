@@ -106,6 +106,55 @@ describe("dashboard pagination and bounded exports", () => {
     expect(job.content).not.toContain("record-b-1");
     await app.close();
   });
+
+  it("returns advisory policy insights without mutating records", async () => {
+    const state = createInitialState();
+    state.records = [
+      {
+        ...record("record-a", 1, "block", "overridden"),
+        requiredEvidence: [
+          {
+            id: "evidence-a",
+            kind: "security_note",
+            status: "rejected",
+            requiredByFindingId: "finding-record-a"
+          }
+        ],
+        requiredReviewers: [
+          {
+            id: "reviewer-a",
+            reviewer: "security-team",
+            reviewerType: "team",
+            tier: "required",
+            reason: "Security finding requires review.",
+            triggeredByFindingId: "finding-record-a",
+            approved: false
+          }
+        ]
+      },
+      record("record-b", 2, "block", "overridden"),
+      record("record-c", 3, "block", "blocked")
+    ];
+    const before = JSON.stringify(state.records);
+    const app = createApp(state);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/dashboard/policy-insights?limit=50"
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().insights).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "override_noise",
+          guardrail: expect.stringContaining("Advisory only")
+        })
+      ])
+    );
+    expect(JSON.stringify(state.records)).toBe(before);
+    await app.close();
+  });
 });
 
 function record(

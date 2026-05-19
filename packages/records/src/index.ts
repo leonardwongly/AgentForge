@@ -18,6 +18,53 @@ import {
 
 export const AUDIT_EVENT_SCHEMA_VERSION = 1 as const;
 
+export type PolicyTuningInsight = {
+  id: string;
+  category:
+    | "override_noise"
+    | "evidence_quality"
+    | "reviewer_routing"
+    | "finding_noise"
+    | "mode_transition";
+  severity: "high" | "medium" | "low";
+  title: string;
+  recommendation: string;
+  rationale: string;
+  metric: {
+    label: string;
+    value: string;
+    detail: string;
+  };
+  citations: PolicyTuningCitation[];
+  guardrail: string;
+};
+
+export type PolicyTuningCitation = {
+  recordId: string;
+  repositoryFullName: string;
+  pullRequestNumber: number;
+  policyVersion: string;
+  findingTypes: string[];
+};
+
+export type PolicyTuningReport = {
+  generatedAt: string;
+  recordCount: number;
+  window: {
+    oldestRecordAt?: string | undefined;
+    newestRecordAt?: string | undefined;
+  };
+  metrics: {
+    overrideRate: number;
+    rejectedEvidenceRate: number;
+    openEvidenceRate: number;
+    pendingReviewerRate: number;
+    medianReviewerApprovalHours?: number | undefined;
+    observeOrWarnOpenRequirementCount: number;
+  };
+  insights: PolicyTuningInsight[];
+};
+
 export function createChangeControlRecord(input: {
   organizationId: string;
   repositoryId: string;
@@ -180,6 +227,58 @@ export function sanitizeChangeControlRecord(
   storagePolicy?: MetadataStoragePolicy
 ): ChangeControlRecord {
   return sanitizeForMetadataStorage(redactObject(record), storagePolicy);
+}
+
+export function generatePolicyTuningReport(
+  records: ChangeControlRecord[],
+  now = new Date().toISOString()
+): PolicyTuningReport {
+  const sorted = [...records].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const evidence = sorted.flatMap((record) => record.requiredEvidence);
+  const reviewers = sorted.flatMap((record) => record.requiredReviewers);
+  const overrides = sorted.filter((record) => record.lifecycle === "overridden");
+  const rejectedEvidence = evidence.filter((item) => item.status === "rejected");
+  const openEvidence = evidence.filter((item) => item.status !== "approved");
+  const requiredReviewers = reviewers.filter((item) => item.tier === "required");
+  const pendingReviewers = requiredReviewers.filter((item) => !item.approved);
+  const reviewerApprovalHours = requiredReviewers
+    .filter((item) => item.approvedAt)
+    .map((item) =>
+      hoursBetween(findRecordCreatedAt(sorted, item.triggeredByFindingId), item.approvedAt)
+    )
+    .filter((value): value is number => value !== undefined && Number.isFinite(value));
+  const observeOrWarnOpenRequirementRecords = sorted.filter(
+    (record) =>
+      (record.mode === "observe" || record.mode === "warn") &&
+      (record.requiredEvidence.some((item) => item.status !== "approved") ||
+        record.requiredReviewers.some((item) => item.tier === "required" && !item.approved))
+  );
+  const metrics = {
+    overrideRate: percent(overrides.length, sorted.length),
+    rejectedEvidenceRate: percent(rejectedEvidence.length, evidence.length),
+    openEvidenceRate: percent(openEvidence.length, evidence.length),
+    pendingReviewerRate: percent(pendingReviewers.length, requiredReviewers.length),
+    medianReviewerApprovalHours: median(reviewerApprovalHours),
+    observeOrWarnOpenRequirementCount: observeOrWarnOpenRequirementRecords.length
+  };
+  return {
+    generatedAt: now,
+    recordCount: sorted.length,
+    window: {
+      oldestRecordAt: sorted.at(-1)?.updatedAt,
+      newestRecordAt: sorted[0]?.updatedAt
+    },
+    metrics,
+    insights: [
+      overrideNoiseInsight(sorted, overrides, metrics.overrideRate),
+      evidenceQualityInsight(sorted, rejectedEvidence, openEvidence, metrics),
+      reviewerRoutingInsight(sorted, pendingReviewers, metrics),
+      repeatedFindingInsight(sorted),
+      modeTransitionInsight(observeOrWarnOpenRequirementRecords)
+    ]
+      .filter((insight): insight is PolicyTuningInsight => Boolean(insight))
+      .sort((a, b) => severityRank(a.severity) - severityRank(b.severity))
+  };
 }
 
 export function exportChangeControlRecordsJson(
@@ -507,6 +606,226 @@ function lifecycleForStatus(status: PolicyResult["status"]): ChangeControlRecord
     return "warned";
   }
   return "passed";
+}
+
+function overrideNoiseInsight(
+  records: ChangeControlRecord[],
+  overrides: ChangeControlRecord[],
+  overrideRate: number
+): PolicyTuningInsight | undefined {
+  if (overrides.length < 2 || overrideRate < 20) {
+    return undefined;
+  }
+  const policy = mostFrequent(overrides.map((record) => record.policyVersion));
+  return {
+    id: "override-noise",
+    category: "override_noise",
+    severity: overrideRate >= 40 ? "high" : "medium",
+    title: "Review high override concentration",
+    recommendation:
+      "Inspect the cited records before changing policy. If the overrides are legitimate false positives, narrow the triggering rule scope or move the rule to warn mode for this repository.",
+    rationale: `${overrides.length} of ${records.length} evaluated records ended with an authorized override, concentrated on policy ${policy ?? "unknown"}.`,
+    metric: {
+      label: "Override rate",
+      value: `${overrideRate}%`,
+      detail: "Share of evaluated records that required authorized override."
+    },
+    citations: citationsFor(overrides),
+    guardrail: advisoryGuardrail()
+  };
+}
+
+function evidenceQualityInsight(
+  records: ChangeControlRecord[],
+  rejectedEvidence: ChangeControlRecord["requiredEvidence"],
+  openEvidence: ChangeControlRecord["requiredEvidence"],
+  metrics: PolicyTuningReport["metrics"]
+): PolicyTuningInsight | undefined {
+  if (rejectedEvidence.length === 0 && metrics.openEvidenceRate < 30) {
+    return undefined;
+  }
+  const affectedRecords = records.filter((record) =>
+    record.requiredEvidence.some((item) => item.status === "rejected" || item.status === "missing")
+  );
+  return {
+    id: "evidence-quality",
+    category: "evidence_quality",
+    severity: rejectedEvidence.length > 0 ? "high" : "medium",
+    title: "Improve evidence instructions for recurring gaps",
+    recommendation:
+      "Add clearer evidence examples to the policy pack or repository runbook before tightening enforcement. Prioritize rejected evidence kinds first.",
+    rationale: `${metrics.openEvidenceRate}% of required evidence is still open and ${metrics.rejectedEvidenceRate}% was rejected.`,
+    metric: {
+      label: "Open evidence",
+      value: `${openEvidence.length}`,
+      detail: "Evidence items that are missing, provided but unapproved, or rejected."
+    },
+    citations: citationsFor(affectedRecords),
+    guardrail: advisoryGuardrail()
+  };
+}
+
+function reviewerRoutingInsight(
+  records: ChangeControlRecord[],
+  pendingReviewers: ChangeControlRecord["requiredReviewers"],
+  metrics: PolicyTuningReport["metrics"]
+): PolicyTuningInsight | undefined {
+  const slowReview = (metrics.medianReviewerApprovalHours ?? 0) >= 48;
+  if (pendingReviewers.length < 2 && !slowReview) {
+    return undefined;
+  }
+  const affectedRecords = records.filter((record) =>
+    record.requiredReviewers.some((item) => item.tier === "required" && !item.approved)
+  );
+  return {
+    id: "reviewer-routing",
+    category: "reviewer_routing",
+    severity: metrics.pendingReviewerRate >= 40 || slowReview ? "high" : "medium",
+    title: "Tune reviewer routing and fallback coverage",
+    recommendation:
+      "Review owner mappings and add fallback teams for the cited paths or policy rules. Keep required reviewers deterministic and human-approved.",
+    rationale:
+      metrics.medianReviewerApprovalHours === undefined
+        ? `${metrics.pendingReviewerRate}% of required reviewer requirements remain pending.`
+        : `${metrics.pendingReviewerRate}% of required reviewer requirements remain pending; median approval latency is ${metrics.medianReviewerApprovalHours} hours.`,
+    metric: {
+      label: "Pending reviewers",
+      value: `${pendingReviewers.length}`,
+      detail: "Required reviewer requirements that are not yet approved."
+    },
+    citations: citationsFor(affectedRecords),
+    guardrail: advisoryGuardrail()
+  };
+}
+
+function repeatedFindingInsight(records: ChangeControlRecord[]): PolicyTuningInsight | undefined {
+  const findings = records.flatMap((record) =>
+    record.verifiedFindings
+      .filter((finding) => finding.type !== "agent_signal_detected")
+      .map((finding) => ({ record, type: finding.type }))
+  );
+  const byType = new Map<string, ChangeControlRecord[]>();
+  for (const finding of findings) {
+    byType.set(finding.type, [...(byType.get(finding.type) ?? []), finding.record]);
+  }
+  const noisy = [...byType.entries()]
+    .map(([type, affected]) => ({ type, affected: uniqueRecords(affected) }))
+    .filter((item) => item.affected.length >= 3)
+    .sort((a, b) => b.affected.length - a.affected.length)[0];
+  if (!noisy) {
+    return undefined;
+  }
+  return {
+    id: `finding-noise-${noisy.type}`,
+    category: "finding_noise",
+    severity: noisy.affected.length >= 5 ? "high" : "medium",
+    title: `Review repeated ${humanize(noisy.type)} findings`,
+    recommendation:
+      "Compare cited records for legitimate risk versus noisy matching. If the same finding repeats without useful governance action, narrow the detector path scope or add repository-specific policy exceptions.",
+    rationale: `${noisy.affected.length} records cite ${humanize(noisy.type)}.`,
+    metric: {
+      label: "Repeated finding",
+      value: String(noisy.affected.length),
+      detail: humanize(noisy.type)
+    },
+    citations: citationsFor(noisy.affected),
+    guardrail: advisoryGuardrail()
+  };
+}
+
+function modeTransitionInsight(records: ChangeControlRecord[]): PolicyTuningInsight | undefined {
+  if (records.length < 2) {
+    return undefined;
+  }
+  return {
+    id: "mode-transition-readiness",
+    category: "mode_transition",
+    severity: "low",
+    title: "Use open requirements before changing enforcement mode",
+    recommendation:
+      "Resolve the cited observe/warn requirements before moving rules to enforce. Use policy preview to compare proposed YAML before a platform admin saves changes.",
+    rationale: `${records.length} observe or warn records still have open evidence or required-reviewer requirements.`,
+    metric: {
+      label: "Open observe/warn records",
+      value: String(records.length),
+      detail: "Records that should be cleaned up before mode escalation."
+    },
+    citations: citationsFor(records),
+    guardrail: advisoryGuardrail()
+  };
+}
+
+function citationsFor(records: ChangeControlRecord[], limit = 5): PolicyTuningCitation[] {
+  return uniqueRecords(records)
+    .slice(0, limit)
+    .map((record) => ({
+      recordId: record.id,
+      repositoryFullName: record.repositoryFullName,
+      pullRequestNumber: record.pullRequestNumber,
+      policyVersion: record.policyVersion,
+      findingTypes: [...new Set(record.verifiedFindings.map((finding) => finding.type))].slice(0, 5)
+    }));
+}
+
+function uniqueRecords(records: ChangeControlRecord[]): ChangeControlRecord[] {
+  const seen = new Set<string>();
+  return records.filter((record) => {
+    if (seen.has(record.id)) {
+      return false;
+    }
+    seen.add(record.id);
+    return true;
+  });
+}
+
+function findRecordCreatedAt(
+  records: ChangeControlRecord[],
+  findingId: string
+): string | undefined {
+  return records.find((record) =>
+    record.verifiedFindings.some((finding) => finding.id === findingId)
+  )?.createdAt;
+}
+
+function hoursBetween(start: string | undefined, end: string | undefined): number | undefined {
+  if (!start || !end) {
+    return undefined;
+  }
+  const ms = Date.parse(end) - Date.parse(start);
+  return Number.isFinite(ms) && ms >= 0 ? Math.round(ms / 36_000) / 100 : undefined;
+}
+
+function percent(part: number, total: number): number {
+  return total === 0 ? 0 : Math.round((part / total) * 100);
+}
+
+function median(values: number[]): number | undefined {
+  if (values.length === 0) {
+    return undefined;
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  const value =
+    sorted.length % 2 === 0
+      ? ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2
+      : sorted[middle];
+  return Math.round((value ?? 0) * 100) / 100;
+}
+
+function mostFrequent(values: string[]): string | undefined {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+}
+
+function severityRank(value: PolicyTuningInsight["severity"]): number {
+  return { high: 0, medium: 1, low: 2 }[value];
+}
+
+function advisoryGuardrail(): string {
+  return "Advisory only: this insight cannot block, unblock, or mutate policy without an explicit authorized platform-admin action.";
 }
 
 function csvEscape(value: string): string {
