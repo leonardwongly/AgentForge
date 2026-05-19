@@ -19,5 +19,21 @@ SET
   "policyPackVersion" = COALESCE(NULLIF("metadataJson"->>'policyPackVersion', ''), "policyPackVersion")
 WHERE "metadataJson" IS NOT NULL;
 
+UPDATE "AuditEvent"
+SET "metadataJson" = jsonb_strip_nulls(
+  COALESCE("metadataJson", '{}'::jsonb) ||
+  jsonb_build_object(
+    'schemaVersion', "schemaVersion",
+    'actorRole', "actorRole",
+    'source', "source",
+    'requestId', "requestId",
+    'correlationId', "correlationId",
+    'policyVersion', "policyVersion",
+    'policyPackId', "policyPackId",
+    'policyPackVersion', "policyPackVersion",
+    'recordId', CASE WHEN "targetType" = 'change_control_record' THEN "targetId" ELSE "metadataJson"->>'recordId' END
+  )
+);
+
 CREATE INDEX "AuditEvent_targetType_targetId_createdAt_idx" ON "AuditEvent"("targetType", "targetId", "createdAt");
 CREATE INDEX "AuditEvent_correlationId_idx" ON "AuditEvent"("correlationId");

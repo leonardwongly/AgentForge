@@ -393,7 +393,19 @@ function auditEventBelongsToRecord(event: AuditEventRecord, record: ChangeContro
     event.targetId === record.id ||
     metadataRecordId === record.id ||
     (event.repositoryId === record.repositoryId &&
+      isRepositoryLifecycleAuditEvent(event) &&
+      event.createdAt <= record.updatedAt) ||
+    (event.repositoryId === record.repositoryId &&
       stringFromMetadata(event.metadataJson?.headSha) === record.headSha)
+  );
+}
+
+function isRepositoryLifecycleAuditEvent(event: AuditEventRecord): boolean {
+  return (
+    event.action === "policy_changed" ||
+    event.action === "repository_settings_changed" ||
+    event.action === "retention_changed" ||
+    event.action === "owner_mapping_changed"
   );
 }
 

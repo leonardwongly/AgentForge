@@ -1290,7 +1290,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     const body = request.body as { format?: "json" | "csv" };
     const format = body.format ?? "json";
     const records = await listRecords();
-    const auditEvents = await listAuditEvents(state, prisma);
+    const auditEvents = await listAuditEventsForRecordExport(state, prisma, records);
     const content =
       format === "csv"
         ? exportChangeControlRecordsCsv(records, storagePolicy, auditEvents)
@@ -2186,7 +2186,37 @@ async function listAuditEvents(
     orderBy: { createdAt: "desc" },
     take: 250
   });
-  return rows.map((row: AuditEventRow) => ({
+  return rows.map(auditEventRecordFromRow);
+}
+
+async function listAuditEventsForRecordExport(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  records: ChangeControlRecord[]
+): Promise<AuditEventRecord[]> {
+  if (!prisma) {
+    return state.auditEvents;
+  }
+  const repositoryIds = [...new Set(records.map((record) => record.repositoryId))];
+  const recordIds = records.map((record) => record.id);
+  if (repositoryIds.length === 0 && recordIds.length === 0) {
+    return [];
+  }
+  const rows = await prisma.auditEvent.findMany({
+    where: {
+      OR: [
+        { targetType: "change_control_record", targetId: { in: recordIds } },
+        { repositoryId: { in: repositoryIds } }
+      ]
+    },
+    orderBy: { createdAt: "asc" }
+  });
+  return rows.map(auditEventRecordFromRow);
+}
+
+function auditEventRecordFromRow(row: AuditEventRow): AuditEventRecord {
+  const metadataJson = normalizeAuditEventMetadata(row);
+  return {
     id: row.id,
     schemaVersion: row.schemaVersion,
     organizationId: row.organizationId,
@@ -2203,9 +2233,27 @@ async function listAuditEvents(
     policyVersion: row.policyVersion ?? undefined,
     policyPackId: row.policyPackId ?? undefined,
     policyPackVersion: row.policyPackVersion ?? undefined,
-    metadataJson: (row.metadataJson as Record<string, unknown> | null) ?? undefined,
+    metadataJson,
     createdAt: row.createdAt.toISOString()
-  }));
+  };
+}
+
+function normalizeAuditEventMetadata(row: AuditEventRow): Record<string, unknown> {
+  const metadata =
+    row.metadataJson && typeof row.metadataJson === "object" && !Array.isArray(row.metadataJson)
+      ? (row.metadataJson as Record<string, unknown>)
+      : {};
+  return {
+    ...metadata,
+    schemaVersion: row.schemaVersion,
+    actorRole: row.actorRole,
+    source: auditEventSource(row.source),
+    ...(row.requestId ? { requestId: row.requestId } : {}),
+    ...(row.correlationId ? { correlationId: row.correlationId } : {}),
+    ...(row.policyVersion ? { policyVersion: row.policyVersion } : {}),
+    ...(row.policyPackId ? { policyPackId: row.policyPackId } : {}),
+    ...(row.policyPackVersion ? { policyPackVersion: row.policyPackVersion } : {})
+  };
 }
 
 async function recordAuditEvent(

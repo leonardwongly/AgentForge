@@ -188,6 +188,50 @@ describe("records", () => {
     }
   });
 
+  it("includes applicable repository lifecycle events in record exports", () => {
+    const record = createChangeControlRecord({
+      organizationId: "org",
+      repositoryId: "repo",
+      pr,
+      policyResult: result,
+      now: "2026-05-12T01:00:00.000Z"
+    });
+    const settingEvent = createAuditEvent({
+      organizationId: "org",
+      repositoryId: "repo",
+      actor: "alex",
+      actorRole: "platform_admin",
+      action: "repository_settings_changed",
+      targetType: "repository",
+      targetId: "repo",
+      metadataJson: {
+        enabled: true,
+        mode: "enforce"
+      },
+      createdAt: "2026-05-12T00:30:00.000Z"
+    });
+    const futureEvent = createAuditEvent({
+      organizationId: "org",
+      repositoryId: "repo",
+      actor: "alex",
+      actorRole: "platform_admin",
+      action: "repository_settings_changed",
+      targetType: "repository",
+      targetId: "repo",
+      metadataJson: {
+        enabled: true,
+        mode: "observe"
+      },
+      createdAt: "2026-05-12T02:00:00.000Z"
+    });
+
+    const json = exportChangeControlRecordsJson([record], undefined, [settingEvent, futureEvent]);
+
+    expect(json).toContain('"action": "repository_settings_changed"');
+    expect(json).toContain('"mode": "enforce"');
+    expect(json).not.toContain('"mode": "observe"');
+  });
+
   it("creates redacted audit events for governance actions", () => {
     const event = createAuditEvent({
       organizationId: "org",
