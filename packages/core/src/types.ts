@@ -234,13 +234,21 @@ export type AuditEventAction =
 
 export type AuditEventRecord = {
   id: string;
+  schemaVersion: number;
   organizationId: string;
   repositoryId?: string | undefined;
   pullRequestId?: string | undefined;
   actor: string;
+  actorRole: string;
   action: AuditEventAction;
   targetType: string;
   targetId: string;
+  source: "api" | "worker" | "webhook" | "system";
+  requestId?: string | undefined;
+  correlationId?: string | undefined;
+  policyVersion?: string | undefined;
+  policyPackId?: string | undefined;
+  policyPackVersion?: string | undefined;
   metadataJson?: Record<string, unknown> | undefined;
   createdAt: string;
 };

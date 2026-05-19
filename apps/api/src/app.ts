@@ -114,13 +114,21 @@ type OwnerMappingRow = {
 
 type AuditEventRow = {
   id: string;
+  schemaVersion: number;
   organizationId: string;
   repositoryId: string | null;
   pullRequestId: string | null;
   actor: string;
+  actorRole: string;
   action: string;
   targetType: string;
   targetId: string;
+  source: string;
+  requestId: string | null;
+  correlationId: string | null;
+  policyVersion: string | null;
+  policyPackId: string | null;
+  policyPackVersion: string | null;
   metadataJson: unknown;
   createdAt: Date;
 };
@@ -336,7 +344,8 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   const auditReevaluation = (
     record: ChangeControlRecord,
     actor: ApiActor,
-    previousStatus: ChangeControlRecord["checkStatus"]
+    previousStatus: ChangeControlRecord["checkStatus"],
+    requestId?: string | undefined
   ) =>
     audit({
       organizationId: record.organizationId,
@@ -346,10 +355,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       action: "record_reevaluated",
       targetType: "change_control_record",
       targetId: record.id,
+      requestId,
       metadataJson: {
         previousStatus,
         checkStatus: record.checkStatus,
         lifecycle: record.lifecycle,
+        policyVersion: record.policyVersion,
+        policyPackId: record.policyPackId,
+        policyPackVersion: record.policyPackVersion,
         openEvidence: record.requiredEvidence.filter((item) => item.status !== "approved").length,
         pendingRequiredReviewers: record.requiredReviewers.filter(
           (item) => item.tier === "required" && !item.approved
@@ -576,9 +589,11 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
             organizationId: settings.organizationId,
             repositoryId,
             actor: actor.login,
+            actorRole: actor.role,
             action: "repository_settings_changed",
             targetType: "repository",
             targetId: repositoryId,
+            requestId: request.id,
             metadataJson: {
               enabled: settings.repository.enabled,
               mode: settings.repository.mode,
@@ -594,9 +609,11 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
             organizationId: settings.organizationId,
             repositoryId,
             actor: actor.login,
+            actorRole: actor.role,
             action: "retention_changed",
             targetType: "repository_setting",
             targetId: repositoryId,
+            requestId: request.id,
             metadataJson: {
               dataHandling: settings.repository.dataHandling,
               actorRole: actor.role
@@ -610,9 +627,11 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
             organizationId: settings.organizationId,
             repositoryId,
             actor: actor.login,
+            actorRole: actor.role,
             action: "owner_mapping_changed",
             targetType: "owner_mapping",
             targetId: repositoryId,
+            requestId: request.id,
             metadataJson: {
               ownerMappings: settings.ownerMappings.map(ownerMappingForApi),
               actorRole: actor.role
@@ -732,10 +751,21 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       organizationId: "org_local",
       repositoryId: (request.params as { id: string }).id,
       actor: actor.login,
+      actorRole: actor.role,
       action: "policy_changed",
       targetType: "policy",
       targetId: policy.contentHash,
-      metadataJson: { contentHash: parsed.contentHash, actorRole: actor.role }
+      policyVersion: policy.version,
+      policyPackId: policy.policyPackId,
+      policyPackVersion: policy.policyPackVersion,
+      requestId: request.id,
+      metadataJson: {
+        contentHash: parsed.contentHash,
+        policyVersion: policy.version,
+        policyPackId: policy.policyPackId,
+        policyPackVersion: policy.policyPackVersion,
+        actorRole: actor.role
+      }
     });
     return {
       repositoryId: (request.params as { id: string }).id,
@@ -823,14 +853,21 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       repositoryId: record.repositoryId,
       pullRequestId: record.id,
       actor: actor.login,
+      actorRole: actor.role,
       action: "check_published",
       targetType: "change_control_record",
       targetId: record.id,
+      policyVersion: output.result.policyVersion,
+      policyPackId: output.result.policyPackId,
+      policyPackVersion: output.result.policyPackVersion,
+      requestId: request.id,
       metadataJson: {
         conclusion: output.checkRun.conclusion,
         status: output.result.status,
         mode: output.result.mode,
         policyVersion: output.result.policyVersion,
+        policyPackId: output.result.policyPackId,
+        policyPackVersion: output.result.policyPackVersion,
         previewPersisted: true,
         actorRole: actor.role
       }
@@ -942,12 +979,19 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       repositoryId: record.repositoryId,
       pullRequestId: record.id,
       actor: actor.login,
+      actorRole: actor.role,
       action: "evidence_provided",
       targetType: "evidence_requirement",
       targetId: evidence.id,
-      metadataJson: { kind: evidence.kind, source: "manual_attestation", actorRole: actor.role }
+      requestId: request.id,
+      metadataJson: {
+        kind: evidence.kind,
+        recordId: record.id,
+        evidenceSource: "manual_attestation",
+        actorRole: actor.role
+      }
     });
-    await auditReevaluation(savedRecord, actor, previousStatus);
+    await auditReevaluation(savedRecord, actor, previousStatus, request.id);
     return {
       evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id)),
       record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
@@ -1002,12 +1046,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           repositoryId: record.repositoryId,
           pullRequestId: record.id,
           actor: actor.login,
+          actorRole: actor.role,
           action: "evidence_approved",
           targetType: "evidence_requirement",
           targetId: evidence.id,
-          metadataJson: { kind: evidence.kind, actorRole: actor.role }
+          requestId: request.id,
+          metadataJson: { kind: evidence.kind, recordId: record.id, actorRole: actor.role }
         });
-        await auditReevaluation(savedRecord, actor, previousStatus);
+        await auditReevaluation(savedRecord, actor, previousStatus, request.id);
         return {
           evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id)),
           record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
@@ -1064,12 +1110,19 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           repositoryId: record.repositoryId,
           pullRequestId: record.id,
           actor: actor.login,
+          actorRole: actor.role,
           action: "evidence_rejected",
           targetType: "evidence_requirement",
           targetId: evidence.id,
-          metadataJson: { kind: evidence.kind, reason: reasonSummary, actorRole: actor.role }
+          requestId: request.id,
+          metadataJson: {
+            kind: evidence.kind,
+            reason: reasonSummary,
+            recordId: record.id,
+            actorRole: actor.role
+          }
         });
-        await auditReevaluation(savedRecord, actor, previousStatus);
+        await auditReevaluation(savedRecord, actor, previousStatus, request.id);
         return {
           evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id)),
           record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
@@ -1117,12 +1170,19 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           repositoryId: record.repositoryId,
           pullRequestId: record.id,
           actor: actor.login,
+          actorRole: actor.role,
           action: "reviewer_approved",
           targetType: "reviewer_requirement",
           targetId: reviewer.id,
-          metadataJson: { reviewer: reviewer.reviewer, tier: reviewer.tier, actorRole: actor.role }
+          requestId: request.id,
+          metadataJson: {
+            reviewer: reviewer.reviewer,
+            tier: reviewer.tier,
+            recordId: record.id,
+            actorRole: actor.role
+          }
         });
-        await auditReevaluation(savedRecord, actor, previousStatus);
+        await auditReevaluation(savedRecord, actor, previousStatus, request.id);
         return {
           reviewer: safe(savedRecord.requiredReviewers.find((item) => item.id === reviewer.id)),
           record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
@@ -1167,6 +1227,11 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       const savedRecord = await saveRecord(output.record);
       await saveOverrideRecord(prisma, output.overrideRecord);
       if (output.auditEvent) {
+        output.auditEvent.requestId = request.id;
+        output.auditEvent.metadataJson = {
+          ...(output.auditEvent.metadataJson ?? {}),
+          requestId: request.id
+        };
         await saveAuditEvent(state, prisma, output.auditEvent);
       }
       return reply.code(201).send({
@@ -1236,12 +1301,33 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     const body = request.body as { format?: "json" | "csv" };
     const format = body.format ?? "json";
     const records = await listRecords();
+    const jobId = randomUUID();
+    const auditEvents = await listAuditEventsForRecordExport(state, prisma, records);
+    const exportAuditEvent = createAuditEvent({
+      organizationId: "org_local",
+      actor: actor.login,
+      action: "record_exported",
+      targetType: "change_control_records_export",
+      targetId: jobId,
+      actorRole: actor.role,
+      requestId: request.id,
+      metadataJson: {
+        format,
+        recordCount: records.length,
+        recordIds: records.map((record) => record.id),
+        repositoryIds: [...new Set(records.map((record) => record.repositoryId))],
+        actorRole: actor.role
+      }
+    });
     const content =
       format === "csv"
-        ? exportChangeControlRecordsCsv(records, storagePolicy)
-        : exportChangeControlRecordsJson(records, storagePolicy);
+        ? exportChangeControlRecordsCsv(records, storagePolicy, [...auditEvents, exportAuditEvent])
+        : exportChangeControlRecordsJson(records, storagePolicy, [
+            ...auditEvents,
+            exportAuditEvent
+          ]);
     const job: ExportJob = {
-      id: randomUUID(),
+      id: jobId,
       status: "completed",
       format,
       recordCount: records.length,
@@ -1249,14 +1335,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       createdAt: new Date().toISOString()
     };
     await saveExportJob(state, prisma, job, actor.login, actor.role);
-    await audit({
-      organizationId: "org_local",
-      actor: actor.login,
-      action: "record_exported",
-      targetType: "change_control_records_export",
-      targetId: job.id,
-      metadataJson: { format, recordCount: job.recordCount, actorRole: actor.role }
-    });
+    await saveAuditEvent(state, prisma, exportAuditEvent);
     return reply.code(201).send({ id: job.id, status: job.status, recordCount: job.recordCount });
   });
   app.get("/api/exports/:id", async (request, reply) => {
@@ -2129,18 +2208,74 @@ async function listAuditEvents(
     orderBy: { createdAt: "desc" },
     take: 250
   });
-  return rows.map((row: AuditEventRow) => ({
+  return rows.map(auditEventRecordFromRow);
+}
+
+async function listAuditEventsForRecordExport(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  records: ChangeControlRecord[]
+): Promise<AuditEventRecord[]> {
+  if (!prisma) {
+    return state.auditEvents;
+  }
+  const repositoryIds = [...new Set(records.map((record) => record.repositoryId))];
+  const recordIds = records.map((record) => record.id);
+  if (repositoryIds.length === 0 && recordIds.length === 0) {
+    return [];
+  }
+  const rows = await prisma.auditEvent.findMany({
+    where: {
+      OR: [
+        { targetType: "change_control_record", targetId: { in: recordIds } },
+        { repositoryId: { in: repositoryIds } }
+      ]
+    },
+    orderBy: { createdAt: "asc" }
+  });
+  return rows.map(auditEventRecordFromRow);
+}
+
+function auditEventRecordFromRow(row: AuditEventRow): AuditEventRecord {
+  const metadataJson = normalizeAuditEventMetadata(row);
+  return {
     id: row.id,
+    schemaVersion: row.schemaVersion,
     organizationId: row.organizationId,
     repositoryId: row.repositoryId ?? undefined,
     pullRequestId: row.pullRequestId ?? undefined,
     actor: row.actor,
+    actorRole: row.actorRole,
     action: row.action as AuditEventRecord["action"],
     targetType: row.targetType,
     targetId: row.targetId,
-    metadataJson: (row.metadataJson as Record<string, unknown> | null) ?? undefined,
+    source: auditEventSource(row.source),
+    requestId: row.requestId ?? undefined,
+    correlationId: row.correlationId ?? undefined,
+    policyVersion: row.policyVersion ?? undefined,
+    policyPackId: row.policyPackId ?? undefined,
+    policyPackVersion: row.policyPackVersion ?? undefined,
+    metadataJson,
     createdAt: row.createdAt.toISOString()
-  }));
+  };
+}
+
+function normalizeAuditEventMetadata(row: AuditEventRow): Record<string, unknown> {
+  const metadata =
+    row.metadataJson && typeof row.metadataJson === "object" && !Array.isArray(row.metadataJson)
+      ? (row.metadataJson as Record<string, unknown>)
+      : {};
+  return {
+    ...metadata,
+    schemaVersion: row.schemaVersion,
+    actorRole: row.actorRole,
+    source: auditEventSource(row.source),
+    ...(row.requestId ? { requestId: row.requestId } : {}),
+    ...(row.correlationId ? { correlationId: row.correlationId } : {}),
+    ...(row.policyVersion ? { policyVersion: row.policyVersion } : {}),
+    ...(row.policyPackId ? { policyPackId: row.policyPackId } : {}),
+    ...(row.policyPackVersion ? { policyPackVersion: row.policyPackVersion } : {})
+  };
 }
 
 async function recordAuditEvent(
@@ -2193,14 +2328,28 @@ async function saveAuditEvent(
         pullRequest && "pullRequestId" in pullRequest
           ? pullRequest.pullRequestId
           : (pullRequest?.id ?? null),
+      schemaVersion: event.schemaVersion,
       actor: event.actor,
+      actorRole: event.actorRole,
       action: event.action,
       targetType: event.targetType,
       targetId: event.targetId,
+      source: event.source,
+      requestId: event.requestId ?? null,
+      correlationId: event.correlationId ?? null,
+      policyVersion: event.policyVersion ?? null,
+      policyPackId: event.policyPackId ?? null,
+      policyPackVersion: event.policyPackVersion ?? null,
       metadataJson: event.metadataJson as never,
       createdAt: new Date(event.createdAt)
     }
   });
+}
+
+function auditEventSource(value: string): AuditEventRecord["source"] {
+  return value === "api" || value === "worker" || value === "webhook" || value === "system"
+    ? value
+    : "api";
 }
 
 async function saveOverrideRecord(

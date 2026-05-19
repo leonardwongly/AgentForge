@@ -11,6 +11,8 @@ import {
   validateOverride
 } from "./index.js";
 
+const fakeGithubToken = ["ghp", "x".repeat(36)].join("_");
+
 const pr: PullRequestInput = {
   repositoryFullName: "acme/payments",
   pullRequestNumber: 1,
@@ -32,12 +34,12 @@ const result: PolicyResult = {
       type: "secret_like_value_detected",
       source: "github_diff",
       path: "src/billing/checkout.ts",
-      evidence: "Secret-like token detected: token=ghp_123456789012345678901234567890123456",
+      evidence: `Secret-like token detected: token=${fakeGithubToken}`,
       confidence: "observed",
       severity: "critical",
       metadata: {
-        patch: "+ token=ghp_123456789012345678901234567890123456",
-        currentContent: "export const token = 'ghp_123456789012345678901234567890123456';"
+        patch: `+ token=${fakeGithubToken}`,
+        currentContent: `export const token = '${fakeGithubToken}';`
       }
     }
   ],
@@ -85,7 +87,7 @@ describe("records", () => {
     });
     const serialized = JSON.stringify(record);
 
-    expect(serialized).not.toContain("ghp_123456");
+    expect(serialized).not.toContain(fakeGithubToken);
     expect(serialized).not.toContain("export const token");
     expect(serialized).not.toContain("patch");
     expect(record.verifiedFindings[0]?.metadata).toEqual({});
@@ -181,11 +183,85 @@ describe("records", () => {
     expect(csv).toContain("findingsJson");
     expect(csv).toContain("openEvidenceCount");
     for (const artifact of [json, csv]) {
-      expect(artifact).not.toContain("ghp_123456");
+      expect(artifact).not.toContain(fakeGithubToken);
       expect(artifact).not.toContain("export const token");
       expect(artifact).not.toContain("currentContent");
       expect(artifact).not.toContain("patch");
     }
+  });
+
+  it("includes applicable repository lifecycle events in record exports", () => {
+    const record = createChangeControlRecord({
+      organizationId: "org",
+      repositoryId: "repo",
+      pr,
+      policyResult: result,
+      now: "2026-05-12T01:00:00.000Z"
+    });
+    const settingEvent = createAuditEvent({
+      organizationId: "org",
+      repositoryId: "repo",
+      actor: "alex",
+      actorRole: "platform_admin",
+      action: "repository_settings_changed",
+      targetType: "repository",
+      targetId: "repo",
+      metadataJson: {
+        enabled: true,
+        mode: "enforce"
+      },
+      createdAt: "2026-05-12T00:30:00.000Z"
+    });
+    const futureEvent = createAuditEvent({
+      organizationId: "org",
+      repositoryId: "repo",
+      actor: "alex",
+      actorRole: "platform_admin",
+      action: "repository_settings_changed",
+      targetType: "repository",
+      targetId: "repo",
+      metadataJson: {
+        enabled: true,
+        mode: "observe"
+      },
+      createdAt: "2026-05-12T02:00:00.000Z"
+    });
+
+    const json = exportChangeControlRecordsJson([record], undefined, [settingEvent, futureEvent]);
+
+    expect(json).toContain('"action": "repository_settings_changed"');
+    expect(json).toContain('"mode": "enforce"');
+    expect(json).not.toContain('"mode": "observe"');
+  });
+
+  it("links export lifecycle events to each exported record", () => {
+    const record = createChangeControlRecord({
+      organizationId: "org",
+      repositoryId: "repo",
+      pr,
+      policyResult: result,
+      now: "2026-05-12T01:00:00.000Z"
+    });
+    const event = createAuditEvent({
+      organizationId: "org",
+      actor: "alex",
+      actorRole: "auditor",
+      action: "record_exported",
+      targetType: "change_control_records_export",
+      targetId: "export-1",
+      metadataJson: {
+        format: "json",
+        recordCount: 1,
+        recordIds: [record.id]
+      },
+      createdAt: "2026-05-12T01:05:00.000Z"
+    });
+
+    const json = exportChangeControlRecordsJson([record], undefined, [event]);
+    const csv = exportChangeControlRecordsCsv([record], undefined, [event]);
+
+    expect(json).toContain('"action": "record_exported"');
+    expect(csv).toContain("record_exported");
   });
 
   it("creates redacted audit events for governance actions", () => {
@@ -194,18 +270,36 @@ describe("records", () => {
       repositoryId: "repo",
       pullRequestId: "pr",
       actor: "alex",
+      actorRole: "auditor",
       action: "record_exported",
       targetType: "change_control_record",
       targetId: "record",
       metadataJson: {
         format: "json",
-        token: "ghp_123456789012345678901234567890123456",
+        recordCount: 1,
+        token: fakeGithubToken,
         patch: "+ raw source"
       },
       createdAt: "2026-05-12T00:00:00.000Z"
     });
 
-    expect(event.metadataJson).toEqual({ format: "json", token: "[REDACTED]" });
+    expect(event).toMatchObject({
+      schemaVersion: 1,
+      actorRole: "auditor",
+      source: "api"
+    });
+    expect(event.metadataJson).toEqual(
+      expect.objectContaining({
+        schemaVersion: 1,
+        actorRole: "auditor",
+        source: "api",
+        recordId: "record",
+        format: "json",
+        recordCount: 1,
+        token: "[REDACTED]"
+      })
+    );
+    expect(event.metadataJson).not.toHaveProperty("patch");
   });
 
   it("explains blocked and overridden decisions with explicit missing requirements", () => {

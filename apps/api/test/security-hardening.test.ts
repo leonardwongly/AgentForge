@@ -628,6 +628,9 @@ describe("security and audit hardening", () => {
 
       expect(job.statusCode).toBe(200);
       expect(job.body).toContain("security-test@1.0.0");
+      expect(job.body).toContain(format === "csv" ? "auditEventsJson" : "auditEvents");
+      expect(job.body).toContain("check_published");
+      expect(job.body).toContain("record_exported");
       expect(job.body).not.toContain(rawGithubToken);
       expect(job.body).not.toContain(rawSource);
       expect(job.body).not.toContain("currentContent");
@@ -731,6 +734,13 @@ describe("security and audit hardening", () => {
       headers: actorHeaders("alex", "platform_admin")
     });
     const actions = audit.json().auditEvents.map((event: { action: string }) => event.action);
+    const auditEvents = audit.json().auditEvents as Array<{
+      schemaVersion: number;
+      actorRole: string;
+      source: string;
+      requestId?: string;
+      metadataJson: Record<string, unknown>;
+    }>;
     expect(actions).toEqual(
       expect.arrayContaining([
         "check_published",
@@ -742,6 +752,24 @@ describe("security and audit hardening", () => {
         "record_exported"
       ])
     );
+    for (const event of auditEvents) {
+      expect(event.schemaVersion).toBe(1);
+      expect(event.actorRole).toEqual(expect.any(String));
+      expect(event.source).toMatch(/^(api|worker|webhook|system)$/u);
+      expect(event.metadataJson).toEqual(
+        expect.objectContaining({
+          schemaVersion: 1,
+          actorRole: event.actorRole,
+          source: event.source
+        })
+      );
+    }
+    const apiEvents = auditEvents.filter((event) => event.source === "api");
+    expect(apiEvents.length).toBeGreaterThan(0);
+    for (const event of apiEvents) {
+      expect(event.requestId).toBeDefined();
+      expect(event.requestId).toMatch(/^req-/u);
+    }
     expect(JSON.stringify(audit.json())).not.toContain(rawGithubToken);
     await app.close();
   });

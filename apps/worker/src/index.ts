@@ -674,15 +674,25 @@ async function persistWorkerRecord(input: {
     repositoryId: persistedRecord.repositoryId,
     pullRequestId: persistedRecord.pullRequestId,
     actor: "system",
+    actorRole: "system",
     action: "check_published",
     targetType: "change_control_record",
     targetId: persistedRecord.recordId,
+    source: "worker",
+    correlationId: envelope?.deliveryId,
+    policyVersion: record.policyVersion,
+    policyPackId: record.policyPackId,
+    policyPackVersion: record.policyPackVersion,
     metadataJson: {
       conclusion: checkConclusion,
       githubCheckRunId: publishedCheckRunId,
       status: record.checkStatus,
       mode: record.mode,
-      policyVersion: record.policyVersion
+      policyVersion: record.policyVersion,
+      policyPackId: record.policyPackId,
+      policyPackVersion: record.policyPackVersion,
+      headSha: record.headSha,
+      deliveryId: envelope?.deliveryId
     }
   });
   await prisma.auditEvent.upsert({
@@ -693,10 +703,18 @@ async function persistWorkerRecord(input: {
       organizationId: audit.organizationId,
       repositoryId: audit.repositoryId ?? null,
       pullRequestId: audit.pullRequestId ?? null,
+      schemaVersion: audit.schemaVersion,
       actor: audit.actor,
+      actorRole: audit.actorRole,
       action: audit.action,
       targetType: audit.targetType,
       targetId: audit.targetId,
+      source: audit.source,
+      requestId: audit.requestId ?? null,
+      correlationId: audit.correlationId ?? null,
+      policyVersion: audit.policyVersion ?? null,
+      policyPackId: audit.policyPackId ?? null,
+      policyPackVersion: audit.policyPackVersion ?? null,
       metadataJson: audit.metadataJson as never,
       createdAt: new Date(audit.createdAt)
     }

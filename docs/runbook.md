@@ -141,6 +141,7 @@ Then create a test PR that changes a sensitive path and confirm:
 - the `AgentForge Merge Guard` check is published;
 - the Change Control Record includes deterministic findings, approved-or-open evidence, reviewers, mode, override history, and decision;
 - the normalized evaluation, fact, evidence, reviewer, check-run, and override rows are written;
+- the export includes schema-versioned audit events for evidence, reviewer, override, settings, check-publication, and export lifecycle actions;
 - no source code, raw patches, secrets, or private key material appears in records, dashboard responses, logs, or exports.
 
 ## Queue Operations

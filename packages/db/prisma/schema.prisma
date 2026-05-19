@@ -325,21 +325,31 @@ model ChangeControlRecord {
 }
 
 model AuditEvent {
-  id             String       @id @default(uuid())
-  organizationId String
-  repositoryId   String?
-  pullRequestId  String?
-  actor          String
-  action         String
-  targetType     String
-  targetId       String
-  metadataJson   Json?
-  createdAt      DateTime     @default(now())
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  repository     Repository?  @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
-  pullRequest    PullRequest? @relation(fields: [pullRequestId], references: [id], onDelete: SetNull)
+  id                String       @id @default(uuid())
+  schemaVersion     Int          @default(1)
+  organizationId    String
+  repositoryId      String?
+  pullRequestId     String?
+  actor             String
+  actorRole         String
+  action            String
+  targetType        String
+  targetId          String
+  source            String
+  requestId         String?
+  correlationId     String?
+  policyVersion     String?
+  policyPackId      String?
+  policyPackVersion String?
+  metadataJson      Json?
+  createdAt         DateTime     @default(now())
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  repository        Repository?  @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+  pullRequest       PullRequest? @relation(fields: [pullRequestId], references: [id], onDelete: SetNull)
 
   @@index([organizationId, action, createdAt])
+  @@index([targetType, targetId, createdAt])
+  @@index([correlationId])
 }
 
 model UsageEvent {
