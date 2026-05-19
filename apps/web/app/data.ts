@@ -342,6 +342,76 @@ export function pendingRequiredReviewers(record: ChangeControlRecord): ReviewerR
   return record.requiredReviewers.filter((item) => item.tier === "required" && !item.approved);
 }
 
+export function openRequirementCounts(record: ChangeControlRecord): {
+  evidence: number;
+  reviewers: number;
+  total: number;
+} {
+  const evidence = missingEvidence(record).length;
+  const reviewers = pendingRequiredReviewers(record).length;
+  return {
+    evidence,
+    reviewers,
+    total: evidence + reviewers
+  };
+}
+
+export function hasOpenRequirements(record: ChangeControlRecord): boolean {
+  return openRequirementCounts(record).total > 0;
+}
+
+export function isObservePassWithOpenRequirements(record: ChangeControlRecord): boolean {
+  return record.mode === "observe" && record.checkStatus === "pass" && hasOpenRequirements(record);
+}
+
+function formatOpenRequirementDetail(counts: ReturnType<typeof openRequirementCounts>): string {
+  const parts = [
+    counts.evidence > 0
+      ? `${counts.evidence} evidence requirement${counts.evidence === 1 ? "" : "s"}`
+      : null,
+    counts.reviewers > 0
+      ? `${counts.reviewers} reviewer requirement${counts.reviewers === 1 ? "" : "s"}`
+      : null
+  ].filter((part): part is string => Boolean(part));
+  const verb = counts.total === 1 ? "remains" : "remain";
+
+  return `${parts.join(" and ")} ${verb} open and would block in enforce or optimize mode.`;
+}
+
+export function governanceDisposition(record: ChangeControlRecord): {
+  status: ChangeControlRecord["checkStatus"];
+  label: string;
+  detail: string;
+} {
+  const counts = openRequirementCounts(record);
+  if (isObservePassWithOpenRequirements(record)) {
+    return {
+      status: "warn",
+      label: "observe pass; requirements open",
+      detail: formatOpenRequirementDetail(counts)
+    };
+  }
+  if (record.checkStatus === "warn") {
+    return {
+      status: "warn",
+      label: "warn; requirements open",
+      detail: "Non-blocking warning; this shows what would block in enforce mode."
+    };
+  }
+  if (record.checkStatus === "block") {
+    return {
+      status: "block",
+      label: "blocked",
+      detail: "Required policy evidence or approvals are missing."
+    };
+  }
+  return {
+    status: "pass",
+    label: "pass",
+    detail: "Configured policy requirements are satisfied."
+  };
+}
+
 export function hasAgentSignal(record: ChangeControlRecord): boolean {
   return record.verifiedFindings.some((finding) => finding.type === "agent_signal_detected");
 }
@@ -530,6 +600,9 @@ function relativeAge(value: string): string {
 function checkMessage(record: ChangeControlRecord): string {
   if (record.lifecycle === "overridden") {
     return "Authorized override recorded.";
+  }
+  if (isObservePassWithOpenRequirements(record)) {
+    return governanceDisposition(record).detail;
   }
   if (record.checkStatus === "block") {
     return "Merge Guard blocked merge because required policy evidence or approvals are missing.";

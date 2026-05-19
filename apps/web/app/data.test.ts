@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  governanceDisposition,
+  hasOpenRequirements,
+  isObservePassWithOpenRequirements,
   loadDashboardData,
   loadSettings,
+  openRequirementCounts,
   summarizeEvidenceRequirements,
   summarizeFindings,
   summarizeReviewerRequirements
 } from "./data";
+import type { ChangeControlRecord } from "@agentforge/core";
 
 describe("dashboard API data loaders", () => {
   afterEach(() => {
@@ -95,6 +100,32 @@ describe("dashboard API data loaders", () => {
       ])
     ).toBe("security-team x2, platform-team");
   });
+
+  it("distinguishes observe-mode passing checks from completed governance", () => {
+    const record = recordWithOpenRequirements();
+
+    expect(openRequirementCounts(record)).toEqual({ evidence: 1, reviewers: 1, total: 2 });
+    expect(hasOpenRequirements(record)).toBe(true);
+    expect(isObservePassWithOpenRequirements(record)).toBe(true);
+    expect(governanceDisposition(record)).toEqual({
+      status: "warn",
+      label: "observe pass; requirements open",
+      detail:
+        "1 evidence requirement and 1 reviewer requirement remain open and would block in enforce or optimize mode."
+    });
+  });
+
+  it("omits zero-count requirement groups from observe-mode detail text", () => {
+    const evidenceOnly = recordWithOpenRequirements({ reviewers: 0 });
+    const reviewersOnly = recordWithOpenRequirements({ evidence: 0 });
+
+    expect(governanceDisposition(evidenceOnly).detail).toBe(
+      "1 evidence requirement remains open and would block in enforce or optimize mode."
+    );
+    expect(governanceDisposition(reviewersOnly).detail).toBe(
+      "1 reviewer requirement remains open and would block in enforce or optimize mode."
+    );
+  });
 });
 
 function jsonResponse(payload: unknown): Response {
@@ -144,5 +175,43 @@ function reviewer(
     reason: "required",
     triggeredByFindingId: "finding-1",
     approved: false
+  };
+}
+
+function recordWithOpenRequirements({
+  evidence: evidenceCount = 1,
+  reviewers: reviewerCount = 1
+}: {
+  evidence?: number;
+  reviewers?: number;
+} = {}): ChangeControlRecord {
+  return {
+    id: "record-1",
+    organizationId: "org-1",
+    repositoryId: "repo-1",
+    repositoryFullName: "acme/payments",
+    pullRequestNumber: 42,
+    headSha: "sha",
+    baseBranch: "main",
+    mode: "observe",
+    policyVersion: "fintech@1.0.0",
+    verifiedFindings: [fact("finding-1", "sensitive_path_changed")],
+    requiredEvidence:
+      evidenceCount === 0
+        ? []
+        : Array.from({ length: evidenceCount }, (_, index) =>
+            evidence(`evidence-${index + 1}`, "rollback_plan")
+          ),
+    requiredReviewers:
+      reviewerCount === 0
+        ? []
+        : Array.from({ length: reviewerCount }, (_, index) =>
+            reviewer(`reviewer-${index + 1}`, "security-team")
+          ),
+    checkStatus: "pass",
+    lifecycle: "passed",
+    decision: { status: "passed" },
+    createdAt: "2026-05-18T00:00:00.000Z",
+    updatedAt: "2026-05-18T00:00:00.000Z"
   };
 }

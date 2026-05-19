@@ -162,7 +162,7 @@ The Next.js dashboard uses server actions for onboarding and settings changes. I
 
 ## Policy Modes
 
-- `observe`: always publishes a passing check, records findings, and never blocks.
+- `observe`: always publishes a passing check, records findings and open requirements, and never blocks.
 - `warn`: publishes a non-blocking warning, records what would block, and never blocks.
 - `enforce`: blocks when required evidence, required reviews, or blocking policy conditions are unmet.
 - `optimize`: keeps enforce controls active and surfaces governance improvement opportunities after teams have stabilized enforcement.

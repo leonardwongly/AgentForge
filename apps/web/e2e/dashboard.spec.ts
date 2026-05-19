@@ -5,14 +5,24 @@ import type { ChangeControlRecord, PullRequestInput } from "@agentforge/core";
 
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://127.0.0.1:4100";
 
-async function seedMergeGuardRecord(request: APIRequestContext): Promise<ChangeControlRecord> {
+async function seedMergeGuardRecord(
+  request: APIRequestContext,
+  options: { mode?: "observe" | "warn" | "enforce" | "optimize"; repositoryFullName?: string } = {}
+): Promise<ChangeControlRecord> {
   const [rawPr, contentYaml] = await Promise.all([
     readFile(path.resolve(process.cwd(), "fixtures", "repos", "billing-path.json"), "utf8"),
     readFile(path.resolve(process.cwd(), "fixtures", "policies", "fintech.yaml"), "utf8")
   ]);
   const pr = JSON.parse(rawPr) as PullRequestInput;
+  if (options.repositoryFullName) {
+    pr.repositoryFullName = options.repositoryFullName;
+    pr.pullRequestNumber = 9002;
+  }
+  const policyYaml = options.mode
+    ? contentYaml.replace(/mode: warn/u, `mode: ${options.mode}`)
+    : contentYaml;
   const preview = await request.post(`${apiBaseUrl}/api/policies/preview`, {
-    data: { pr, contentYaml, persist: true },
+    data: { pr, contentYaml: policyYaml, persist: true },
     headers: {
       "x-agentforge-actor": "playwright",
       "x-agentforge-role": "platform_admin"
@@ -23,7 +33,7 @@ async function seedMergeGuardRecord(request: APIRequestContext): Promise<ChangeC
   const policyUpdate = await request.put(
     `${apiBaseUrl}/api/repositories/${payload.record.repositoryId}/policy`,
     {
-      data: { contentYaml },
+      data: { contentYaml: policyYaml },
       headers: {
         "x-agentforge-actor": "playwright",
         "x-agentforge-role": "platform_admin"
@@ -129,7 +139,23 @@ test("first-user actions create exports and route to preview/configuration", asy
   page,
   request
 }) => {
-  const record = await seedMergeGuardRecord(request);
+  await seedMergeGuardRecord(request);
+  await seedMergeGuardRecord(request, {
+    mode: "observe",
+    repositoryFullName: "acme/observe-payments"
+  });
+
+  await page.goto("/dashboard");
+  await page.getByRole("link", { name: "Action queues" }).click();
+  await expect(page).toHaveURL(/\/dashboard\/blocked-prs$/u);
+
+  await page.goto("/dashboard");
+  await page.getByRole("button", { name: "Export records" }).click();
+  await expect(page.getByRole("heading", { name: "Export created" })).toBeVisible();
+  await expect(page).toHaveURL(/updated=records-export.*exportId=/u);
+  await expect(page.getByText(/contains \d+ Change Control Records/u)).toBeVisible();
+  await expect(page.getByText("observe pass; requirements open").first()).toBeVisible();
+  await expect(page.getByText("would block in enforce").first()).toBeVisible();
 
   await page.goto("/records");
   await page.getByRole("button", { name: "Export records" }).click();
@@ -144,9 +170,7 @@ test("first-user actions create exports and route to preview/configuration", asy
 
   await page.goto("/onboarding");
   await page.getByRole("link", { name: "Run preview" }).click();
-  await expect(page).toHaveURL(
-    new RegExp(`/repositories/${record.repositoryId}/policy-preview$`, "u")
-  );
+  await expect(page).toHaveURL(/\/repositories\/[^/]+\/policy-preview$/u);
   await expect(page.getByRole("heading", { name: "Policy Preview" })).toBeVisible();
 
   await page.goto("/repositories/repo_without_policy/policy");

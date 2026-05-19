@@ -330,9 +330,16 @@ export function formatMergeGuardCheck(result: PolicyResult): CheckRunPayload["ou
   const reviewers = result.requiredReviewers
     .map((item) => `- ${item.reviewer}: ${item.approved ? "approved" : "pending"} (${item.tier})`)
     .join("\n");
+  const missingEvidence = result.requiredEvidence.filter((item) => item.status !== "approved");
+  const pendingRequiredReviewers = result.requiredReviewers.filter(
+    (item) => item.tier === "required" && !item.approved
+  );
+  const openRequirements = missingEvidence.length + pendingRequiredReviewers.length;
   const summary =
     result.mode === "observe"
-      ? "Findings recorded; observe mode does not block merge."
+      ? openRequirements > 0
+        ? `${openRequirements} requirement(s) remain open; observe mode records them without blocking merge.`
+        : "Findings recorded; observe mode does not block merge."
       : result.mode === "warn"
         ? "Non-blocking warning; this shows what would block in enforce mode."
         : result.mode === "optimize"
