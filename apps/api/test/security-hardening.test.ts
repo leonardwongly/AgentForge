@@ -535,6 +535,81 @@ describe("security and audit hardening", () => {
     await app.close();
   });
 
+  it("scopes evidence and reviewer approvals to the selected record id", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+    const firstPreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr(), persist: true }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(firstPreview.statusCode).toBe(200);
+
+    const secondPr = sensitivePr();
+    secondPr.pullRequestNumber = 45;
+    secondPr.headSha = "sha-security-2";
+    const secondPreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: secondPr, persist: true }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(secondPreview.statusCode).toBe(200);
+
+    const firstRecord = firstPreview.json().record;
+    const secondRecord = secondPreview.json().record;
+    const sharedEvidenceId = secondRecord.requiredEvidence[0].id;
+    const sharedReviewerId = secondRecord.requiredReviewers[0].id;
+    expect(firstRecord.requiredEvidence.map((item: { id: string }) => item.id)).toContain(
+      sharedEvidenceId
+    );
+    expect(firstRecord.requiredReviewers.map((item: { id: string }) => item.id)).toContain(
+      sharedReviewerId
+    );
+
+    await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${secondRecord.id}/evidence`,
+      payload: JSON.stringify({
+        evidenceId: sharedEvidenceId,
+        content: "Security note: this evidence belongs only to the second record."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    const approvedEvidence = await app.inject({
+      method: "PATCH",
+      url: `/api/evidence/${sharedEvidenceId}/approve`,
+      payload: JSON.stringify({ recordId: secondRecord.id }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(approvedEvidence.statusCode).toBe(200);
+
+    const approvedReviewer = await app.inject({
+      method: "PATCH",
+      url: `/api/reviewers/${sharedReviewerId}/approve`,
+      payload: JSON.stringify({ recordId: secondRecord.id }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(approvedReviewer.statusCode).toBe(200);
+
+    const currentFirst = state.records.find((record) => record.id === firstRecord.id)!;
+    const currentSecond = state.records.find((record) => record.id === secondRecord.id)!;
+    expect(currentFirst.requiredEvidence.find((item) => item.id === sharedEvidenceId)?.status).toBe(
+      "missing"
+    );
+    expect(
+      currentFirst.requiredReviewers.find((item) => item.id === sharedReviewerId)?.approved
+    ).toBe(false);
+    expect(
+      currentSecond.requiredEvidence.find((item) => item.id === sharedEvidenceId)?.status
+    ).toBe("approved");
+    expect(
+      currentSecond.requiredReviewers.find((item) => item.id === sharedReviewerId)?.approved
+    ).toBe(true);
+    await app.close();
+  });
+
   it("exports Change Control Records as JSON and CSV without source code", async () => {
     const { app } = await createPreviewRecord();
 

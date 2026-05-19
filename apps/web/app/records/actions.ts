@@ -71,6 +71,7 @@ export async function submitEvidence(formData: FormData): Promise<void> {
 export async function approveEvidence(formData: FormData): Promise<void> {
   const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
   const evidenceId = readString(formData, "evidenceId");
+  const recordId = readString(formData, "recordId");
   if (!evidenceId) {
     redirect(`${returnTo}?error=${encodeURIComponent("Evidence requirement is required.")}`);
   }
@@ -79,7 +80,7 @@ export async function approveEvidence(formData: FormData): Promise<void> {
     const actor = await resolveDashboardActor();
     await requestJson(actor, `/api/evidence/${encodeURIComponent(evidenceId)}/approve`, {
       method: "PATCH",
-      body: JSON.stringify({})
+      body: JSON.stringify({ recordId })
     });
   } catch (error) {
     redirect(
@@ -96,6 +97,7 @@ export async function approveEvidence(formData: FormData): Promise<void> {
 export async function rejectEvidence(formData: FormData): Promise<void> {
   const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
   const evidenceId = readString(formData, "evidenceId");
+  const recordId = readString(formData, "recordId");
   const reason = readString(formData, "reason");
   if (!evidenceId || !reason) {
     redirect(
@@ -107,7 +109,7 @@ export async function rejectEvidence(formData: FormData): Promise<void> {
     const actor = await resolveDashboardActor();
     await requestJson(actor, `/api/evidence/${encodeURIComponent(evidenceId)}/reject`, {
       method: "PATCH",
-      body: JSON.stringify({ reason })
+      body: JSON.stringify({ recordId, reason })
     });
   } catch (error) {
     redirect(
@@ -124,6 +126,7 @@ export async function rejectEvidence(formData: FormData): Promise<void> {
 export async function approveReviewer(formData: FormData): Promise<void> {
   const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
   const reviewerId = readString(formData, "reviewerId");
+  const recordId = readString(formData, "recordId");
   if (!reviewerId) {
     redirect(`${returnTo}?error=${encodeURIComponent("Reviewer requirement is required.")}`);
   }
@@ -132,7 +135,7 @@ export async function approveReviewer(formData: FormData): Promise<void> {
     const actor = await resolveDashboardActor();
     await requestJson(actor, `/api/reviewers/${encodeURIComponent(reviewerId)}/approve`, {
       method: "PATCH",
-      body: JSON.stringify({})
+      body: JSON.stringify({ recordId })
     });
   } catch (error) {
     redirect(

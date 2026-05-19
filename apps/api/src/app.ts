@@ -183,7 +183,13 @@ const evidenceSubmissionSchema = z
   });
 const evidenceRejectionSchema = z
   .object({
+    recordId: z.string().trim().min(1).max(240).optional(),
     reason: z.string().trim().min(10).max(1_000)
+  })
+  .strict();
+const recordScopedActionSchema = z
+  .object({
+    recordId: z.string().trim().min(1).max(240).optional()
   })
   .strict();
 const dataHandlingPatchSchema = z
@@ -311,6 +317,13 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         actorRole: actor.role
       }
     });
+  const recordsForAction = async (recordId?: string): Promise<ChangeControlRecord[]> => {
+    if (!recordId) {
+      return listRecords();
+    }
+    const record = await getRecord(recordId);
+    return record ? [record] : [];
+  };
   const app = Fastify({
     logger: {
       level: config.nodeEnv === "test" ? "silent" : "info",
@@ -893,7 +906,17 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (!allowed.ok) {
       return reply.code(allowed.statusCode).send({ error: allowed.reason });
     }
-    for (const record of await listRecords()) {
+    const parsedBody = recordScopedActionSchema.safeParse(request.body ?? {});
+    if (!parsedBody.success) {
+      return reply.code(400).send({
+        error: "Invalid evidence approval",
+        details: parsedBody.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message
+        }))
+      });
+    }
+    for (const record of await recordsForAction(parsedBody.data.recordId)) {
       const evidence = record.requiredEvidence.find(
         (item) => item.id === (request.params as { id: string }).id
       );
@@ -956,7 +979,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         }))
       });
     }
-    for (const record of await listRecords()) {
+    for (const record of await recordsForAction(parsedBody.data.recordId)) {
       const evidence = record.requiredEvidence.find(
         (item) => item.id === (request.params as { id: string }).id
       );
@@ -1000,7 +1023,17 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (isAuthzFailure(actor)) {
       return reply.code(actor.statusCode).send({ error: actor.reason });
     }
-    for (const record of await listRecords()) {
+    const parsedBody = recordScopedActionSchema.safeParse(request.body ?? {});
+    if (!parsedBody.success) {
+      return reply.code(400).send({
+        error: "Invalid reviewer approval",
+        details: parsedBody.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message
+        }))
+      });
+    }
+    for (const record of await recordsForAction(parsedBody.data.recordId)) {
       const reviewer = record.requiredReviewers.find(
         (item) => item.id === (request.params as { id: string }).id
       );

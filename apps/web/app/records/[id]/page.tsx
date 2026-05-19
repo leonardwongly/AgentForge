@@ -332,6 +332,7 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                       <div className="evidence-actions">
                         <form action={approveEvidence}>
                           <input name="returnTo" type="hidden" value={`/records/${id}`} />
+                          <input name="recordId" type="hidden" value={record.id} />
                           <input name="evidenceId" type="hidden" value={evidence.id} />
                           <button className="button" type="submit">
                             <CheckCircle2 size={16} aria-hidden="true" /> Approve evidence
@@ -339,6 +340,7 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                         </form>
                         <form action={rejectEvidence} className="evidence-reject-form">
                           <input name="returnTo" type="hidden" value={`/records/${id}`} />
+                          <input name="recordId" type="hidden" value={record.id} />
                           <input name="evidenceId" type="hidden" value={evidence.id} />
                           <label htmlFor={`evidence-reject-${evidence.id}`}>Reject reason</label>
                           <input
@@ -383,6 +385,7 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                     {!reviewer.approved ? (
                       <form action={approveReviewer}>
                         <input name="returnTo" type="hidden" value={`/records/${id}`} />
+                        <input name="recordId" type="hidden" value={record.id} />
                         <input name="reviewerId" type="hidden" value={reviewer.id} />
                         <button className="button" type="submit">
                           <CheckCircle2 size={16} aria-hidden="true" /> Approve reviewer

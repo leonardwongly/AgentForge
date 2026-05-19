@@ -212,6 +212,7 @@ export default async function EvidenceCompletionPage({
                               type="hidden"
                               value="/dashboard/evidence-completion"
                             />
+                            <input name="recordId" type="hidden" value={item.record.id} />
                             <input name="evidenceId" type="hidden" value={evidence.id} />
                             <button className="button" type="submit">
                               <CheckCircle2 size={16} aria-hidden="true" /> Approve
@@ -223,6 +224,7 @@ export default async function EvidenceCompletionPage({
                               type="hidden"
                               value="/dashboard/evidence-completion"
                             />
+                            <input name="recordId" type="hidden" value={item.record.id} />
                             <input name="evidenceId" type="hidden" value={evidence.id} />
                             <label htmlFor={`queue-reject-${evidence.id}`}>Reject reason</label>
                             <input
