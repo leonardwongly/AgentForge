@@ -11,6 +11,7 @@ export type RedactionMatch = {
   category: "credential_like" | "local_placeholder";
   risk: "high" | "low";
   reason: string;
+  localService?: boolean | undefined;
   value: string;
   redacted: string;
 };
@@ -98,12 +99,23 @@ function preservePrefix(match: string): string {
 function classifyMatch(
   kind: RedactionMatch["kind"],
   value: string
-): Pick<RedactionMatch, "category" | "risk" | "reason"> {
-  if (kind === "database_url" && isLocalServiceUrl(value)) {
+): Pick<RedactionMatch, "category" | "risk" | "reason" | "localService"> {
+  if (kind === "database_url") {
+    const localService = isLocalServiceUrl(value);
+    if (localService && hasPlaceholderDatabaseCredentials(value)) {
+      return {
+        category: "local_placeholder",
+        risk: "low",
+        reason: "local service URL with placeholder credentials",
+        localService
+      };
+    }
+
     return {
-      category: "local_placeholder",
-      risk: "low",
-      reason: "local service URL"
+      category: "credential_like",
+      risk: "high",
+      reason: localService ? "credential-bearing local service URL" : "credential-shaped value",
+      localService
     };
   }
 
@@ -143,20 +155,24 @@ function isLocalServiceUrl(value: string): boolean {
 
 function isObviousPlaceholder(value: string): boolean {
   const inspected = inspectSecretValue(value).toLowerCase();
+  return isPlaceholderToken(inspected);
+}
+
+function isPlaceholderToken(value: string): boolean {
   if (
-    /(?:placeholder|example|sample|dummy|changeme|change-me|local-only|dev-only)/.test(inspected) ||
-    /your[_-]?(?:token|secret|password|api[_-]?key)/.test(inspected) ||
-    /(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)/.test(inspected)
+    /(?:placeholder|example|sample|dummy|changeme|change-me|local-only|dev-only)/.test(value) ||
+    /your[_-]?(?:token|secret|password|api[_-]?key)/.test(value) ||
+    /(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)/.test(value)
   ) {
     return true;
   }
 
   return (
-    /^(?:x+|0+|1+|a+|test-?[a-z0-9_-]*|dev-?[a-z0-9_-]*)$/u.test(inspected) ||
-    /(?:placeholder|example|sample|dummy|changeme|change-me|local-only|dev-only)/u.test(
-      inspected
+    /^(?:x+|0+|1+|a+|pass|password|user|root|postgres|agentforge|test-?[a-z0-9_-]*|dev-?[a-z0-9_-]*)$/u.test(
+      value
     ) ||
-    /^(.)\1{15,}$/u.test(inspected)
+    /(?:placeholder|example|sample|dummy|changeme|change-me|local-only|dev-only)/u.test(value) ||
+    /^(.)\1{15,}$/u.test(value)
   );
 }
 
@@ -168,4 +184,21 @@ function inspectSecretValue(value: string): string {
 
   const bearer = /^Bearer\s+([A-Za-z0-9._~+/=-]+)$/iu.exec(value);
   return bearer?.[1] ?? value;
+}
+
+function hasPlaceholderDatabaseCredentials(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    const username = decodeURIComponent(parsed.username).toLowerCase();
+    const password = decodeURIComponent(parsed.password).toLowerCase();
+    if (!username && !password) {
+      return true;
+    }
+    if (username && password && username === password) {
+      return true;
+    }
+    return [username, password].every((part) => !part || isPlaceholderToken(part));
+  } catch {
+    return false;
+  }
 }

@@ -65,6 +65,19 @@ describe("redaction", () => {
     expect(redactSecrets(input)).not.toContain("placeholder-local-only-token");
   });
 
+  it("keeps credential-bearing localhost database URLs high risk unless credentials are placeholders", () => {
+    const matches = detectSecrets(
+      "DATABASE_URL=postgresql://service:prodSecret123456789@localhost:15432/app"
+    );
+
+    expect(matches.find((match) => match.kind === "database_url")).toMatchObject({
+      category: "credential_like",
+      risk: "high",
+      localService: true
+    });
+    expect(redactSecrets(matches[0]!.value)).not.toContain("prodSecret");
+  });
+
   it("does not downgrade real assignment values", () => {
     const matches = detectSecrets("token=abcdefghijklmnopqrstuvwxyz1234567890");
 

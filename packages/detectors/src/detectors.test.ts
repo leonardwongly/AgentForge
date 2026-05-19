@@ -159,7 +159,7 @@ describe("deterministic detectors", () => {
             filename: "config/prod.env",
             status: "modified",
             patch:
-              "+SESSION_SECRET='rL8PZ1hGx7sQw9Nf4Mb2Vc6Xd8Yt3Ka5Le0Ru9Pi2Zo='\n+UNICODE_TOKEN = sk_live_abcdefghijklmnopqrstuvwx1234567890"
+              "+SESSION_SECRET='rL8PZ1hGx7sQw9Nf4Mb2Vc6Xd8Yt3Ka5Le0Ru9Pi2Zo='\n+UNICODE_TOKEN = sk_live_abcdefghijklmnopqrstuvwx1234567890\n+DATABASE_URL=postgresql://service:prodSecret123456789@localhost:15432/app"
           }
         ]
       },
