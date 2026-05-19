@@ -33,7 +33,6 @@ const policyModes = new Set(["observe", "warn", "enforce", "optimize"]);
 const diffRetentionModes = new Set(["disabled", "7d", "30d", "custom"]);
 const reviewerTypes = new Set(["user", "team"]);
 const ownerKeyPattern = /^[a-z0-9_-]+$/u;
-const reviewerPattern = /^@?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?$/u;
 
 export async function saveRepositorySettings(formData: FormData): Promise<void> {
   const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/settings");
@@ -194,7 +193,7 @@ function readOwnerMappings(
   const seenOwnerKeys = new Set<string>();
   for (let index = 0; index < rowCount; index += 1) {
     const ownerKey = normalizeOwnerKey(readString(formData, `ownerKey_${index}`));
-    const reviewer = readString(formData, `reviewer_${index}`);
+    const rawReviewer = readString(formData, `reviewer_${index}`);
     const reviewerType = readEnumChoice(
       formData,
       `reviewerType_${index}`,
@@ -202,10 +201,10 @@ function readOwnerMappings(
       returnTo,
       "Reviewer type"
     );
-    if (!ownerKey && !reviewer) {
+    if (!ownerKey && !rawReviewer) {
       continue;
     }
-    if (!ownerKey || !reviewer || !reviewerType) {
+    if (!ownerKey || !rawReviewer || !reviewerType) {
       redirectWithError(returnTo, "Each owner mapping must include owner key, reviewer, and type.");
     }
     if (!ownerKeyPattern.test(ownerKey)) {
@@ -214,8 +213,13 @@ function readOwnerMappings(
         "Owner keys may include only lowercase letters, numbers, underscores, and hyphens."
       );
     }
-    if (!reviewerPattern.test(reviewer)) {
-      redirectWithError(returnTo, "Reviewer values must be GitHub users or teams.");
+    if (!validReviewerForType(rawReviewer, reviewerType as "user" | "team")) {
+      redirectWithError(
+        returnTo,
+        reviewerType === "team"
+          ? "Team reviewers must be a GitHub team slug or org/team value."
+          : "User reviewers must be a GitHub user login and cannot include a team path."
+      );
     }
     if (seenOwnerKeys.has(ownerKey)) {
       redirectWithError(returnTo, "Owner mapping keys must be unique per repository.");
@@ -223,11 +227,38 @@ function readOwnerMappings(
     seenOwnerKeys.add(ownerKey);
     ownerMappings.push({
       ownerKey,
-      reviewer,
+      reviewer: normalizeReviewerForStorage(rawReviewer, reviewerType as "user" | "team"),
       reviewerType: reviewerType as "user" | "team"
     });
   }
   return ownerMappings;
+}
+
+function validReviewerForType(reviewer: string, reviewerType: "user" | "team"): boolean {
+  const normalized = reviewer.trim().replace(/^@/u, "");
+  if (reviewerType === "user") {
+    return githubUserLogin(normalized);
+  }
+  if (normalized.includes("/")) {
+    const [org, team, ...rest] = normalized.split("/");
+    return rest.length === 0 && githubTeamSegment(org) && githubTeamSegment(team);
+  }
+  return githubTeamSegment(normalized);
+}
+
+function normalizeReviewerForStorage(reviewer: string, reviewerType: "user" | "team"): string {
+  const normalized = reviewer.trim().replace(/^@/u, "");
+  return reviewerType === "team" ? normalized.toLowerCase() : normalized;
+}
+
+function githubUserLogin(value: string | undefined): value is string {
+  return Boolean(
+    value && !value.includes("/") && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/u.test(value)
+  );
+}
+
+function githubTeamSegment(value: string | undefined): value is string {
+  return Boolean(value && /^[A-Za-z0-9][A-Za-z0-9-]*$/u.test(value));
 }
 
 function readString(formData: FormData, key: string): string | undefined {

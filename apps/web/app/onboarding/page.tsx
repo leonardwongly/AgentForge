@@ -54,6 +54,7 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
       selectedRepository ? mapping.sources.includes(selectedRepository.id) : true
     ) ?? [];
   const ownerMappingRows = ownerRows(repositoryOwnerMappings);
+  const routingDiagnostics = settings.settings?.routingDiagnostics;
 
   return (
     <>
@@ -310,6 +311,41 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
                     enforce mode.
                   </p>
                 ) : null}
+                <ul className="compact-list">
+                  <li>
+                    <div className="list-row">
+                      <span>Team verification</span>
+                      <StatusBadge
+                        status={
+                          routingDiagnostics?.membersReadPermission.status === "required"
+                            ? "warn"
+                            : "approved"
+                        }
+                        label={routingDiagnostics?.membersReadPermission.status ?? "not_required"}
+                      />
+                    </div>
+                    <p>
+                      {routingDiagnostics?.membersReadPermission.detail ??
+                        "Team routing diagnostics are not loaded."}
+                    </p>
+                  </li>
+                  <li>
+                    <div className="list-row">
+                      <span>CODEOWNERS preview</span>
+                      <StatusBadge
+                        status={routingDiagnostics?.codeownersPreviewSupported ? "approved" : "low"}
+                        label={
+                          routingDiagnostics?.codeownersPreviewSupported ? "available" : "inactive"
+                        }
+                      />
+                    </div>
+                    <p>
+                      {routingDiagnostics
+                        ? `${routingDiagnostics.ownerMappingsConfigured} saved owner mapping(s).`
+                        : "Saved owner mappings are unavailable."}
+                    </p>
+                  </li>
+                </ul>
               </div>
             </section>
           </div>

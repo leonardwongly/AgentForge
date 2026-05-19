@@ -80,6 +80,9 @@ importers:
       '@agentforge/records':
         specifier: workspace:*
         version: link:../../packages/records
+      '@agentforge/reviewers':
+        specifier: workspace:*
+        version: link:../../packages/reviewers
       '@agentforge/security':
         specifier: workspace:*
         version: link:../../packages/security

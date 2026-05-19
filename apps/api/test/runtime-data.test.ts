@@ -59,6 +59,43 @@ describe("runtime data surfaces", () => {
     await app.close();
   });
 
+  it("previews CODEOWNERS owner mapping suggestions", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/codeowners/preview",
+      payload: JSON.stringify({
+        content:
+          "* @acme/platform-team\n/src/billing/** @acme/billing-owner\n!docs/** @acme/docs-team",
+        changedPaths: ["src/billing/checkout.ts", "docs/readme.md"]
+      }),
+      headers: { "content-type": "application/json" }
+    });
+
+    expect(preview.statusCode).toBe(200);
+    expect(preview.json()).toEqual(
+      expect.objectContaining({
+        suggestions: expect.arrayContaining([
+          expect.objectContaining({
+            ownerKey: "billing_owner",
+            reviewer: "acme/billing-owner",
+            matchedPaths: ["src/billing/checkout.ts"]
+          }),
+          expect.objectContaining({
+            ownerKey: "platform_team",
+            reviewer: "acme/platform-team",
+            matchedPaths: ["docs/readme.md"]
+          })
+        ]),
+        diagnostics: expect.arrayContaining([expect.stringContaining("negated CODEOWNERS")])
+      })
+    );
+
+    await app.close();
+  });
+
   it("starts empty and only exposes repository policy after explicit runtime save", async () => {
     const state = createInitialState();
     const app = createApp(state);
@@ -188,7 +225,7 @@ describe("runtime data surfaces", () => {
           },
           {
             ownerKey: "security_team",
-            reviewer: "security-team",
+            reviewer: "@Acme/Security-Team",
             reviewerType: "team"
           }
         ]
@@ -235,10 +272,20 @@ describe("runtime data surfaces", () => {
       expect.arrayContaining([
         expect.objectContaining({
           ownerKey: "security_team",
-          reviewer: "security-team",
+          reviewer: "acme/security-team",
           sources: [record.repositoryId]
         })
       ])
+    );
+    expect(settings.json().routingDiagnostics).toEqual(
+      expect.objectContaining({
+        codeownersPreviewSupported: true,
+        ownerMappingsConfigured: 2,
+        teamMappings: 2,
+        membersReadPermission: expect.objectContaining({
+          status: expect.stringMatching(/^(required|not_required)$/u)
+        })
+      })
     );
 
     const onboarding = await app.inject({ method: "GET", url: "/api/onboarding/status" });
@@ -280,6 +327,44 @@ describe("runtime data surfaces", () => {
         "owner_mapping_changed"
       ])
     );
+
+    await app.close();
+  });
+
+  it("rejects ambiguous reviewer mapping formats without mutating runtime state", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest, persist: true }),
+      headers: {
+        "content-type": "application/json",
+        "x-agentforge-actor": "alex",
+        "x-agentforge-role": "platform_admin"
+      }
+    });
+    const record = preview.json().record;
+
+    for (const ownerMapping of [
+      { ownerKey: "security_team", reviewer: "acme/security-team", reviewerType: "user" },
+      { ownerKey: "security_team", reviewer: "security_team", reviewerType: "team" },
+      { ownerKey: "security_team", reviewer: "acme/platform/security", reviewerType: "team" }
+    ]) {
+      const invalid = await app.inject({
+        method: "PATCH",
+        url: `/api/repositories/${record.repositoryId}/settings`,
+        payload: JSON.stringify({ ownerMappings: [ownerMapping] }),
+        headers: {
+          "content-type": "application/json",
+          "x-agentforge-actor": "alex",
+          "x-agentforge-role": "platform_admin"
+        }
+      });
+      expect(invalid.statusCode).toBe(400);
+    }
+
+    expect(state.ownerMappings).toEqual([]);
 
     await app.close();
   });

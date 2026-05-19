@@ -76,6 +76,9 @@ export type CheckRunPayload = {
 export const MERGE_GUARD_CHECK_NAME = "AgentForge Merge Guard";
 
 type GithubRequest<TData> = (params: Record<string, unknown>) => Promise<{ data: TData }>;
+type TeamMembershipCheck =
+  | { status: "verified"; teamSlug: string; active: boolean }
+  | { status: "failed"; teamSlug: string; reason: string };
 
 export type GithubAdapterClient = {
   pulls: {
@@ -267,8 +270,17 @@ export async function enrichPullRequestReviewsWithTeamMemberships(input: {
   teamSlugs: string[];
 }): Promise<PullRequestReview[]> {
   const requiredTeamSlugs = uniqueNormalizedTeamSlugs(input.teamSlugs);
-  if (requiredTeamSlugs.length === 0 || !input.client.teams?.getMembershipForUserInOrg) {
+  if (requiredTeamSlugs.length === 0) {
     return input.reviews.map(normalizeReviewTeamSlugs);
+  }
+  if (!input.client.teams?.getMembershipForUserInOrg) {
+    return input.reviews.map((review) =>
+      annotateUnverifiedApprovedUserReview(
+        normalizeReviewTeamSlugs(review),
+        requiredTeamSlugs,
+        "GitHub Members: read permission is required to verify team reviewer membership."
+      )
+    );
   }
 
   return Promise.all(
@@ -283,21 +295,32 @@ export async function enrichPullRequestReviewsWithTeamMemberships(input: {
       }
 
       const memberships = await Promise.all(
-        requiredTeamSlugs.map(async (teamSlug) =>
-          (await isActiveTeamMember({
-            client: input.client,
-            org: input.org,
-            teamSlug,
-            username: review.reviewer
-          }))
-            ? teamSlug
-            : undefined
+        requiredTeamSlugs.map(
+          async (teamSlug) =>
+            await checkActiveTeamMember({
+              client: input.client,
+              org: input.org,
+              teamSlug,
+              username: review.reviewer
+            })
         )
       );
-      return applyReviewTeamSlugs(review, [
-        ...existing,
-        ...memberships.filter((teamSlug): teamSlug is string => Boolean(teamSlug))
-      ]);
+      const failedMemberships = memberships.filter((membership) => membership.status === "failed");
+      const verifiedTeamSlugs = memberships
+        .filter((membership) => membership.status === "verified" && membership.active)
+        .map((membership) => membership.teamSlug);
+      if (failedMemberships.length > 0) {
+        return applyReviewTeamVerification(
+          applyReviewTeamSlugs(review, [...existing, ...verifiedTeamSlugs]),
+          "failed",
+          `GitHub team membership verification failed for ${failedMemberships
+            .map((membership) => membership.teamSlug)
+            .join(", ")}.`,
+          requiredTeamSlugs
+        );
+      }
+
+      return applyReviewTeamSlugs(review, [...existing, ...verifiedTeamSlugs]);
     })
   );
 }
@@ -587,21 +610,29 @@ function pullRequestReviewState(value: string | undefined): PullRequestReview["s
   return "COMMENTED";
 }
 
-async function isActiveTeamMember(input: {
+async function checkActiveTeamMember(input: {
   client: GithubAdapterClient;
   org: string;
   teamSlug: string;
   username: string;
-}): Promise<boolean> {
+}): Promise<TeamMembershipCheck> {
   try {
     const response = await input.client.teams?.getMembershipForUserInOrg({
       org: input.org,
       team_slug: input.teamSlug,
       username: input.username
     });
-    return stringValue(response?.data.state)?.toLowerCase() === "active";
+    return {
+      status: "verified",
+      teamSlug: input.teamSlug,
+      active: stringValue(response?.data.state)?.toLowerCase() === "active"
+    };
   } catch {
-    return false;
+    return {
+      status: "failed",
+      teamSlug: input.teamSlug,
+      reason: "GitHub team membership API rejected the verification request."
+    };
   }
 }
 
@@ -615,6 +646,37 @@ function applyReviewTeamSlugs(review: PullRequestReview, teamSlugs: string[]): P
     return { ...review, teamSlugs: undefined };
   }
   return { ...review, teamSlugs: normalizedTeamSlugs };
+}
+
+function annotateUnverifiedApprovedUserReview(
+  review: PullRequestReview,
+  checkedTeamSlugs: string[],
+  reason: string
+): PullRequestReview {
+  if (
+    review.state !== "APPROVED" ||
+    !review.reviewer ||
+    (review.reviewerType ?? "user") !== "user"
+  ) {
+    return review;
+  }
+  return applyReviewTeamVerification(review, "unavailable", reason, checkedTeamSlugs);
+}
+
+function applyReviewTeamVerification(
+  review: PullRequestReview,
+  status: NonNullable<PullRequestReview["teamVerification"]>["status"],
+  reason: string,
+  checkedTeamSlugs: string[]
+): PullRequestReview {
+  return {
+    ...review,
+    teamVerification: {
+      status,
+      reason,
+      checkedTeamSlugs
+    }
+  };
 }
 
 function uniqueNormalizedTeamSlugs(values: string[]): string[] {

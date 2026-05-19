@@ -87,6 +87,8 @@ Branch protection should require the `AgentForge Merge Guard` check before enfor
 
 If `Members: read` is missing or the membership lookup fails, team reviewer requirements remain pending. This is intentional fail-closed behavior; do not move repositories into enforce mode until a test PR proves team approvals clear correctly.
 
+Use Settings > Routing diagnostics during setup. A repository with team owner mappings should show the Members permission as required, and PR reviewer requirements should include the matched policy route plus membership-verification state when a user approval cannot be associated with a GitHub team. For CODEOWNERS-assisted setup, `POST /api/codeowners/preview` with the file content and representative changed paths to generate normalized owner-mapping suggestions before saving repository settings.
+
 ## Repository Protection Gate
 
 Before launch, enable branch protection on `main` and require these GitHub checks:

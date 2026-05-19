@@ -276,6 +276,44 @@ describe("github integration", () => {
     });
 
     expect(reviews[0]?.teamSlugs).toBeUndefined();
+    expect(reviews[0]?.teamVerification).toMatchObject({
+      status: "failed",
+      checkedTeamSlugs: ["security-team"],
+      reason: expect.stringContaining("membership verification failed")
+    });
+  });
+
+  it("marks approved user reviews as unverifiable when Members read permission is unavailable", async () => {
+    const reviews = await enrichPullRequestReviewsWithTeamMemberships({
+      client: {
+        pulls: {
+          get: async () => ({ data: {} }),
+          listFiles: async () => ({ data: [] }),
+          listReviews: async () => ({ data: [] }),
+          listCommits: async () => ({ data: [] })
+        }
+      },
+      org: "acme",
+      teamSlugs: ["security-team"],
+      reviews: [
+        {
+          reviewer: "alice",
+          reviewerType: "user",
+          state: "APPROVED",
+          submittedAt: "2026-05-14T00:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(reviews[0]).toMatchObject({
+      reviewer: "alice",
+      teamSlugs: undefined,
+      teamVerification: {
+        status: "unavailable",
+        checkedTeamSlugs: ["security-team"],
+        reason: expect.stringContaining("Members: read")
+      }
+    });
   });
 
   it("keeps PR extraction usable when manifest content fetch is unavailable", async () => {

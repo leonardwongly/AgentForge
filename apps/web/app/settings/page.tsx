@@ -26,6 +26,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
       selectedRepository ? mapping.sources.includes(selectedRepository.id) : true
     ) ?? [];
   const ownerMappingRows = ownerRows(repositoryOwnerMappings);
+  const routingDiagnostics = settings?.routingDiagnostics;
   const dataHandlingRows = selectedHandling
     ? [
         ["Source code storage", selectedHandling.sourceCodeStorage ? "enabled" : "disabled"],
@@ -377,6 +378,63 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                 </p>
               ) : null}
             </div>
+          </section>
+
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>Routing diagnostics</h2>
+                <p>CODEOWNERS preview, team verification, and saved reviewer formats.</p>
+              </div>
+              <GitBranch size={18} aria-hidden="true" />
+            </div>
+            <ul className="compact-list">
+              <li>
+                <div className="list-row">
+                  <span>CODEOWNERS preview</span>
+                  <StatusBadge
+                    status={routingDiagnostics?.codeownersPreviewSupported ? "approved" : "low"}
+                    label={
+                      routingDiagnostics?.codeownersPreviewSupported ? "available" : "inactive"
+                    }
+                  />
+                </div>
+                <p>
+                  Suggested mappings can be generated from CODEOWNERS patterns before enforcing
+                  owner routes.
+                </p>
+              </li>
+              <li>
+                <div className="list-row">
+                  <span>Members permission</span>
+                  <StatusBadge
+                    status={
+                      routingDiagnostics?.membersReadPermission.status === "required"
+                        ? "warn"
+                        : "approved"
+                    }
+                    label={routingDiagnostics?.membersReadPermission.status ?? "not_required"}
+                  />
+                </div>
+                <p>
+                  {routingDiagnostics?.membersReadPermission.detail ?? "No diagnostics loaded."}
+                </p>
+              </li>
+              <li>
+                <div className="list-row">
+                  <span>Saved routes</span>
+                  <StatusBadge
+                    status={repositoryOwnerMappings.length > 0 ? "approved" : "low"}
+                    label={`${routingDiagnostics?.ownerMappingsConfigured ?? repositoryOwnerMappings.length} mapped`}
+                  />
+                </div>
+                <p>
+                  {routingDiagnostics
+                    ? `${routingDiagnostics.teamMappings} team route(s), ${routingDiagnostics.userMappings} user route(s).`
+                    : "Route counts are unavailable."}
+                </p>
+              </li>
+            </ul>
           </section>
         </form>
 
