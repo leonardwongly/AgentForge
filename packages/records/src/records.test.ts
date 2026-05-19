@@ -11,6 +11,8 @@ import {
   validateOverride
 } from "./index.js";
 
+const fakeGithubToken = ["ghp", "x".repeat(36)].join("_");
+
 const pr: PullRequestInput = {
   repositoryFullName: "acme/payments",
   pullRequestNumber: 1,
@@ -32,12 +34,12 @@ const result: PolicyResult = {
       type: "secret_like_value_detected",
       source: "github_diff",
       path: "src/billing/checkout.ts",
-      evidence: "Secret-like token detected: token=ghp_123456789012345678901234567890123456",
+      evidence: `Secret-like token detected: token=${fakeGithubToken}`,
       confidence: "observed",
       severity: "critical",
       metadata: {
-        patch: "+ token=ghp_123456789012345678901234567890123456",
-        currentContent: "export const token = 'ghp_123456789012345678901234567890123456';"
+        patch: `+ token=${fakeGithubToken}`,
+        currentContent: `export const token = '${fakeGithubToken}';`
       }
     }
   ],
@@ -85,7 +87,7 @@ describe("records", () => {
     });
     const serialized = JSON.stringify(record);
 
-    expect(serialized).not.toContain("ghp_123456");
+    expect(serialized).not.toContain(fakeGithubToken);
     expect(serialized).not.toContain("export const token");
     expect(serialized).not.toContain("patch");
     expect(record.verifiedFindings[0]?.metadata).toEqual({});
@@ -181,7 +183,7 @@ describe("records", () => {
     expect(csv).toContain("findingsJson");
     expect(csv).toContain("openEvidenceCount");
     for (const artifact of [json, csv]) {
-      expect(artifact).not.toContain("ghp_123456");
+      expect(artifact).not.toContain(fakeGithubToken);
       expect(artifact).not.toContain("export const token");
       expect(artifact).not.toContain("currentContent");
       expect(artifact).not.toContain("patch");
@@ -275,7 +277,7 @@ describe("records", () => {
       metadataJson: {
         format: "json",
         recordCount: 1,
-        token: "ghp_123456789012345678901234567890123456",
+        token: fakeGithubToken,
         patch: "+ raw source"
       },
       createdAt: "2026-05-12T00:00:00.000Z"

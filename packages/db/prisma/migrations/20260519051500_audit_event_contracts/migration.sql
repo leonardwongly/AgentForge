@@ -89,8 +89,8 @@ SET "metadataJson" =
     'policyPackId', audit."policyPackId",
     'policyPackVersion', audit."policyPackVersion",
     'recordId', COALESCE(
-      audit."metadataJson"->>'recordId',
       CASE WHEN audit."targetType" = 'change_control_record' THEN audit."targetId" END,
+      NULLIF(audit."metadataJson"->>'recordId', ''),
       CASE
         WHEN audit."targetType" = 'evidence_requirement' THEN (
           SELECT ccr."id"
