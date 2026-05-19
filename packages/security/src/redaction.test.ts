@@ -39,7 +39,7 @@ describe("redaction", () => {
 
   it("classifies local placeholders separately while still redacting them", () => {
     const input =
-      "DATABASE_URL=postgresql://agentforge:agentforge@localhost:15432/agentforge\nAPI_KEY=placeholder-local-only-token";
+      "DATABASE_URL=postgresql://agentforge:agentforge@localhost:15432/agentforge\nAPI_KEY=placeholder-local-only-token\nBearer placeholder-local-only-token-123456";
     const matches = detectSecrets(input);
 
     expect(matches).toEqual(
@@ -53,11 +53,25 @@ describe("redaction", () => {
           kind: "api_key_assignment",
           category: "local_placeholder",
           risk: "low"
+        }),
+        expect.objectContaining({
+          kind: "bearer_token",
+          category: "local_placeholder",
+          risk: "low"
         })
       ])
     );
     expect(redactSecrets(input)).not.toContain("agentforge:agentforge");
     expect(redactSecrets(input)).not.toContain("placeholder-local-only-token");
+  });
+
+  it("does not downgrade real assignment values", () => {
+    const matches = detectSecrets("token=abcdefghijklmnopqrstuvwxyz1234567890");
+
+    expect(matches.find((match) => match.kind === "api_key_assignment")).toMatchObject({
+      category: "credential_like",
+      risk: "high"
+    });
   });
 
   it("removes source blobs and full diffs by default while preserving metadata", () => {

@@ -107,7 +107,10 @@ function classifyMatch(
     };
   }
 
-  if ((kind === "api_key_assignment" || kind === "high_entropy") && isObviousPlaceholder(value)) {
+  if (
+    (kind === "api_key_assignment" || kind === "high_entropy" || kind === "bearer_token") &&
+    isObviousPlaceholder(value)
+  ) {
     return {
       category: "local_placeholder",
       risk: "low",
@@ -139,26 +142,30 @@ function isLocalServiceUrl(value: string): boolean {
 }
 
 function isObviousPlaceholder(value: string): boolean {
-  const normalized = value.toLowerCase();
+  const inspected = inspectSecretValue(value).toLowerCase();
   if (
-    /\b(?:placeholder|example|sample|dummy|changeme|change-me|local-only|dev-only)\b/.test(
-      normalized
-    ) ||
-    /\byour[_-]?(?:token|secret|password|api[_-]?key)\b/.test(normalized) ||
-    /(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)/.test(normalized)
+    /(?:placeholder|example|sample|dummy|changeme|change-me|local-only|dev-only)/.test(inspected) ||
+    /your[_-]?(?:token|secret|password|api[_-]?key)/.test(inspected) ||
+    /(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)/.test(inspected)
   ) {
     return true;
   }
 
-  const assignment = /^[^:=]{2,40}[:=]\s*["']?([^"'\s]+)["']?$/u.exec(value);
-  if (!assignment?.[1]) {
-    return false;
-  }
-  const assignedValue = assignment[1].toLowerCase();
   return (
-    /^(?:x+|0+|1+|a+|test-?[a-z0-9_-]*|dev-?[a-z0-9_-]*)$/u.test(assignedValue) ||
+    /^(?:x+|0+|1+|a+|test-?[a-z0-9_-]*|dev-?[a-z0-9_-]*)$/u.test(inspected) ||
     /(?:placeholder|example|sample|dummy|changeme|change-me|local-only|dev-only)/u.test(
-      assignedValue
-    )
+      inspected
+    ) ||
+    /^(.)\1{15,}$/u.test(inspected)
   );
+}
+
+function inspectSecretValue(value: string): string {
+  const assignment = /^[^:=]{2,40}[:=]\s*["']?([^"'\s]+)["']?$/u.exec(value);
+  if (assignment?.[1]) {
+    return assignment[1];
+  }
+
+  const bearer = /^Bearer\s+([A-Za-z0-9._~+/=-]+)$/iu.exec(value);
+  return bearer?.[1] ?? value;
 }

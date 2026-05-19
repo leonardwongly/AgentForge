@@ -80,7 +80,11 @@ const documentationExamplePatterns = [
   "examples/**",
   "fixtures/**",
   "**/.env.example",
-  "**/env.example"
+  "**/env.example",
+  "**/.env.sample",
+  "**/env.sample",
+  "**/.env.template",
+  "**/env.template"
 ];
 
 const skipPatterns = [
