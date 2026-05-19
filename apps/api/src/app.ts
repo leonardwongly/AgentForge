@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
-import { Queue } from "bullmq";
+import { Queue, type JobsOptions } from "bullmq";
 import { Redis } from "ioredis";
 import { z } from "zod";
 import { loadConfig } from "@agentforge/config";
@@ -12,6 +12,12 @@ import type {
   EvidenceRequirement,
   OverrideRecord,
   PullRequestInput
+} from "@agentforge/core";
+import {
+  MERGE_GUARD_EVALUATION_ATTEMPTS,
+  MERGE_GUARD_EVALUATION_BACKOFF_MS,
+  MERGE_GUARD_EVALUATION_JOB_NAME,
+  MERGE_GUARD_EVALUATION_QUEUE
 } from "@agentforge/core";
 import { PrismaClient } from "@agentforge/db";
 import {
@@ -49,6 +55,45 @@ type QueuedEvaluation = {
   deliveryId: string;
   envelope: GithubWebhookEnvelope;
   queuedAt: string;
+};
+
+type MergeGuardEvaluationJobPayload = {
+  deliveryId: string;
+  envelope: GithubWebhookEnvelope;
+};
+
+type QueueBackend = "redis" | "in_memory";
+
+type QueueEnqueueResult = {
+  jobId: string;
+  deliveryId: string;
+  backend: QueueBackend;
+};
+
+type StoredWebhookDelivery = {
+  deliveryId: string;
+  event: string;
+  action: string | null;
+  repositoryFullName: string | null;
+  pullRequestNumber: number | null;
+  headSha: string | null;
+  enqueued: boolean;
+  payloadJson: unknown;
+  evaluationAttemptsMade?: number | undefined;
+  evaluationTerminalFailure?: boolean | undefined;
+  lastFailureClass?: string | null | undefined;
+  lastFailureMessage?: string | null | undefined;
+  lastFailureCorrelationId?: string | null | undefined;
+  lastFailedAt?: Date | string | null | undefined;
+  replayCount?: number | undefined;
+  lastReplayedAt?: Date | string | null | undefined;
+  lastReplayedBy?: string | null | undefined;
+  createdAt?: Date | string | undefined;
+};
+
+type ReplayableDelivery = {
+  delivery: StoredWebhookDelivery;
+  envelope: GithubWebhookEnvelope;
 };
 
 type ExportJob = {
@@ -166,6 +211,9 @@ export type AppState = {
 type RawBodyRequest = {
   rawBody?: Buffer;
 };
+
+const QUEUE_STATUS_TIMEOUT_MS = 750;
+const QUEUE_FAILED_JOB_LIMIT = 25;
 
 const policyModeSchema = z.enum(["observe", "warn", "enforce", "optimize"]);
 const evidenceKindSchema = z.enum([
@@ -287,6 +335,44 @@ const codeownersPreviewSchema = z
     changedPaths: z.array(z.string().trim().min(1).max(500)).max(200).optional()
   })
   .strict();
+const queueReplaySchema = z
+  .object({
+    deliveryId: z.string().trim().min(1).max(160).optional(),
+    repositoryFullName: z
+      .string()
+      .trim()
+      .min(3)
+      .max(240)
+      .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u)
+      .optional(),
+    pullRequestNumber: z.number().int().positive().max(1_000_000).optional()
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const hasDeliveryId = Boolean(value.deliveryId);
+    const hasPrTarget = Boolean(value.repositoryFullName && value.pullRequestNumber);
+    if (hasDeliveryId === hasPrTarget) {
+      context.addIssue({
+        code: "custom",
+        path: ["deliveryId"],
+        message:
+          "Provide either deliveryId or repositoryFullName with pullRequestNumber, but not both."
+      });
+    }
+  });
+
+export function mergeGuardEvaluationJobOptions(jobId: string): JobsOptions {
+  return {
+    jobId,
+    attempts: MERGE_GUARD_EVALUATION_ATTEMPTS,
+    backoff: {
+      type: "exponential",
+      delay: MERGE_GUARD_EVALUATION_BACKOFF_MS
+    },
+    removeOnComplete: 100,
+    removeOnFail: 500
+  };
+}
 
 export function createApp(state: AppState = createInitialState()): FastifyInstance {
   const config = loadConfig();
@@ -302,10 +388,17 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       : undefined;
   const queueConnection =
     config.redisUrl && config.nodeEnv !== "test"
-      ? new Redis(config.redisUrl, { maxRetriesPerRequest: null })
+      ? new Redis(config.redisUrl, {
+          maxRetriesPerRequest: null,
+          enableOfflineQueue: false,
+          lazyConnect: true,
+          connectTimeout: QUEUE_STATUS_TIMEOUT_MS
+        })
       : undefined;
   const evaluationQueue = queueConnection
-    ? new Queue("merge-guard-evaluations", { connection: queueConnection })
+    ? new Queue<MergeGuardEvaluationJobPayload>(MERGE_GUARD_EVALUATION_QUEUE, {
+        connection: queueConnection
+      })
     : undefined;
   const listRecords = () => listChangeControlRecords(state, prisma);
   const getRecord = (id: string) => getChangeControlRecord(state, prisma, id);
@@ -396,6 +489,12 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     },
     bodyLimit: 1024 * 1024
   });
+  queueConnection?.on("error", (error) => {
+    app.log.debug(
+      { errorClass: error.name, message: error.message },
+      "Worker queue connection error"
+    );
+  });
 
   app.addContentTypeParser("application/json", { parseAs: "buffer" }, (request, body, done) => {
     try {
@@ -418,8 +517,8 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   });
 
   app.addHook("onClose", async () => {
-    await evaluationQueue?.close();
-    await queueConnection?.quit();
+    await evaluationQueue?.close().catch(() => undefined);
+    queueConnection?.disconnect();
     await prisma?.$disconnect();
   });
 
@@ -433,13 +532,18 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     version: "0.1.0"
   }));
 
-  app.get("/ready", async () => ({
-    status: "ready",
-    database: config.databaseUrl ? "configured" : "not_configured",
-    workerQueue: config.redisUrl ? "configured" : "in_memory",
-    runtimeStore: prisma ? "postgres" : "in_memory",
-    version: "0.1.0"
-  }));
+  app.get("/ready", async (_request, reply) => {
+    const queue = await queueOperationalStatus({ state, evaluationQueue });
+    const ready = queue.status === "ready";
+    return reply.code(ready ? 200 : 503).send({
+      status: ready ? "ready" : "not_ready",
+      database: config.databaseUrl ? "configured" : "not_configured",
+      workerQueue: config.redisUrl ? "configured" : "in_memory",
+      runtimeStore: prisma ? "postgres" : "in_memory",
+      queue,
+      version: "0.1.0"
+    });
+  });
 
   app.post("/webhooks/github", async (request, reply) => {
     const deliveryId = headerValue(request.headers["x-github-delivery"]);
@@ -474,23 +578,12 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     });
     const enqueued = shouldEnqueueEvaluation(envelope);
     await recordWebhookDelivery(state, prisma, envelope, enqueued);
-    if (enqueued && evaluationQueue) {
-      await evaluationQueue.add(
-        "evaluate-pr",
-        { deliveryId, envelope },
-        {
-          jobId: deliveryId,
-          attempts: 3,
-          removeOnComplete: 100,
-          removeOnFail: 500
-        }
-      );
-    } else if (enqueued) {
-      state.queuedEvaluations.push({
-        id: randomUUID(),
+    if (enqueued) {
+      await enqueueMergeGuardEvaluation({
+        state,
+        evaluationQueue,
         deliveryId,
-        envelope,
-        queuedAt: new Date().toISOString()
+        envelope
       });
     }
 
@@ -498,6 +591,92 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       accepted: true,
       duplicate: false,
       enqueued
+    });
+  });
+
+  app.get("/api/admin/queue", async (request, reply) => {
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const allowed = requireRole(
+      actor,
+      ["platform_admin", "engineering_manager", "auditor"],
+      "Queue inspection"
+    );
+    if (isAuthzFailure(allowed)) {
+      return reply.code(allowed.statusCode).send({ error: allowed.reason });
+    }
+
+    const queue = await queueOperationalStatus({ state, evaluationQueue });
+    const deliveryFailures = await listRecentWebhookDeliveryFailures(prisma);
+    return {
+      queue: safe(queue),
+      deliveryFailures: safe(deliveryFailures),
+      payloadsIncluded: false
+    };
+  });
+
+  app.post("/api/admin/queue/replay", async (request, reply) => {
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const allowed = requireRole(actor, ["platform_admin", "engineering_manager"], "Webhook replay");
+    if (isAuthzFailure(allowed)) {
+      return reply.code(allowed.statusCode).send({ error: allowed.reason });
+    }
+    const parsed = queueReplaySchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply
+        .code(400)
+        .send({ error: parsed.error.issues[0]?.message ?? "Invalid replay request" });
+    }
+
+    const replayable = await findReplayableDelivery(state, prisma, parsed.data);
+    if (!replayable) {
+      return reply.code(404).send({ error: "Replayable webhook delivery was not found." });
+    }
+    if (!shouldEnqueueEvaluation(replayable.envelope)) {
+      return reply.code(400).send({ error: "Webhook delivery is not an evaluation event." });
+    }
+
+    const replayJobId = `replay:${replayable.envelope.deliveryId}:${randomUUID()}`;
+    const queued = await enqueueMergeGuardEvaluation({
+      state,
+      evaluationQueue,
+      deliveryId: replayable.envelope.deliveryId,
+      envelope: replayable.envelope,
+      jobId: replayJobId
+    });
+    await markWebhookDeliveryReplayed(prisma, replayable.envelope.deliveryId, actor.login);
+    await audit({
+      organizationId: "org_operations",
+      actor: actor.login,
+      actorRole: actor.role,
+      action: "webhook_replayed",
+      targetType: "webhook_delivery",
+      targetId: replayable.envelope.deliveryId,
+      source: "api",
+      requestId: request.id,
+      correlationId: replayable.envelope.deliveryId,
+      metadataJson: {
+        deliveryId: replayable.envelope.deliveryId,
+        replayJobId,
+        backend: queued.backend,
+        repositoryFullName: replayable.delivery.repositoryFullName,
+        pullRequestNumber: replayable.delivery.pullRequestNumber
+      }
+    });
+
+    return reply.code(202).send({
+      replayed: true,
+      jobId: queued.jobId,
+      backend: queued.backend,
+      deliveryId: queued.deliveryId,
+      repositoryFullName: replayable.delivery.repositoryFullName,
+      pullRequestNumber: replayable.delivery.pullRequestNumber,
+      payloadIncluded: false
     });
   });
 
@@ -2148,6 +2327,308 @@ async function recordWebhookDelivery(
       } as never
     }
   });
+}
+
+async function enqueueMergeGuardEvaluation(input: {
+  state: AppState;
+  evaluationQueue: Queue<MergeGuardEvaluationJobPayload> | undefined;
+  deliveryId: string;
+  envelope: GithubWebhookEnvelope;
+  jobId?: string | undefined;
+}): Promise<QueueEnqueueResult> {
+  const jobId = input.jobId ?? input.deliveryId;
+  if (input.evaluationQueue) {
+    await input.evaluationQueue.add(
+      MERGE_GUARD_EVALUATION_JOB_NAME,
+      { deliveryId: input.deliveryId, envelope: input.envelope },
+      mergeGuardEvaluationJobOptions(jobId)
+    );
+    return { jobId, deliveryId: input.deliveryId, backend: "redis" };
+  }
+
+  input.state.queuedEvaluations.push({
+    id: jobId,
+    deliveryId: input.deliveryId,
+    envelope: input.envelope,
+    queuedAt: new Date().toISOString()
+  });
+  return { jobId, deliveryId: input.deliveryId, backend: "in_memory" };
+}
+
+async function queueOperationalStatus(input: {
+  state: AppState;
+  evaluationQueue: Queue<MergeGuardEvaluationJobPayload> | undefined;
+}): Promise<{
+  status: "ready" | "not_ready";
+  backend: QueueBackend;
+  retryPolicy: {
+    attempts: number;
+    backoff: { type: "exponential"; delayMs: number };
+    removeOnComplete: number;
+    removeOnFail: number;
+  };
+  counts: Record<string, number>;
+  failedJobs: Array<Record<string, unknown>>;
+  error?: { errorClass: string; message: string } | undefined;
+}> {
+  const retryPolicy = {
+    attempts: MERGE_GUARD_EVALUATION_ATTEMPTS,
+    backoff: { type: "exponential" as const, delayMs: MERGE_GUARD_EVALUATION_BACKOFF_MS },
+    removeOnComplete: 100,
+    removeOnFail: 500
+  };
+
+  if (!input.evaluationQueue) {
+    return {
+      status: "ready",
+      backend: "in_memory",
+      retryPolicy,
+      counts: {
+        waiting: input.state.queuedEvaluations.length,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 0,
+        paused: 0
+      },
+      failedJobs: []
+    };
+  }
+
+  try {
+    const [counts, failedJobs] = await withTimeout(
+      Promise.all([
+        input.evaluationQueue.getJobCounts(
+          "waiting",
+          "active",
+          "delayed",
+          "failed",
+          "completed",
+          "paused"
+        ),
+        input.evaluationQueue.getJobs(["failed"], 0, QUEUE_FAILED_JOB_LIMIT - 1, false)
+      ]),
+      QUEUE_STATUS_TIMEOUT_MS
+    );
+    return {
+      status: "ready",
+      backend: "redis",
+      retryPolicy,
+      counts,
+      failedJobs: failedJobs.map((job) => ({
+        id: job.id,
+        name: job.name,
+        deliveryId: job.data.deliveryId,
+        attemptsMade: job.attemptsMade,
+        failedReason: safeErrorText(job.failedReason),
+        timestamp: job.timestamp,
+        processedOn: job.processedOn,
+        finishedOn: job.finishedOn
+      }))
+    };
+  } catch (error) {
+    return {
+      status: "not_ready",
+      backend: "redis",
+      retryPolicy,
+      counts: {},
+      failedJobs: [],
+      error: safeErrorSummary(error)
+    };
+  }
+}
+
+async function findReplayableDelivery(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  target: z.infer<typeof queueReplaySchema>
+): Promise<ReplayableDelivery | undefined> {
+  const inMemoryDelivery = replayableDeliveryFromState(state, target);
+  if (inMemoryDelivery) {
+    return inMemoryDelivery;
+  }
+  if (!prisma) {
+    return undefined;
+  }
+
+  const delivery = target.deliveryId
+    ? await prisma.webhookDelivery.findUnique({ where: { deliveryId: target.deliveryId } })
+    : await prisma.webhookDelivery.findFirst({
+        where: {
+          repositoryFullName: target.repositoryFullName!,
+          pullRequestNumber: target.pullRequestNumber!,
+          enqueued: true
+        },
+        orderBy: { createdAt: "desc" }
+      });
+  if (!delivery) {
+    return undefined;
+  }
+  const envelope = envelopeFromStoredWebhookDelivery(delivery);
+  return envelope ? { delivery, envelope } : undefined;
+}
+
+function replayableDeliveryFromState(
+  state: AppState,
+  target: z.infer<typeof queueReplaySchema>
+): ReplayableDelivery | undefined {
+  const candidates = [...state.queuedEvaluations].reverse();
+  const queued = target.deliveryId
+    ? candidates.find((item) => item.deliveryId === target.deliveryId)
+    : candidates.find(
+        (item) =>
+          item.envelope.repository?.fullName === target.repositoryFullName &&
+          item.envelope.pullRequest?.number === target.pullRequestNumber
+      );
+  if (!queued) {
+    return undefined;
+  }
+  return {
+    envelope: queued.envelope,
+    delivery: {
+      deliveryId: queued.deliveryId,
+      event: queued.envelope.event,
+      action: queued.envelope.action ?? null,
+      repositoryFullName: queued.envelope.repository?.fullName ?? null,
+      pullRequestNumber: queued.envelope.pullRequest?.number ?? null,
+      headSha: queued.envelope.pullRequest?.headSha ?? queued.envelope.checkRun?.headSha ?? null,
+      enqueued: true,
+      payloadJson: {},
+      createdAt: queued.queuedAt
+    }
+  };
+}
+
+function envelopeFromStoredWebhookDelivery(
+  delivery: StoredWebhookDelivery
+): GithubWebhookEnvelope | undefined {
+  const payload = objectRecord(delivery.payloadJson);
+  if (!payload) {
+    return undefined;
+  }
+  return {
+    deliveryId: delivery.deliveryId,
+    event: delivery.event,
+    action: delivery.action ?? undefined,
+    installationId: numberFromUnknown(payload.installationId),
+    repository: objectRecord(payload.repository) as GithubWebhookEnvelope["repository"],
+    pullRequest: objectRecord(payload.pullRequest) as GithubWebhookEnvelope["pullRequest"],
+    review: objectRecord(payload.review) as GithubWebhookEnvelope["review"],
+    checkRun: objectRecord(payload.checkRun) as GithubWebhookEnvelope["checkRun"],
+    installation: objectRecord(payload.installation) as GithubWebhookEnvelope["installation"],
+    receivedAt:
+      stringFromUnknown(payload.receivedAt) ??
+      dateString(delivery.createdAt) ??
+      new Date().toISOString()
+  };
+}
+
+async function markWebhookDeliveryReplayed(
+  prisma: PrismaClient | undefined,
+  deliveryId: string,
+  actor: string
+): Promise<void> {
+  if (!prisma) {
+    return;
+  }
+  await prisma.webhookDelivery.updateMany({
+    where: { deliveryId },
+    data: {
+      replayCount: { increment: 1 },
+      lastReplayedAt: new Date(),
+      lastReplayedBy: actor
+    }
+  });
+}
+
+async function listRecentWebhookDeliveryFailures(
+  prisma: PrismaClient | undefined
+): Promise<Array<Record<string, unknown>>> {
+  if (!prisma) {
+    return [];
+  }
+  const deliveries = await prisma.webhookDelivery.findMany({
+    where: {
+      lastFailedAt: { not: null }
+    },
+    orderBy: { lastFailedAt: "desc" },
+    take: QUEUE_FAILED_JOB_LIMIT
+  });
+  return deliveries.map((delivery) => ({
+    deliveryId: delivery.deliveryId,
+    repositoryFullName: delivery.repositoryFullName,
+    pullRequestNumber: delivery.pullRequestNumber,
+    headSha: delivery.headSha,
+    attemptsMade: delivery.evaluationAttemptsMade,
+    terminalFailure: delivery.evaluationTerminalFailure,
+    errorClass: delivery.lastFailureClass,
+    message: safeErrorText(delivery.lastFailureMessage),
+    correlationId: delivery.lastFailureCorrelationId,
+    failedAt: dateString(delivery.lastFailedAt),
+    replayCount: delivery.replayCount,
+    lastReplayedAt: dateString(delivery.lastReplayedAt),
+    lastReplayedBy: delivery.lastReplayedBy
+  }));
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Queue status check timed out.")), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+function safeErrorSummary(error: unknown): { errorClass: string; message: string } {
+  if (error instanceof Error) {
+    return {
+      errorClass: safeErrorClass(error.name),
+      message: safeErrorText(error.message)
+    };
+  }
+  return {
+    errorClass: "UnknownError",
+    message: safeErrorText(String(error))
+  };
+}
+
+function safeErrorClass(value: string): string {
+  const trimmed = value.trim();
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/u.test(trimmed) ? trimmed : "Error";
+}
+
+function safeErrorText(value: unknown): string {
+  const text = typeof value === "string" ? value : String(value ?? "");
+  return summarizeSafeSnippet(text, 500);
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function numberFromUnknown(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function stringFromUnknown(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function dateString(value: Date | string | null | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return value instanceof Date ? value.toISOString() : value;
 }
 
 async function saveExportJob(

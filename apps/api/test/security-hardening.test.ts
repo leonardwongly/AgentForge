@@ -675,6 +675,125 @@ describe("security and audit hardening", () => {
     });
     expect(auditWrongRole.statusCode).toBe(403);
 
+    const queueWithoutActor = await app.inject({
+      method: "GET",
+      url: "/api/admin/queue"
+    });
+    expect(queueWithoutActor.statusCode).toBe(401);
+
+    const queueWrongRole = await app.inject({
+      method: "GET",
+      url: "/api/admin/queue",
+      headers: actorHeaders("sam", "developer")
+    });
+    expect(queueWrongRole.statusCode).toBe(403);
+
+    const replayWithoutActor = await app.inject({
+      method: "POST",
+      url: "/api/admin/queue/replay",
+      payload: JSON.stringify({ deliveryId: "delivery-security" }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(replayWithoutActor.statusCode).toBe(401);
+
+    const replayWrongRole = await app.inject({
+      method: "POST",
+      url: "/api/admin/queue/replay",
+      payload: JSON.stringify({ deliveryId: "delivery-security" }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(replayWrongRole.statusCode).toBe(403);
+
+    await app.close();
+  });
+
+  it("does not expose webhook payloads through queue inspection", async () => {
+    const rawWebhookSecret = "webhook_secret_dummy_123";
+    const state = createInitialState();
+    state.queuedEvaluations.push({
+      id: "delivery-secret",
+      deliveryId: "delivery-secret",
+      queuedAt: new Date().toISOString(),
+      envelope: {
+        deliveryId: "delivery-secret",
+        event: "pull_request",
+        action: "opened",
+        repository: {
+          id: 1,
+          fullName: "acme/payments",
+          owner: "acme",
+          name: "payments",
+          defaultBranch: "main"
+        },
+        pullRequest: {
+          id: 1,
+          number: 9,
+          title: `Do not leak ${rawWebhookSecret}`,
+          authorLogin: "sam",
+          baseBranch: "main",
+          headBranch: "feature/secret",
+          headSha: "sha-secret",
+          body: `token=${rawWebhookSecret}`,
+          state: "open",
+          merged: false
+        },
+        receivedAt: "2026-05-19T00:00:00.000Z"
+      }
+    });
+    const app = createApp(state);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/admin/queue",
+      headers: actorHeaders("alex", "platform_admin")
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(
+      expect.objectContaining({
+        payloadsIncluded: false,
+        queue: expect.objectContaining({
+          counts: expect.objectContaining({ waiting: 1 })
+        })
+      })
+    );
+    expect(response.body).not.toContain(rawWebhookSecret);
+    expect(response.body).not.toContain("pull_request");
+    expect(response.body).not.toContain("Do not leak");
+    await app.close();
+  });
+
+  it("keeps health safe while readiness fails when a configured queue is unavailable", async () => {
+    process.env.NODE_ENV = "development";
+    process.env.REDIS_URL = "redis://127.0.0.1:1";
+    const app = createApp(createInitialState());
+
+    const health = await app.inject({ method: "GET", url: "/health" });
+    const ready = await app.inject({ method: "GET", url: "/ready" });
+
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toEqual(
+      expect.objectContaining({
+        status: "ok",
+        workerQueue: "configured"
+      })
+    );
+    expect(ready.statusCode).toBe(503);
+    expect(ready.json()).toEqual(
+      expect.objectContaining({
+        status: "not_ready",
+        workerQueue: "configured",
+        queue: expect.objectContaining({
+          status: "not_ready",
+          backend: "redis",
+          error: expect.objectContaining({
+            errorClass: expect.any(String),
+            message: expect.any(String)
+          })
+        })
+      })
+    );
+
     await app.close();
   });
 
