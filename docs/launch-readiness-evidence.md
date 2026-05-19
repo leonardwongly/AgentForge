@@ -19,6 +19,7 @@ V1 launch readiness covers deterministic pull request governance only:
 - GitHub check publication;
 - persisted Change Control Records;
 - dashboard visibility and exports;
+- compliance evidence packages for auditor review;
 - metadata-only, redacted storage by default;
 - production fail-closed configuration;
 - observe-first rollout.
@@ -42,6 +43,7 @@ agent orchestration.
 | Worker behavior         | `apps/worker/test/worker.test.ts` covers queue processing, runtime persistence, bounded retry failure summaries, check publishing, webhook-triggered jobs, and non-PR event handling.                                                     |
 | GitHub smoke tooling    | `scripts/smoke-github-app.ts` can run read-only GitHub App validation and optional check publication without printing source, patches, tokens, credentials, or installation tokens.                                                       |
 | Operations docs         | `docs/runbook.md`, `docs/railway-deployment.md`, `docs/github-app-setup.md`, and `docs/testing.md` document setup, deployment, smoke, queue replay, rollback, incident response, and adoption.                                            |
+| Launch positioning      | `docs/launch-positioning-and-pricing.md` records target-user pain hypotheses, pricing metric candidates, liability-safe claims, V1/V2 boundaries, and the external validation gate before broad enforce-mode positioning.                 |
 
 ## Live Verification Commands
 
@@ -91,6 +93,7 @@ pnpm prisma:validate
 pnpm fixtures:run
 pnpm railway:build
 pnpm audit --audit-level high
+pnpm messaging:validate
 ```
 
 Database-backed and browser-backed validation additionally require local Compose
@@ -124,6 +127,7 @@ Launch readiness depends on these invariants:
 - full diffs are disabled by default;
 - retained snippets are redacted before persistence or output;
 - JSON and CSV exports exclude source blobs and raw secrets;
+- compliance evidence packages include manifest, control mapping, sanitized record summaries, audit timeline, and redaction report without raw source;
 - Change Control Record exports include schema-versioned audit events for the record trail, including actor role, source, policy identity, request id, and correlation id where available;
 - GitHub webhook secrets, private keys, OAuth secrets, installation tokens, and
   session secrets are never logged;
