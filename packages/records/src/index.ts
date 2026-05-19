@@ -65,6 +65,128 @@ export type PolicyTuningReport = {
   insights: PolicyTuningInsight[];
 };
 
+export type ComplianceEvidencePackageFilters = {
+  repositoryId?: string | undefined;
+  policyPackId?: string | undefined;
+  policyVersion?: string | undefined;
+  startDate?: string | undefined;
+  endDate?: string | undefined;
+  maxRecords?: number | undefined;
+  offset?: number | undefined;
+  totalMatchingRecords?: number | undefined;
+  truncated?: boolean | undefined;
+};
+
+export type ComplianceEvidencePackage = {
+  schemaVersion: 1;
+  packageType: "compliance_evidence";
+  manifest: {
+    generatedAt: string;
+    recordCount: number;
+    repositoryCount: number;
+    repositories: string[];
+    policyVersions: string[];
+    policyPacks: string[];
+    controlFamilies: string[];
+    filters: ComplianceEvidencePackageFilters;
+    limitations: string[];
+    redaction: {
+      sourceCodeExcluded: true;
+      rawPatchesExcluded: true;
+      secretsRedacted: true;
+      metadataOnly: true;
+    };
+  };
+  controls: ComplianceControlMapping[];
+  records: ComplianceRecordSummary[];
+  timeline: ComplianceTimelineEvent[];
+  redactionReport: ComplianceEvidencePackage["manifest"]["redaction"] & {
+    summary: string;
+    excludedFields: string[];
+  };
+};
+
+export type ComplianceControlMapping = {
+  controlFamily: string;
+  title: string;
+  rationale: string;
+  recordIds: string[];
+  repositoryFullNames: string[];
+  findingTypes: string[];
+  evidenceKinds: string[];
+  reviewerRequirements: string[];
+};
+
+export type ComplianceRecordSummary = {
+  recordId: string;
+  organizationId: string;
+  repositoryId: string;
+  repositoryFullName: string;
+  pullRequestNumber: number;
+  headSha: string;
+  baseBranch: string;
+  mode: ChangeControlRecord["mode"];
+  checkStatus: ChangeControlRecord["checkStatus"];
+  lifecycle: ChangeControlRecord["lifecycle"];
+  decision: ChangeControlRecord["decision"];
+  policyVersion: string;
+  policyPackId?: string | undefined;
+  policyPackVersion?: string | undefined;
+  controls: string[];
+  findings: Array<{
+    id: string;
+    type: string;
+    source: string;
+    path?: string | undefined;
+    confidence: string;
+    severity?: string | undefined;
+  }>;
+  evidence: Array<{
+    id: string;
+    kind: string;
+    status: string;
+    source?: string | undefined;
+    requiredByFindingId: string;
+    providedBy?: string | undefined;
+    providedAt?: string | undefined;
+    approvedBy?: string | undefined;
+    approvedAt?: string | undefined;
+    contentSummary?: string | undefined;
+  }>;
+  reviewers: Array<{
+    id: string;
+    reviewer: string;
+    reviewerType: string;
+    tier: string;
+    approved: boolean;
+    approvedBy?: string | undefined;
+    approvedAt?: string | undefined;
+    triggeredByFindingId: string;
+  }>;
+  explanation: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ComplianceTimelineEvent = {
+  eventId: string;
+  createdAt: string;
+  action: AuditEventAction;
+  actor: string;
+  actorRole: string;
+  source: AuditEventRecord["source"];
+  targetType: string;
+  targetId: string;
+  repositoryId?: string | undefined;
+  pullRequestId?: string | undefined;
+  requestId?: string | undefined;
+  correlationId?: string | undefined;
+  policyVersion?: string | undefined;
+  policyPackId?: string | undefined;
+  recordIds: string[];
+  metadataJson: Record<string, unknown>;
+};
+
 export function createChangeControlRecord(input: {
   organizationId: string;
   repositoryId: string;
@@ -359,6 +481,86 @@ export function exportChangeControlRecordsCsv(
   return [headers, ...rows].map((row) => row.map(csvEscape).join(",")).join("\n");
 }
 
+export function createComplianceEvidencePackage(input: {
+  records: ChangeControlRecord[];
+  storagePolicy?: MetadataStoragePolicy | undefined;
+  auditEvents?: AuditEventRecord[] | undefined;
+  generatedAt?: string | undefined;
+  filters?: ComplianceEvidencePackageFilters | undefined;
+}): ComplianceEvidencePackage {
+  const generatedAt = input.generatedAt ?? new Date().toISOString();
+  const records = input.records
+    .map((record) => sanitizeChangeControlRecord(record, input.storagePolicy))
+    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const controls = complianceControlsForRecords(records);
+  const timeline = complianceTimelineForRecords(
+    records,
+    input.auditEvents ?? [],
+    input.storagePolicy
+  );
+  const repositories = [...new Set(records.map((record) => record.repositoryFullName))].sort();
+  const policyVersions = [...new Set(records.map((record) => record.policyVersion))].sort();
+  const policyPacks = [
+    ...new Set(
+      records.map((record) => record.policyPackId).filter((value): value is string => !!value)
+    )
+  ].sort();
+  const controlFamilies = controls.map((control) => control.controlFamily).sort();
+  const redaction = {
+    sourceCodeExcluded: true,
+    rawPatchesExcluded: true,
+    secretsRedacted: true,
+    metadataOnly: true
+  } as const;
+
+  return {
+    schemaVersion: 1,
+    packageType: "compliance_evidence",
+    manifest: {
+      generatedAt,
+      recordCount: records.length,
+      repositoryCount: repositories.length,
+      repositories,
+      policyVersions,
+      policyPacks,
+      controlFamilies,
+      filters: input.filters ?? {},
+      limitations: [
+        "Point-in-time export generated from retained Change Control Records and audit events.",
+        "Source code, raw patches, credentials, tokens, and private keys are intentionally excluded.",
+        "Control mappings are deterministic governance aids and still require human auditor review."
+      ],
+      redaction
+    },
+    controls,
+    records: records.map((record) => complianceRecordSummary(record)),
+    timeline,
+    redactionReport: {
+      ...redaction,
+      summary:
+        "Compliance packages include sanitized metadata, decision state, evidence state, reviewer state, and audit events only.",
+      excludedFields: [
+        "raw diff hunks",
+        "previous file bodies",
+        "current file bodies",
+        "secrets",
+        "tokens",
+        "privateKeys"
+      ]
+    }
+  };
+}
+
+export function exportComplianceEvidencePackageJson(input: {
+  records: ChangeControlRecord[];
+  storagePolicy?: MetadataStoragePolicy | undefined;
+  auditEvents?: AuditEventRecord[] | undefined;
+  generatedAt?: string | undefined;
+  filters?: ComplianceEvidencePackageFilters | undefined;
+}): string {
+  return JSON.stringify(createComplianceEvidencePackage(input), null, 2);
+}
+
 export function createAuditEvent(input: {
   organizationId: string;
   repositoryId?: string | undefined;
@@ -518,6 +720,234 @@ function isRepositoryLifecycleAuditEvent(event: AuditEventRecord): boolean {
     event.action === "retention_changed" ||
     event.action === "owner_mapping_changed"
   );
+}
+
+function complianceRecordSummary(record: ChangeControlRecord): ComplianceRecordSummary {
+  return {
+    recordId: record.id,
+    organizationId: record.organizationId,
+    repositoryId: record.repositoryId,
+    repositoryFullName: record.repositoryFullName,
+    pullRequestNumber: record.pullRequestNumber,
+    headSha: record.headSha,
+    baseBranch: record.baseBranch,
+    mode: record.mode,
+    checkStatus: record.checkStatus,
+    lifecycle: record.lifecycle,
+    decision: record.decision,
+    policyVersion: record.policyVersion,
+    policyPackId: record.policyPackId,
+    policyPackVersion: record.policyPackVersion,
+    controls: complianceControlFamiliesForRecord(record).sort(),
+    findings: record.verifiedFindings.map((finding) => ({
+      id: finding.id,
+      type: finding.type,
+      source: finding.source,
+      path: finding.path,
+      confidence: finding.confidence,
+      severity: finding.severity
+    })),
+    evidence: record.requiredEvidence.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      status: item.status,
+      source: item.source,
+      requiredByFindingId: item.requiredByFindingId,
+      providedBy: item.providedBy,
+      providedAt: item.providedAt,
+      approvedBy: item.approvedBy,
+      approvedAt: item.approvedAt,
+      contentSummary: item.contentSummary
+    })),
+    reviewers: record.requiredReviewers.map((reviewer) => ({
+      id: reviewer.id,
+      reviewer: reviewer.reviewer,
+      reviewerType: reviewer.reviewerType,
+      tier: reviewer.tier,
+      approved: reviewer.approved,
+      approvedBy: reviewer.approvedBy,
+      approvedAt: reviewer.approvedAt,
+      triggeredByFindingId: reviewer.triggeredByFindingId
+    })),
+    explanation: explainChangeControlRecord(record),
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
+  };
+}
+
+function complianceControlsForRecords(records: ChangeControlRecord[]): ComplianceControlMapping[] {
+  const byControl = new Map<string, ChangeControlRecord[]>();
+  for (const record of records) {
+    for (const control of complianceControlFamiliesForRecord(record)) {
+      byControl.set(control, [...(byControl.get(control) ?? []), record]);
+    }
+  }
+  return [...byControl.entries()]
+    .map(([controlFamily, affectedRecords]) => {
+      const uniqueAffectedRecords = uniqueRecords(affectedRecords);
+      return {
+        controlFamily,
+        title: complianceControlTitle(controlFamily),
+        rationale: complianceControlRationale(controlFamily),
+        recordIds: uniqueAffectedRecords.map((record) => record.id),
+        repositoryFullNames: [
+          ...new Set(uniqueAffectedRecords.map((record) => record.repositoryFullName))
+        ].sort(),
+        findingTypes: [
+          ...new Set(
+            uniqueAffectedRecords.flatMap((record) =>
+              record.verifiedFindings.map((finding) => finding.type)
+            )
+          )
+        ].sort(),
+        evidenceKinds: [
+          ...new Set(
+            uniqueAffectedRecords.flatMap((record) =>
+              record.requiredEvidence.map((item) => item.kind)
+            )
+          )
+        ].sort(),
+        reviewerRequirements: [
+          ...new Set(
+            uniqueAffectedRecords.flatMap((record) =>
+              record.requiredReviewers.map((reviewer) => reviewer.reviewer)
+            )
+          )
+        ].sort()
+      };
+    })
+    .sort((a, b) => a.controlFamily.localeCompare(b.controlFamily));
+}
+
+function complianceControlFamiliesForRecord(record: ChangeControlRecord): string[] {
+  const controls = new Set<string>(["SOC2_CC8_CHANGE_MANAGEMENT"]);
+  const findingTypes = new Set(record.verifiedFindings.map((finding) => finding.type));
+  const evidenceKinds = new Set(record.requiredEvidence.map((item) => item.kind));
+  const reviewers = record.requiredReviewers.map((reviewer) => reviewer.reviewer.toLowerCase());
+  if (
+    findingTypes.has("secret_like_value_detected") ||
+    findingTypes.has("sensitive_path_changed") ||
+    evidenceKinds.has("security_note") ||
+    reviewers.some((reviewer) => reviewer.includes("security"))
+  ) {
+    controls.add("SOC2_CC6_ACCESS_CONTROL");
+    controls.add("SOC2_CC7_SECURITY_MONITORING");
+  }
+  if (
+    findingTypes.has("dependency_added") ||
+    findingTypes.has("dependency_bumped") ||
+    evidenceKinds.has("dependency_justification")
+  ) {
+    controls.add("SOC2_CC8_CHANGE_MANAGEMENT");
+    controls.add("PCI_DSS_6_SECURE_DEVELOPMENT");
+  }
+  if (
+    findingTypes.has("ci_workflow_changed") ||
+    findingTypes.has("test_deleted") ||
+    findingTypes.has("test_skipped") ||
+    findingTypes.has("coverage_threshold_reduced") ||
+    findingTypes.has("suspicious_test_change") ||
+    evidenceKinds.has("ci_change_reason") ||
+    evidenceKinds.has("benchmark_before_after")
+  ) {
+    controls.add("SDLC_TESTING_ASSURANCE");
+  }
+  if (
+    findingTypes.has("migration_added") ||
+    evidenceKinds.has("migration_dry_run") ||
+    evidenceKinds.has("rollback_plan")
+  ) {
+    controls.add("DEPLOYMENT_ROLLBACK_READINESS");
+  }
+  if (
+    record.lifecycle === "overridden" ||
+    record.decision?.status === "override_approved" ||
+    record.decision?.status === "merged_after_override"
+  ) {
+    controls.add("EXCEPTION_MANAGEMENT");
+  }
+  if (findingTypes.has("agent_signal_detected") || evidenceKinds.has("manual_attestation")) {
+    controls.add("HUMAN_APPROVAL_GOVERNANCE");
+  }
+  if (record.policyPackId?.includes("regulated")) {
+    controls.add("REGULATED_WORKLOAD_GOVERNANCE");
+  }
+  if (record.policyPackId?.includes("fintech")) {
+    controls.add("PCI_DSS_6_SECURE_DEVELOPMENT");
+  }
+  return [...controls];
+}
+
+function complianceControlTitle(controlFamily: string): string {
+  const titles: Record<string, string> = {
+    DEPLOYMENT_ROLLBACK_READINESS: "Deployment rollback readiness",
+    EXCEPTION_MANAGEMENT: "Exception and override management",
+    HUMAN_APPROVAL_GOVERNANCE: "Human approval governance",
+    PCI_DSS_6_SECURE_DEVELOPMENT: "Secure development controls",
+    REGULATED_WORKLOAD_GOVERNANCE: "Regulated workload governance",
+    SDLC_TESTING_ASSURANCE: "SDLC testing assurance",
+    SOC2_CC6_ACCESS_CONTROL: "Logical access and security review",
+    SOC2_CC7_SECURITY_MONITORING: "Security monitoring and response",
+    SOC2_CC8_CHANGE_MANAGEMENT: "Change management"
+  };
+  return titles[controlFamily] ?? humanize(controlFamily).toUpperCase();
+}
+
+function complianceControlRationale(controlFamily: string): string {
+  const rationales: Record<string, string> = {
+    DEPLOYMENT_ROLLBACK_READINESS:
+      "Migration, rollback, or deployment evidence shows the change was reviewed for recoverability.",
+    EXCEPTION_MANAGEMENT:
+      "Override and merged-after-override decisions require traceable human authorization.",
+    HUMAN_APPROVAL_GOVERNANCE:
+      "Agent-assisted or manually attested changes require explicit human review evidence.",
+    PCI_DSS_6_SECURE_DEVELOPMENT:
+      "Dependency and fintech-related findings map to secure development and vulnerability management review.",
+    REGULATED_WORKLOAD_GOVERNANCE:
+      "Regulated policy packs require stronger auditability across findings, evidence, and approvals.",
+    SDLC_TESTING_ASSURANCE:
+      "CI, test, benchmark, and coverage findings map to software delivery assurance controls.",
+    SOC2_CC6_ACCESS_CONTROL:
+      "Sensitive paths, secrets, or security reviewers map to logical access control review.",
+    SOC2_CC7_SECURITY_MONITORING:
+      "Security-sensitive findings and required security evidence map to detection and response controls.",
+    SOC2_CC8_CHANGE_MANAGEMENT:
+      "Every evaluated pull request is a governed production change candidate."
+  };
+  return rationales[controlFamily] ?? "Mapped from deterministic AgentForge record metadata.";
+}
+
+function complianceTimelineForRecords(
+  records: ChangeControlRecord[],
+  auditEvents: AuditEventRecord[],
+  storagePolicy?: MetadataStoragePolicy
+): ComplianceTimelineEvent[] {
+  return auditEvents
+    .filter((event) => records.some((record) => auditEventBelongsToRecord(event, record)))
+    .map((event) => {
+      const sanitized = sanitizeAuditEvent(event, storagePolicy);
+      return {
+        eventId: sanitized.id,
+        createdAt: sanitized.createdAt,
+        action: sanitized.action,
+        actor: sanitized.actor,
+        actorRole: sanitized.actorRole,
+        source: sanitized.source,
+        targetType: sanitized.targetType,
+        targetId: sanitized.targetId,
+        repositoryId: sanitized.repositoryId,
+        pullRequestId: sanitized.pullRequestId,
+        requestId: sanitized.requestId,
+        correlationId: sanitized.correlationId,
+        policyVersion: sanitized.policyVersion,
+        policyPackId: sanitized.policyPackId,
+        recordIds: records
+          .filter((record) => auditEventBelongsToRecord(sanitized, record))
+          .map((record) => record.id),
+        metadataJson: sanitized.metadataJson ?? {}
+      };
+    })
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 }
 
 function stringFromMetadata(value: unknown): string | undefined {

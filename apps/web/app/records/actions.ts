@@ -35,6 +35,39 @@ export async function createRecordExport(formData: FormData): Promise<void> {
   );
 }
 
+export async function createCompliancePackageExport(formData: FormData): Promise<void> {
+  const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
+  let exportJob: { id: string; recordCount: number };
+  const payload = {
+    format: "json",
+    repositoryId: readString(formData, "repositoryId"),
+    policyPackId: readString(formData, "policyPackId"),
+    policyVersion: readString(formData, "policyVersion"),
+    startDate: readDateTime(formData, "startDate"),
+    endDate: readDateTime(formData, "endDate"),
+    maxRecords: readBoundedInteger(formData, "maxRecords", 250, 1, 500)
+  };
+
+  try {
+    const actor = await resolveDashboardActor();
+    exportJob = await requestJson<{ id: string; recordCount: number }>(
+      actor,
+      "/api/exports/compliance-evidence-package",
+      { method: "POST", body: JSON.stringify(payload) }
+    );
+  } catch (error) {
+    void error;
+    redirectWithError(returnTo, "compliance-package-export-failed");
+  }
+
+  revalidatePath("/records");
+  redirect(
+    `${returnTo}?updated=compliance-package-export&exportId=${encodeURIComponent(
+      exportJob.id
+    )}&recordCount=${encodeURIComponent(String(exportJob.recordCount))}`
+  );
+}
+
 export async function submitEvidence(formData: FormData): Promise<void> {
   const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
   const recordId = readString(formData, "recordId");
@@ -178,6 +211,29 @@ async function responseError(response: Response): Promise<string> {
 function readString(formData: FormData, key: string): string | undefined {
   const value = formData.get(key);
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function readDateTime(formData: FormData, key: string): string | undefined {
+  const value = readString(formData, key);
+  if (!value) {
+    return undefined;
+  }
+  const normalized = value.length === 16 ? `${value}:00.000Z` : value;
+  return Number.isFinite(Date.parse(normalized)) ? new Date(normalized).toISOString() : undefined;
+}
+
+function readBoundedInteger(
+  formData: FormData,
+  key: string,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const value = Number(readString(formData, key));
+  if (!Number.isInteger(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, value));
 }
 
 function readExportFormat(formData: FormData): ExportFormat {

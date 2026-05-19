@@ -4,8 +4,10 @@ import {
   applyOverride,
   createAuditEvent,
   createChangeControlRecord,
+  createComplianceEvidencePackage,
   exportChangeControlRecordsCsv,
   exportChangeControlRecordsJson,
+  exportComplianceEvidencePackageJson,
   explainChangeControlRecord,
   generatePolicyTuningReport,
   updateRecordFromPolicyResult,
@@ -188,6 +190,71 @@ describe("records", () => {
       expect(artifact).not.toContain("export const token");
       expect(artifact).not.toContain("currentContent");
       expect(artifact).not.toContain("patch");
+    }
+  });
+
+  it("creates compliance evidence packages with control mappings and redacted timeline", () => {
+    const record = createChangeControlRecord({
+      organizationId: "org",
+      repositoryId: "repo",
+      pr,
+      policyResult: result
+    });
+    const event = createAuditEvent({
+      organizationId: "org",
+      repositoryId: "repo",
+      actor: "alex",
+      actorRole: "auditor",
+      action: "record_exported",
+      targetType: "compliance_evidence_package_export",
+      targetId: "export-1",
+      metadataJson: {
+        format: "json",
+        recordCount: 1,
+        recordIds: [record.id],
+        token: fakeGithubToken,
+        patch: "+ raw source"
+      },
+      createdAt: "2026-05-12T01:05:00.000Z"
+    });
+
+    const pkg = createComplianceEvidencePackage({
+      records: [record],
+      auditEvents: [event],
+      generatedAt: "2026-05-12T01:10:00.000Z",
+      filters: { repositoryId: "repo", maxRecords: 250, totalMatchingRecords: 1, truncated: false }
+    });
+    const json = exportComplianceEvidencePackageJson({
+      records: [record],
+      auditEvents: [event],
+      generatedAt: "2026-05-12T01:10:00.000Z"
+    });
+
+    expect(pkg.packageType).toBe("compliance_evidence");
+    expect(pkg.manifest).toMatchObject({
+      recordCount: 1,
+      redaction: {
+        sourceCodeExcluded: true,
+        rawPatchesExcluded: true,
+        secretsRedacted: true,
+        metadataOnly: true
+      }
+    });
+    expect(pkg.controls.map((control) => control.controlFamily)).toEqual(
+      expect.arrayContaining(["SOC2_CC6_ACCESS_CONTROL", "SOC2_CC7_SECURITY_MONITORING"])
+    );
+    expect(pkg.records[0]?.findings[0]).toMatchObject({
+      type: "secret_like_value_detected",
+      path: "src/billing/checkout.ts"
+    });
+    expect(pkg.timeline[0]).toMatchObject({
+      action: "record_exported",
+      recordIds: [record.id]
+    });
+    for (const artifact of [JSON.stringify(pkg), json]) {
+      expect(artifact).not.toContain(fakeGithubToken);
+      expect(artifact).not.toContain("export const token");
+      expect(artifact).not.toContain("currentContent");
     }
   });
 

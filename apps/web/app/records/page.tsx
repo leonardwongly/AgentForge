@@ -1,9 +1,9 @@
 import Link from "next/link";
-import { Download, FileCheck } from "lucide-react";
+import { Download, FileArchive, FileCheck } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../data-source-notice";
 import { formatDate, loadDashboardData, summarizeFindings } from "../data";
-import { createRecordExport } from "./actions";
+import { createCompliancePackageExport, createRecordExport } from "./actions";
 
 const ALLOWED_STATUSES = ["pass", "warn", "block"] as const;
 type RecordStatusFilter = (typeof ALLOWED_STATUSES)[number];
@@ -65,6 +65,18 @@ export default async function RecordsPage({ searchParams }: RecordsPageProps) {
             </div>
           </section>
         ) : null}
+        {params?.updated === "compliance-package-export" ? (
+          <section className="notice">
+            <FileArchive size={18} aria-hidden="true" />
+            <div>
+              <h2>Compliance package created</h2>
+              <p>
+                Job {params.exportId ?? "created"} contains {params.recordCount ?? "0"} redacted
+                Change Control Records with control mappings and audit timeline.
+              </p>
+            </div>
+          </section>
+        ) : null}
         {params?.error ? (
           <section className="notice notice--unavailable">
             <Download size={18} aria-hidden="true" />
@@ -75,6 +87,80 @@ export default async function RecordsPage({ searchParams }: RecordsPageProps) {
           </section>
         ) : null}
         <DataSourceNotice {...data} />
+
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <h2>Compliance evidence package</h2>
+              <p>
+                Create a redacted auditor package with manifest, record summaries, control mapping,
+                event timeline, and redaction report.
+              </p>
+            </div>
+            <FileArchive size={18} aria-hidden="true" />
+          </div>
+          <form action={createCompliancePackageExport}>
+            <input name="returnTo" type="hidden" value="/records" />
+            <div className="panel-body form-grid">
+              <div className="field">
+                <label htmlFor="repositoryId">Repository ID</label>
+                <input
+                  className="input"
+                  id="repositoryId"
+                  maxLength={240}
+                  name="repositoryId"
+                  placeholder="optional"
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="policyPackId">Policy pack</label>
+                <input
+                  className="input"
+                  id="policyPackId"
+                  maxLength={240}
+                  name="policyPackId"
+                  placeholder="optional"
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="policyVersion">Policy version</label>
+                <input
+                  className="input"
+                  id="policyVersion"
+                  maxLength={240}
+                  name="policyVersion"
+                  placeholder="optional"
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="startDate">Start time UTC</label>
+                <input className="input" id="startDate" name="startDate" type="datetime-local" />
+              </div>
+              <div className="field">
+                <label htmlFor="endDate">End time UTC</label>
+                <input className="input" id="endDate" name="endDate" type="datetime-local" />
+              </div>
+              <div className="field">
+                <label htmlFor="maxRecords">Record limit</label>
+                <input
+                  className="input"
+                  defaultValue={250}
+                  id="maxRecords"
+                  max={500}
+                  min={1}
+                  name="maxRecords"
+                  type="number"
+                />
+              </div>
+            </div>
+            <div className="control-row">
+              <button className="button button--primary" type="submit">
+                <FileArchive size={16} aria-hidden="true" /> Create package
+              </button>
+              <span className="muted">JSON only, capped at 500 records per package.</span>
+            </div>
+          </form>
+        </section>
 
         <section className="panel">
           <div className="panel-header">
