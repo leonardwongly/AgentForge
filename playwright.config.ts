@@ -29,7 +29,7 @@ export default defineConfig({
     },
     {
       command:
-        "pnpm --filter @agentforge/web build && " +
+        "pnpm exec tsx scripts/e2e-preflight.ts --require-build --skip-port-check --skip-e2e-lock-check && " +
         `API_BASE_URL=${apiBaseUrl} AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR=true ` +
         "AGENTFORGE_DASHBOARD_ACTOR=playwright AGENTFORGE_DASHBOARD_ROLE=platform_admin " +
         "pnpm --filter @agentforge/web exec next start " +

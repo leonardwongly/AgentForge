@@ -36,9 +36,42 @@ Run tests:
 pnpm test
 pnpm test:unit
 pnpm test:integration
+pnpm test:e2e:preflight
 pnpm test:e2e
+pnpm smoke:e2e-readiness
 pnpm format:check
 ```
+
+## Browser And E2E Smoke Path
+
+The supported automated browser path is Playwright through `pnpm test:e2e`.
+That script performs an E2E preflight, takes an advisory lock, builds
+`@agentforge/web` once, then starts isolated API and web servers through the
+Playwright `webServer` configuration. This avoids running `next build` inside
+the Playwright server lifecycle, where parallel local builds can leave Next's
+build lock in an ambiguous state.
+
+Default E2E endpoints are isolated from the normal dev ports:
+
+- web: `http://127.0.0.1:3100`
+- API: `http://127.0.0.1:4100`
+
+Override them with `APP_BASE_URL` and `API_BASE_URL` only when those ports are
+unavailable. `pnpm test:e2e:preflight` fails early if the API and web targets
+share a port, if a target port is already occupied, if another `pnpm test:e2e`
+run holds the AgentForge E2E lock, or if a native Next build lock is present.
+The error message names the blocking resource and the corrective action.
+
+For manual smoke checks against already-running local services, run:
+
+```bash
+pnpm smoke:e2e-readiness
+```
+
+Browser-use CLI and Computer Use are optional operator tools for exploratory
+assessment. They are not required for CI or for the supported local E2E path; if
+one is unavailable, treat that as an environment limitation and use Playwright
+for product validation.
 
 ## Runtime Dependencies
 
