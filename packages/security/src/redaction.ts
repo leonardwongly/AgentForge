@@ -8,6 +8,9 @@ export type RedactionMatch = {
     | "database_url"
     | "api_key_assignment"
     | "high_entropy";
+  category: "credential_like" | "local_placeholder";
+  risk: "high" | "low";
+  reason: string;
   value: string;
   redacted: string;
 };
@@ -52,7 +55,7 @@ export function detectSecrets(input: string): RedactionMatch[] {
     regex.lastIndex = 0;
     for (const match of input.matchAll(regex)) {
       const value = match[0];
-      matches.push({ kind, value, redacted: preservePrefix(value) });
+      matches.push({ kind, value, redacted: preservePrefix(value), ...classifyMatch(kind, value) });
     }
   }
   return matches;
@@ -90,4 +93,72 @@ function preservePrefix(match: string): string {
     return "Bearer [REDACTED]";
   }
   return REDACTION;
+}
+
+function classifyMatch(
+  kind: RedactionMatch["kind"],
+  value: string
+): Pick<RedactionMatch, "category" | "risk" | "reason"> {
+  if (kind === "database_url" && isLocalServiceUrl(value)) {
+    return {
+      category: "local_placeholder",
+      risk: "low",
+      reason: "local service URL"
+    };
+  }
+
+  if ((kind === "api_key_assignment" || kind === "high_entropy") && isObviousPlaceholder(value)) {
+    return {
+      category: "local_placeholder",
+      risk: "low",
+      reason: "placeholder or local development value"
+    };
+  }
+
+  return {
+    category: "credential_like",
+    risk: "high",
+    reason: "credential-shaped value"
+  };
+}
+
+function isLocalServiceUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    const hostname = parsed.hostname.toLowerCase();
+    return (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "0.0.0.0" ||
+      hostname === "::1" ||
+      hostname.endsWith(".localhost")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isObviousPlaceholder(value: string): boolean {
+  const normalized = value.toLowerCase();
+  if (
+    /\b(?:placeholder|example|sample|dummy|changeme|change-me|local-only|dev-only)\b/.test(
+      normalized
+    ) ||
+    /\byour[_-]?(?:token|secret|password|api[_-]?key)\b/.test(normalized) ||
+    /(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)/.test(normalized)
+  ) {
+    return true;
+  }
+
+  const assignment = /^[^:=]{2,40}[:=]\s*["']?([^"'\s]+)["']?$/u.exec(value);
+  if (!assignment?.[1]) {
+    return false;
+  }
+  const assignedValue = assignment[1].toLowerCase();
+  return (
+    /^(?:x+|0+|1+|a+|test-?[a-z0-9_-]*|dev-?[a-z0-9_-]*)$/u.test(assignedValue) ||
+    /(?:placeholder|example|sample|dummy|changeme|change-me|local-only|dev-only)/u.test(
+      assignedValue
+    )
+  );
 }

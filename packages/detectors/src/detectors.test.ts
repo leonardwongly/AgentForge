@@ -82,7 +82,105 @@ describe("deterministic detectors", () => {
     const secret = extractVerifiedFacts(await fixture("secret-like-token.json"), fintechConfig());
     expect(migration.map((fact) => fact.type)).toContain("migration_added");
     expect(secret.map((fact) => fact.type)).toContain("secret_like_value_detected");
+    expect(secret.find((fact) => fact.type === "secret_like_value_detected")).toMatchObject({
+      severity: "critical",
+      metadata: expect.objectContaining({
+        secretCategory: "credential_like",
+        secretRisk: "high",
+        policyTreatment: "blocking"
+      })
+    });
     expect(JSON.stringify(secret)).not.toContain("ghp_123456");
+  });
+
+  it("downgrades local placeholders and documentation examples without weakening redaction", () => {
+    const facts = extractVerifiedFacts(
+      {
+        repositoryFullName: "acme/payments",
+        pullRequestNumber: 16,
+        title: "Document local setup",
+        authorLogin: "sam",
+        baseBranch: "main",
+        headBranch: "docs/local-env",
+        headSha: "sha16",
+        changedFiles: [
+          {
+            filename: "config/local.env",
+            status: "modified",
+            patch:
+              "+DATABASE_URL=postgresql://agentforge:agentforge@localhost:15432/agentforge\n+API_KEY=placeholder-local-only-token"
+          },
+          {
+            filename: "docs/setup.md",
+            status: "modified",
+            patch: "+Use DATABASE_URL=postgresql://agentforge:agentforge@localhost:15432/agentforge"
+          }
+        ]
+      },
+      fintechConfig()
+    ).filter((fact) => fact.type === "secret_like_value_detected");
+
+    expect(facts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          severity: "low",
+          metadata: expect.objectContaining({
+            secretCategory: "local_placeholder",
+            secretRisk: "low",
+            policyTreatment: "advisory"
+          })
+        }),
+        expect.objectContaining({
+          severity: "low",
+          metadata: expect.objectContaining({
+            secretCategory: "documentation_example",
+            secretRisk: "low",
+            policyTreatment: "advisory"
+          })
+        })
+      ])
+    );
+    expect(JSON.stringify(facts)).not.toContain("agentforge:agentforge");
+    expect(JSON.stringify(facts)).not.toContain("placeholder-local-only-token");
+  });
+
+  it("keeps credential-shaped quoted env values and long base64-like values critical", () => {
+    const facts = extractVerifiedFacts(
+      {
+        repositoryFullName: "acme/payments",
+        pullRequestNumber: 17,
+        title: "Add unsafe secret",
+        authorLogin: "sam",
+        baseBranch: "main",
+        headBranch: "config/secret",
+        headSha: "sha17",
+        changedFiles: [
+          {
+            filename: "config/prod.env",
+            status: "modified",
+            patch:
+              "+SESSION_SECRET='rL8PZ1hGx7sQw9Nf4Mb2Vc6Xd8Yt3Ka5Le0Ru9Pi2Zo='\n+UNICODE_TOKEN = sk_live_abcdefghijklmnopqrstuvwx1234567890"
+          }
+        ]
+      },
+      fintechConfig()
+    ).filter((fact) => fact.type === "secret_like_value_detected");
+
+    expect(facts.length).toBeGreaterThanOrEqual(1);
+    expect(facts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          severity: "critical",
+          metadata: expect.objectContaining({
+            secretCategory: "credential_like",
+            secretRisk: "high",
+            policyTreatment: "blocking"
+          })
+        })
+      ])
+    );
+    expect(JSON.stringify(facts)).not.toContain("rL8PZ1hGx7sQ");
+    expect(JSON.stringify(facts)).not.toContain("sk_live_abcdefghijkl");
   });
 
   it("detects renamed sensitive paths and nested Prisma migration edits", () => {
