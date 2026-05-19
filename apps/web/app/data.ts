@@ -364,6 +364,20 @@ export function isObservePassWithOpenRequirements(record: ChangeControlRecord): 
   return record.mode === "observe" && record.checkStatus === "pass" && hasOpenRequirements(record);
 }
 
+function formatOpenRequirementDetail(counts: ReturnType<typeof openRequirementCounts>): string {
+  const parts = [
+    counts.evidence > 0
+      ? `${counts.evidence} evidence requirement${counts.evidence === 1 ? "" : "s"}`
+      : null,
+    counts.reviewers > 0
+      ? `${counts.reviewers} reviewer requirement${counts.reviewers === 1 ? "" : "s"}`
+      : null
+  ].filter((part): part is string => Boolean(part));
+  const verb = counts.total === 1 ? "remains" : "remain";
+
+  return `${parts.join(" and ")} ${verb} open and would block in enforce or optimize mode.`;
+}
+
 export function governanceDisposition(record: ChangeControlRecord): {
   status: ChangeControlRecord["checkStatus"];
   label: string;
@@ -374,7 +388,7 @@ export function governanceDisposition(record: ChangeControlRecord): {
     return {
       status: "warn",
       label: "observe pass; requirements open",
-      detail: `${counts.evidence} evidence and ${counts.reviewers} reviewer requirement(s) remain open and would block in enforce or optimize mode.`
+      detail: formatOpenRequirementDetail(counts)
     };
   }
   if (record.checkStatus === "warn") {

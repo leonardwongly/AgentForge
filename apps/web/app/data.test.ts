@@ -111,8 +111,20 @@ describe("dashboard API data loaders", () => {
       status: "warn",
       label: "observe pass; requirements open",
       detail:
-        "1 evidence and 1 reviewer requirement(s) remain open and would block in enforce or optimize mode."
+        "1 evidence requirement and 1 reviewer requirement remain open and would block in enforce or optimize mode."
     });
+  });
+
+  it("omits zero-count requirement groups from observe-mode detail text", () => {
+    const evidenceOnly = recordWithOpenRequirements({ reviewers: 0 });
+    const reviewersOnly = recordWithOpenRequirements({ evidence: 0 });
+
+    expect(governanceDisposition(evidenceOnly).detail).toBe(
+      "1 evidence requirement remains open and would block in enforce or optimize mode."
+    );
+    expect(governanceDisposition(reviewersOnly).detail).toBe(
+      "1 reviewer requirement remains open and would block in enforce or optimize mode."
+    );
   });
 });
 
@@ -166,7 +178,13 @@ function reviewer(
   };
 }
 
-function recordWithOpenRequirements(): ChangeControlRecord {
+function recordWithOpenRequirements({
+  evidence: evidenceCount = 1,
+  reviewers: reviewerCount = 1
+}: {
+  evidence?: number;
+  reviewers?: number;
+} = {}): ChangeControlRecord {
   return {
     id: "record-1",
     organizationId: "org-1",
@@ -178,8 +196,18 @@ function recordWithOpenRequirements(): ChangeControlRecord {
     mode: "observe",
     policyVersion: "fintech@1.0.0",
     verifiedFindings: [fact("finding-1", "sensitive_path_changed")],
-    requiredEvidence: [evidence("evidence-1", "rollback_plan")],
-    requiredReviewers: [reviewer("reviewer-1", "security-team")],
+    requiredEvidence:
+      evidenceCount === 0
+        ? []
+        : Array.from({ length: evidenceCount }, (_, index) =>
+            evidence(`evidence-${index + 1}`, "rollback_plan")
+          ),
+    requiredReviewers:
+      reviewerCount === 0
+        ? []
+        : Array.from({ length: reviewerCount }, (_, index) =>
+            reviewer(`reviewer-${index + 1}`, "security-team")
+          ),
     checkStatus: "pass",
     lifecycle: "passed",
     decision: { status: "passed" },

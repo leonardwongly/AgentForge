@@ -4,7 +4,6 @@ import {
   CheckCircle2,
   Download,
   FileWarning,
-  Filter,
   GitPullRequestArrow,
   ShieldCheck,
   UserCheck
@@ -55,7 +54,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
         </div>
         <div className="control-row">
           <Link className="button" href="/dashboard/blocked-prs">
-            <Filter size={16} aria-hidden="true" /> Action queues
+            <GitPullRequestArrow size={16} aria-hidden="true" /> Action queues
           </Link>
           <form action={createRecordExport}>
             <input name="returnTo" type="hidden" value="/dashboard" />
@@ -156,7 +155,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
                       <StatusBadge status={disposition.status} label={disposition.label} />
                     </div>
                     <div className="inline-list" aria-label="Open requirements">
-                      {hasOpenRequirements(record) ? (
+                      {hasOpenRequirements(record) && record.checkStatus !== "block" ? (
                         <span className="status-badge status-badge--warn">
                           would block in enforce
                         </span>
