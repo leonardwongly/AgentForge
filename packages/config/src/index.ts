@@ -49,7 +49,12 @@ const envSchema = z.object({
   AUDIT_RECORD_RETENTION_DAYS: z.coerce.number().int().positive().default(365),
   EXPORT_STORAGE_BUCKET: optionalStringFromEnv,
   EXPORT_STORAGE_REGION: optionalStringFromEnv,
-  SESSION_SECRET: optionalStringFromEnv
+  SESSION_SECRET: optionalStringFromEnv,
+  AGENTFORGE_API_TRUST_PROXY_HEADERS: booleanFromEnv.default(false),
+  AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS: booleanFromEnv.default(false),
+  AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: booleanFromEnv.default(false),
+  AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: booleanFromEnv.default(false),
+  AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS: booleanFromEnv.default(false)
 });
 
 export type AgentForgeConfig = {
@@ -76,6 +81,13 @@ export type AgentForgeConfig = {
   exportStorageBucket: string | undefined;
   exportStorageRegion: string | undefined;
   sessionSecret: string | undefined;
+  auth: {
+    apiTrustProxyHeaders: boolean;
+    apiAllowLocalActorHeaders: boolean;
+    dashboardTrustProxyHeaders: boolean;
+    dashboardAllowLocalActor: boolean;
+    proxyStripsIdentityHeaders: boolean;
+  };
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConfig {
@@ -104,7 +116,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConf
     auditRecordRetentionDays: parsed.AUDIT_RECORD_RETENTION_DAYS,
     exportStorageBucket: parsed.EXPORT_STORAGE_BUCKET,
     exportStorageRegion: parsed.EXPORT_STORAGE_REGION,
-    sessionSecret: parsed.SESSION_SECRET
+    sessionSecret: parsed.SESSION_SECRET,
+    auth: {
+      apiTrustProxyHeaders: parsed.AGENTFORGE_API_TRUST_PROXY_HEADERS ?? false,
+      apiAllowLocalActorHeaders: parsed.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS ?? false,
+      dashboardTrustProxyHeaders: parsed.AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS ?? false,
+      dashboardAllowLocalActor: parsed.AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR ?? false,
+      proxyStripsIdentityHeaders: parsed.AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS ?? false
+    }
   };
   validateProductionConfig(config);
   return config;
@@ -126,6 +145,21 @@ function validateProductionConfig(config: AgentForgeConfig): void {
   }
   if (!config.redactSecrets) {
     errors.push("REDACT_SECRETS must remain true in production.");
+  }
+  if (!config.auth.apiTrustProxyHeaders) {
+    errors.push("AGENTFORGE_API_TRUST_PROXY_HEADERS must be true in production.");
+  }
+  if (!config.auth.dashboardTrustProxyHeaders) {
+    errors.push("AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS must be true in production.");
+  }
+  if (config.auth.apiAllowLocalActorHeaders) {
+    errors.push("AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS must be false in production.");
+  }
+  if (config.auth.dashboardAllowLocalActor) {
+    errors.push("AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR must be false in production.");
+  }
+  if (!config.auth.proxyStripsIdentityHeaders) {
+    errors.push("AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS must be true in production.");
   }
   if (errors.length > 0) {
     throw new Error(`Unsafe AgentForge production configuration: ${errors.join(" ")}`);

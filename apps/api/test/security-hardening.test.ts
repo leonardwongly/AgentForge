@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PullRequestInput } from "@agentforge/core";
 import { buildLlmAdvisoryPrompt } from "@agentforge/security";
+import { resolveApiActor } from "../src/auth.js";
 import { createApp, createInitialState } from "../src/index.js";
 
 const rawGithubToken = "ghp_123456789012345678901234567890123456";
@@ -17,7 +18,10 @@ const mutableEnvKeys = [
   "LLM_FEATURES",
   "ALLOW_UNSIGNED_GITHUB_WEBHOOKS",
   "AGENTFORGE_API_TRUST_PROXY_HEADERS",
-  "AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS"
+  "AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS",
+  "AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS",
+  "AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR",
+  "AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS"
 ] as const;
 const originalEnv = new Map<string, string | undefined>(
   mutableEnvKeys.map((key) => [key, process.env[key]])
@@ -39,21 +43,45 @@ overrides:
   audit: true
 `;
 
-function actorHeaders(actor: string, role: string): Record<string, string> {
+function actorHeaders(
+  actor: string,
+  role: string,
+  organizationId = "org_local"
+): Record<string, string> {
   return {
     "x-agentforge-actor": actor,
-    "x-agentforge-role": role
+    "x-agentforge-role": role,
+    "x-agentforge-organization": organizationId
   };
 }
 
-function authenticatedActorHeaders(actor: string, role: string): Record<string, string> {
+function authenticatedActorHeaders(
+  actor: string,
+  role: string,
+  organizationId = "org_local"
+): Record<string, string> {
   return {
     "x-agentforge-authenticated-actor": actor,
-    "x-agentforge-authenticated-role": role
+    "x-agentforge-authenticated-role": role,
+    "x-agentforge-authenticated-organization": organizationId
   };
 }
 
-function sensitivePr(): PullRequestInput {
+function setProductionProxyAuthEnv() {
+  process.env.NODE_ENV = "production";
+  process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
+  process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
+  process.env.AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS = "true";
+  process.env.AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS = "true";
+}
+
+function requestFromHeaders(
+  headers: Record<string, string>
+): Parameters<typeof resolveApiActor>[0] {
+  return { headers } as Parameters<typeof resolveApiActor>[0];
+}
+
+function sensitivePr(overrides: Partial<PullRequestInput> = {}): PullRequestInput {
   return {
     repositoryFullName: "acme/payments",
     pullRequestNumber: 44,
@@ -71,21 +99,33 @@ function sensitivePr(): PullRequestInput {
         previousContent: "export const before = true;",
         currentContent: rawSource
       }
-    ]
+    ],
+    ...overrides
   };
 }
 
-async function createPreviewRecord() {
-  const state = createInitialState();
+async function createPreviewRecord(
+  options: {
+    state?: ReturnType<typeof createInitialState>;
+    organizationId?: string;
+    pr?: PullRequestInput;
+  } = {}
+) {
+  const state = options.state ?? createInitialState();
   const app = createApp(state);
+  const organizationId = options.organizationId ?? "org_local";
   const headers =
     process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS === "true"
-      ? authenticatedActorHeaders("alex", "platform_admin")
-      : actorHeaders("alex", "platform_admin");
+      ? authenticatedActorHeaders("alex", "platform_admin", organizationId)
+      : actorHeaders("alex", "platform_admin", organizationId);
   const response = await app.inject({
     method: "POST",
     url: "/api/policies/preview",
-    payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr(), persist: true }),
+    payload: JSON.stringify({
+      contentYaml: policyYaml,
+      pr: options.pr ?? sensitivePr(),
+      persist: true
+    }),
     headers: { "content-type": "application/json", ...headers }
   });
   expect(response.statusCode).toBe(200);
@@ -237,12 +277,9 @@ describe("security and audit hardening", () => {
     await app.close();
   });
 
-  it("rejects raw local actor headers in production unless explicitly allowed", async () => {
-    process.env.NODE_ENV = "production";
-    process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
-    process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS = "true";
+  it("rejects raw local actor headers in production even when they spoof a valid actor", async () => {
+    setProductionProxyAuthEnv();
     const { app, state } = await createPreviewRecord();
-    delete process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS;
     const record = state.records[0]!;
     const evidence = record.requiredEvidence[0]!;
 
@@ -256,25 +293,25 @@ describe("security and audit hardening", () => {
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
     });
     expect(rejected.statusCode).toBe(401);
-
-    process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS = "true";
-    const allowedLocalFallback = await app.inject({
-      method: "POST",
-      url: `/api/pull-requests/${record.id}/evidence`,
-      payload: JSON.stringify({
-        evidenceId: evidence.id,
-        content: "Security note: explicit production local fallback accepted."
-      }),
-      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
-    });
-    expect(allowedLocalFallback.statusCode).toBe(200);
     await app.close();
   });
 
+  it("requires an explicit flag before raw local actor headers resolve outside tests", () => {
+    process.env.NODE_ENV = "development";
+    delete process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS;
+
+    expect(
+      resolveApiActor(requestFromHeaders(actorHeaders("sam", "developer", "org-dev")))
+    ).toBeUndefined();
+
+    process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS = "true";
+    expect(
+      resolveApiActor(requestFromHeaders(actorHeaders("sam", "developer", "org-dev")))
+    ).toEqual({ login: "sam", role: "developer", organizationId: "org-dev" });
+  });
+
   it("accepts authenticated proxy actor headers in production when proxy trust is enabled", async () => {
-    process.env.NODE_ENV = "production";
-    process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
-    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
+    setProductionProxyAuthEnv();
     const { app, state } = await createPreviewRecord();
     const record = state.records[0]!;
     const evidence = record.requiredEvidence[0]!;
@@ -293,6 +330,25 @@ describe("security and audit hardening", () => {
     });
     expect(accepted.statusCode).toBe(200);
     expect(state.records[0]!.requiredEvidence[0]!.providedBy).toBe("sam");
+    await app.close();
+  });
+
+  it("rejects trusted proxy actor headers that omit organization identity", async () => {
+    setProductionProxyAuthEnv();
+    const app = createApp(createInitialState());
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/exports/change-control-records",
+      payload: JSON.stringify({ format: "json" }),
+      headers: {
+        "content-type": "application/json",
+        "x-agentforge-authenticated-actor": "alex",
+        "x-agentforge-authenticated-role": "platform_admin"
+      }
+    });
+
+    expect(response.statusCode).toBe(401);
     await app.close();
   });
 
@@ -636,6 +692,74 @@ describe("security and audit hardening", () => {
       expect(job.body).not.toContain("currentContent");
       expect(job.body).not.toContain("previousContent");
     }
+
+    await app.close();
+  });
+
+  it("enforces organization isolation for evidence, exports, and audit access", async () => {
+    const state = createInitialState();
+    const { app } = await createPreviewRecord({ state, organizationId: "org-a" });
+    await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({
+        contentYaml: policyYaml,
+        pr: sensitivePr({
+          repositoryFullName: "beta/payments",
+          pullRequestNumber: 45,
+          headSha: "sha-security-b"
+        }),
+        persist: true
+      }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("brenda", "platform_admin", "org-b")
+      }
+    });
+    const orgBRecord = state.records.find((record) => record.organizationId === "org-b")!;
+    const orgBEvidence = orgBRecord.requiredEvidence[0]!;
+
+    const crossTenantEvidence = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${orgBRecord.id}/evidence`,
+      payload: JSON.stringify({
+        evidenceId: orgBEvidence.id,
+        content: "Security note: tenant A must not write tenant B evidence."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "developer", "org-a") }
+    });
+    expect(crossTenantEvidence.statusCode).toBe(403);
+
+    const orgAExport = await app.inject({
+      method: "POST",
+      url: "/api/exports/change-control-records",
+      payload: JSON.stringify({ format: "json" }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("auditor-a", "auditor", "org-a")
+      }
+    });
+    expect(orgAExport.statusCode).toBe(201);
+    expect(orgAExport.json()).toMatchObject({ recordCount: 1 });
+
+    const crossTenantExportRead = await app.inject({
+      method: "GET",
+      url: `/api/exports/${orgAExport.json().id}`,
+      headers: actorHeaders("auditor-b", "auditor", "org-b")
+    });
+    expect(crossTenantExportRead.statusCode).toBe(403);
+
+    const orgAAudit = await app.inject({
+      method: "GET",
+      url: "/api/audit-events",
+      headers: actorHeaders("auditor-a", "auditor", "org-a")
+    });
+    expect(orgAAudit.statusCode).toBe(200);
+    expect(
+      orgAAudit
+        .json()
+        .auditEvents.every((event: { organizationId: string }) => event.organizationId === "org-a")
+    ).toBe(true);
 
     await app.close();
   });

@@ -57,12 +57,14 @@ function actorHeaders(actor: DashboardActorContext): Record<string, string> {
   if (actor.source === "trusted_headers") {
     return {
       "x-agentforge-authenticated-actor": actor.login,
-      "x-agentforge-authenticated-role": actor.role
+      "x-agentforge-authenticated-role": actor.role,
+      "x-agentforge-authenticated-organization": actor.organizationId
     };
   }
   return {
     "x-agentforge-actor": actor.login,
-    "x-agentforge-role": actor.role
+    "x-agentforge-role": actor.role,
+    "x-agentforge-organization": actor.organizationId
   };
 }
 

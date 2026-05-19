@@ -16,15 +16,30 @@ describe("dashboard actor context", () => {
         env: { AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true" },
         headers: headers({
           "x-agentforge-authenticated-actor": "alex",
-          "x-agentforge-authenticated-role": "platform_admin"
+          "x-agentforge-authenticated-role": "platform_admin",
+          "x-agentforge-authenticated-organization": "org-a"
         }),
         nodeEnv: "production"
       })
     ).toEqual({
       login: "alex",
       role: "platform_admin",
+      organizationId: "org-a",
       source: "trusted_headers"
     });
+  });
+
+  it("requires trusted authenticated headers to include organization identity", () => {
+    expect(
+      resolveDashboardActorContext({
+        env: { AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true" },
+        headers: headers({
+          "x-agentforge-authenticated-actor": "alex",
+          "x-agentforge-authenticated-role": "platform_admin"
+        }),
+        nodeEnv: "production"
+      })
+    ).toBeUndefined();
   });
 
   it("does not trust incoming actor headers unless proxy header trust is enabled", () => {
@@ -58,13 +73,15 @@ describe("dashboard actor context", () => {
       resolveDashboardActorContext({
         env: {
           AGENTFORGE_DASHBOARD_ACTOR: "dashboard-local",
-          AGENTFORGE_DASHBOARD_ROLE: "engineering_manager"
+          AGENTFORGE_DASHBOARD_ROLE: "engineering_manager",
+          AGENTFORGE_DASHBOARD_ORGANIZATION: "org-dev"
         },
         nodeEnv: "development"
       })
     ).toEqual({
       login: "dashboard-local",
       role: "engineering_manager",
+      organizationId: "org-dev",
       source: "local_environment"
     });
   });
@@ -92,6 +109,7 @@ describe("dashboard actor context", () => {
     ).toEqual({
       login: "dashboard-local",
       role: "platform_admin",
+      organizationId: "org_local",
       source: "local_environment"
     });
   });

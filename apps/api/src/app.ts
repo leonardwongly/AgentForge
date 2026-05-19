@@ -47,7 +47,13 @@ import {
   summarizeSafeSnippet,
   type MetadataStoragePolicy
 } from "@agentforge/security";
-import { isAuthzFailure, requireApiActor, requireRole, type ApiActor } from "./auth.js";
+import {
+  isAuthzFailure,
+  requireApiActor,
+  requireOrganizationAccess,
+  requireRole,
+  type ApiActor
+} from "./auth.js";
 import { evaluateFixturePr } from "./evaluation.js";
 
 type QueuedEvaluation = {
@@ -98,6 +104,7 @@ type ReplayableDelivery = {
 
 type ExportJob = {
   id: string;
+  organizationId: string;
   status: "completed";
   format: "json" | "csv";
   recordCount: number;
@@ -180,6 +187,7 @@ type AuditEventRow = {
 
 type RepositorySettingsState = {
   repositoryId: string;
+  organizationId?: string | undefined;
   enabled: boolean;
   mode?: ChangeControlRecord["mode"] | undefined;
   dataHandling?: RepositoryDataHandlingState | undefined;
@@ -737,6 +745,18 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       return reply.code(allowed.statusCode).send({ error: allowed.reason });
     }
     const repositoryId = (request.params as { id: string }).id;
+    const organizationId = await repositoryOrganizationId(state, prisma, repositoryId);
+    if (!organizationId) {
+      return reply.code(404).send({ error: "Repository not found" });
+    }
+    const tenantAccess = requireOrganizationAccess(
+      actor,
+      organizationId,
+      "Repository settings update"
+    );
+    if (!tenantAccess.ok) {
+      return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+    }
     const parsed = repositorySettingsPatchSchema.safeParse(request.body ?? {});
     if (!parsed.success) {
       return reply.code(400).send({
@@ -907,6 +927,15 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (!allowed.ok) {
       return reply.code(allowed.statusCode).send({ error: allowed.reason });
     }
+    const repositoryId = (request.params as { id: string }).id;
+    const organizationId = await repositoryOrganizationId(state, prisma, repositoryId);
+    if (!organizationId) {
+      return reply.code(404).send({ error: "Repository not found" });
+    }
+    const tenantAccess = requireOrganizationAccess(actor, organizationId, "Policy update");
+    if (!tenantAccess.ok) {
+      return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+    }
     const body = request.body as { contentYaml?: string };
     const validation = validatePolicyYaml(body.contentYaml ?? "");
     if (!validation.valid) {
@@ -916,7 +945,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     let policy: RepositoryPolicyState;
     try {
       policy = await saveRepositoryPolicy(
-        (request.params as { id: string }).id,
+        repositoryId,
         body.contentYaml ?? "",
         actor.login,
         parsed
@@ -927,8 +956,8 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       });
     }
     await audit({
-      organizationId: "org_local",
-      repositoryId: (request.params as { id: string }).id,
+      organizationId,
+      repositoryId,
       actor: actor.login,
       actorRole: actor.role,
       action: "policy_changed",
@@ -947,7 +976,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       }
     });
     return {
-      repositoryId: (request.params as { id: string }).id,
+      repositoryId,
       contentHash: policy.contentHash,
       version: policy.version,
       valid: true
@@ -971,13 +1000,15 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       });
     }
     const body = parsedBody.data;
+    let actor: ApiActor | undefined;
     if (body.persist) {
-      const actor = requireApiActor(request);
-      if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+      const resolvedActor = requireApiActor(request);
+      if (isAuthzFailure(resolvedActor)) {
+        return reply.code(resolvedActor.statusCode).send({ error: resolvedActor.reason });
       }
+      actor = resolvedActor;
       const allowed = requireRole(
-        actor,
+        resolvedActor,
         ["platform_admin", "engineering_manager"],
         "Persisted policy preview"
       );
@@ -1005,9 +1036,23 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     const evaluationInput: Parameters<typeof evaluateFixturePr>[0] = {
       pr: body.pr,
       policyYaml: contentYaml,
+      organizationId: actor?.organizationId ?? "org_local",
       storagePolicy
     };
     if (repositoryId) {
+      if (body.persist) {
+        const repositoryOrganization = await repositoryOrganizationId(state, prisma, repositoryId);
+        if (repositoryOrganization) {
+          const tenantAccess = requireOrganizationAccess(
+            actor!,
+            repositoryOrganization,
+            "Persisted policy preview"
+          );
+          if (!tenantAccess.ok) {
+            return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+          }
+        }
+      }
       evaluationInput.repositoryId = repositoryId;
       const modeOverride = await getRepositoryModeOverride(state, prisma, repositoryId);
       if (modeOverride) {
@@ -1019,9 +1064,12 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       return safe({ ...output, persisted: false });
     }
 
-    const actor = requireApiActor(request);
-    if (isAuthzFailure(actor)) {
-      return reply.code(actor.statusCode).send({ error: actor.reason });
+    if (!actor) {
+      const resolvedActor = requireApiActor(request);
+      if (isAuthzFailure(resolvedActor)) {
+        return reply.code(resolvedActor.statusCode).send({ error: resolvedActor.reason });
+      }
+      actor = resolvedActor;
     }
     const record = await saveRecord(
       sanitizeChangeControlRecord(output.record, storagePolicy),
@@ -1107,6 +1155,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     const actor = requireApiActor(request);
     if (isAuthzFailure(actor)) {
       return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const tenantAccess = requireOrganizationAccess(
+      actor,
+      record.organizationId,
+      "Evidence submission"
+    );
+    if (!tenantAccess.ok) {
+      return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
     }
     const parsedBody = evidenceSubmissionSchema.safeParse(request.body ?? {});
     if (!parsedBody.success) {
@@ -1201,6 +1257,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       });
     }
     for (const record of await recordsForAction(parsedBody.data.recordId)) {
+      const tenantAccess = requireOrganizationAccess(
+        actor,
+        record.organizationId,
+        "Evidence approval"
+      );
+      if (!tenantAccess.ok) {
+        return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+      }
       const evidence = record.requiredEvidence.find(
         (item) => item.id === (request.params as { id: string }).id
       );
@@ -1266,6 +1330,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       });
     }
     for (const record of await recordsForAction(parsedBody.data.recordId)) {
+      const tenantAccess = requireOrganizationAccess(
+        actor,
+        record.organizationId,
+        "Evidence rejection"
+      );
+      if (!tenantAccess.ok) {
+        return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+      }
       const evidence = record.requiredEvidence.find(
         (item) => item.id === (request.params as { id: string }).id
       );
@@ -1327,6 +1399,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       });
     }
     for (const record of await recordsForAction(parsedBody.data.recordId)) {
+      const tenantAccess = requireOrganizationAccess(
+        actor,
+        record.organizationId,
+        "Reviewer approval"
+      );
+      if (!tenantAccess.ok) {
+        return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+      }
       const reviewer = record.requiredReviewers.find(
         (item) => item.id === (request.params as { id: string }).id
       );
@@ -1384,6 +1464,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     const actor = requireApiActor(request);
     if (isAuthzFailure(actor)) {
       return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const tenantAccess = requireOrganizationAccess(actor, record.organizationId, "Override");
+    if (!tenantAccess.ok) {
+      return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
     }
     try {
       const policy = await getRecordPolicyConfig(record);
@@ -1479,11 +1563,13 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     }
     const body = request.body as { format?: "json" | "csv" };
     const format = body.format ?? "json";
-    const records = await listRecords();
+    const records = (await listRecords()).filter(
+      (record) => record.organizationId === actor.organizationId
+    );
     const jobId = randomUUID();
     const auditEvents = await listAuditEventsForRecordExport(state, prisma, records);
     const exportAuditEvent = createAuditEvent({
-      organizationId: "org_local",
+      organizationId: actor.organizationId,
       actor: actor.login,
       action: "record_exported",
       targetType: "change_control_records_export",
@@ -1507,6 +1593,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           ]);
     const job: ExportJob = {
       id: jobId,
+      organizationId: actor.organizationId,
       status: "completed",
       format,
       recordCount: records.length,
@@ -1534,6 +1621,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (!job) {
       return reply.code(404).send({ error: "Export job not found" });
     }
+    const tenantAccess = requireOrganizationAccess(actor, job.organizationId, "Export job access");
+    if (!tenantAccess.ok) {
+      return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+    }
     return job;
   });
 
@@ -1550,7 +1641,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (!allowed.ok) {
       return reply.code(allowed.statusCode).send({ error: allowed.reason });
     }
-    return { auditEvents: safe(await listAuditEvents(state, prisma)) };
+    return { auditEvents: safe(await listAuditEvents(state, prisma, actor.organizationId)) };
   });
 
   app.get("/api/check-output/:recordId", async (request, reply) => {
@@ -1586,6 +1677,24 @@ export function createInitialState(): AppState {
     repositorySettings: new Map(),
     ownerMappings: []
   };
+}
+
+async function repositoryOrganizationId(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  repositoryId: string
+): Promise<string | undefined> {
+  if (prisma) {
+    const repository = await prisma.repository.findUnique({
+      where: { id: repositoryId },
+      select: { organizationId: true }
+    });
+    return repository?.organizationId;
+  }
+  return (
+    state.repositorySettings.get(repositoryId)?.organizationId ??
+    state.records.find((record) => record.repositoryId === repositoryId)?.organizationId
+  );
 }
 
 async function listRepositorySummaries(
@@ -1882,6 +1991,7 @@ async function updateRepositorySettings(
   };
   const nextSettings: RepositorySettingsState = {
     repositoryId,
+    organizationId: existingRecord?.organizationId ?? existingSettings?.organizationId,
     enabled: patch.enabled ?? existingSettings?.enabled ?? true,
     mode: patch.mode ?? existingSettings?.mode ?? existingPolicy?.mode ?? existingRecord?.mode,
     dataHandling,
@@ -2645,7 +2755,7 @@ async function saveExportJob(
   await prisma.exportJob.create({
     data: {
       id: job.id,
-      organizationId: "org_local",
+      organizationId: job.organizationId,
       actor,
       actorRole,
       status: job.status,
@@ -2669,6 +2779,7 @@ async function getExportJob(
   return row
     ? {
         id: row.id,
+        organizationId: row.organizationId ?? "org_local",
         status: "completed",
         format: row.format === "csv" ? "csv" : "json",
         recordCount: row.recordCount,
@@ -2680,12 +2791,16 @@ async function getExportJob(
 
 async function listAuditEvents(
   state: AppState,
-  prisma: PrismaClient | undefined
+  prisma: PrismaClient | undefined,
+  organizationId?: string
 ): Promise<AuditEventRecord[]> {
   if (!prisma) {
-    return state.auditEvents;
+    return organizationId
+      ? state.auditEvents.filter((event) => event.organizationId === organizationId)
+      : state.auditEvents;
   }
   const rows = await prisma.auditEvent.findMany({
+    ...(organizationId ? { where: { organizationId } } : {}),
     orderBy: { createdAt: "desc" },
     take: 250
   });
@@ -2697,16 +2812,26 @@ async function listAuditEventsForRecordExport(
   prisma: PrismaClient | undefined,
   records: ChangeControlRecord[]
 ): Promise<AuditEventRecord[]> {
-  if (!prisma) {
-    return state.auditEvents;
-  }
   const repositoryIds = [...new Set(records.map((record) => record.repositoryId))];
   const recordIds = records.map((record) => record.id);
+  const organizationId = records[0]?.organizationId;
   if (repositoryIds.length === 0 && recordIds.length === 0) {
     return [];
   }
+  if (!organizationId) {
+    return [];
+  }
+  if (!prisma) {
+    return state.auditEvents.filter(
+      (event) =>
+        event.organizationId === organizationId &&
+        ((event.targetType === "change_control_record" && recordIds.includes(event.targetId)) ||
+          (event.repositoryId ? repositoryIds.includes(event.repositoryId) : false))
+    );
+  }
   const rows = await prisma.auditEvent.findMany({
     where: {
+      organizationId,
       OR: [
         { targetType: "change_control_record", targetId: { in: recordIds } },
         { repositoryId: { in: repositoryIds } }

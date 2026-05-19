@@ -46,10 +46,13 @@ Deploy the dashboard/API behind an authenticated ingress. The ingress must strip
 
 - `x-agentforge-authenticated-actor`
 - `x-agentforge-authenticated-role`
+- `x-agentforge-authenticated-organization`
+
+Map organization membership and roles in the ingress or identity layer before injecting headers. The organization header must be a server-side organization id, not a client-selected tenant claim. Keep the mapping default-deny: unauthenticated users, users without organization membership, and users without an AgentForge role should receive no AgentForge identity headers.
 
 Set `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true` only after the ingress is verified to strip spoofed `x-agentforge-*` and `x-agentforge-authenticated-*` headers. Do not use `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR` in production.
 
-Set `AGENTFORGE_API_TRUST_PROXY_HEADERS=true` for deployed API traffic after the same ingress stripping check passes. Keep `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=false` outside isolated local production-mode smoke tests.
+Set `AGENTFORGE_API_TRUST_PROXY_HEADERS=true` for deployed API traffic after the same ingress stripping check passes. Keep `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=false` on deployed environments and set `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS=true` only after the stripping check is verified.
 
 ## Migration Order
 

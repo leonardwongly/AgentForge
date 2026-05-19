@@ -6,7 +6,10 @@ const productionBaseEnv = {
   GITHUB_WEBHOOK_SECRET: "production-secret",
   SOURCE_CODE_STORAGE: "false",
   REDACT_SECRETS: "true",
-  ALLOW_UNSIGNED_GITHUB_WEBHOOKS: "false"
+  ALLOW_UNSIGNED_GITHUB_WEBHOOKS: "false",
+  AGENTFORGE_API_TRUST_PROXY_HEADERS: "true",
+  AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+  AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS: "true"
 };
 
 describe("AgentForge runtime config", () => {
@@ -21,7 +24,32 @@ describe("AgentForge runtime config", () => {
     ["missing webhook secret", { GITHUB_WEBHOOK_SECRET: "" }, "GITHUB_WEBHOOK_SECRET"],
     ["unsigned webhooks enabled", { ALLOW_UNSIGNED_GITHUB_WEBHOOKS: "true" }, "ALLOW_UNSIGNED"],
     ["source storage enabled", { SOURCE_CODE_STORAGE: "true" }, "SOURCE_CODE_STORAGE"],
-    ["redaction disabled", { REDACT_SECRETS: "false" }, "REDACT_SECRETS"]
+    ["redaction disabled", { REDACT_SECRETS: "false" }, "REDACT_SECRETS"],
+    [
+      "API trusted proxy headers disabled",
+      { AGENTFORGE_API_TRUST_PROXY_HEADERS: "false" },
+      "AGENTFORGE_API_TRUST_PROXY_HEADERS"
+    ],
+    [
+      "dashboard trusted proxy headers disabled",
+      { AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "false" },
+      "AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS"
+    ],
+    [
+      "API local actor headers enabled",
+      { AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS: "true" },
+      "AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS"
+    ],
+    [
+      "dashboard local actor enabled",
+      { AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: "true" },
+      "AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR"
+    ],
+    [
+      "auth proxy header stripping not acknowledged",
+      { AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS: "false" },
+      "AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS"
+    ]
   ])("fails closed in production when %s", (_name, override, message) => {
     expect(() => loadConfig({ ...productionBaseEnv, ...override })).toThrow(message);
   });
@@ -42,5 +70,17 @@ describe("AgentForge runtime config", () => {
     });
 
     expect(config.github.installationId).toBe("12345");
+  });
+
+  it("loads the explicit proxy-only auth boundary flags", () => {
+    const config = loadConfig(productionBaseEnv);
+
+    expect(config.auth).toMatchObject({
+      apiTrustProxyHeaders: true,
+      dashboardTrustProxyHeaders: true,
+      proxyStripsIdentityHeaders: true,
+      apiAllowLocalActorHeaders: false,
+      dashboardAllowLocalActor: false
+    });
   });
 });

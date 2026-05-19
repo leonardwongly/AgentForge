@@ -3,6 +3,7 @@ import type { FastifyRequest } from "fastify";
 export type ApiActor = {
   login: string;
   role: string;
+  organizationId: string;
 };
 
 export type AuthzFailure = { ok: false; statusCode: 401 | 403; reason: string };
@@ -17,12 +18,15 @@ const allowedRoles = new Set([
 ]);
 const actorPattern = /^[A-Za-z0-9_.@-]{1,128}$/u;
 const rolePattern = /^[a-z][a-z0-9_-]{0,63}$/u;
+const organizationPattern = /^[A-Za-z0-9_.-]{1,128}$/u;
+const localOrganizationId = "org_local";
 
 export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
   if (process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS === "true") {
     const actor = actorFromHeaders(
       request.headers["x-agentforge-authenticated-actor"],
-      request.headers["x-agentforge-authenticated-role"]
+      request.headers["x-agentforge-authenticated-role"],
+      request.headers["x-agentforge-authenticated-organization"]
     );
     if (actor) {
       return actor;
@@ -30,12 +34,14 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
   }
 
   if (
-    process.env.NODE_ENV !== "production" ||
+    process.env.NODE_ENV === "test" ||
     process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS === "true"
   ) {
     return actorFromHeaders(
       request.headers["x-agentforge-actor"],
-      request.headers["x-agentforge-role"]
+      request.headers["x-agentforge-role"],
+      request.headers["x-agentforge-organization"],
+      localOrganizationId
     );
   }
 
@@ -69,8 +75,29 @@ export function requireRole(
   };
 }
 
+export function requireOrganizationAccess(
+  actor: ApiActor,
+  organizationId: string,
+  action: string
+): AuthzDecision {
+  if (actor.organizationId === organizationId) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    statusCode: 403,
+    reason: `${action} is scoped to a different organization.`
+  };
+}
+
 export function actorOrSystem(request: FastifyRequest): ApiActor {
-  return resolveApiActor(request) ?? { login: "system", role: "system" };
+  return (
+    resolveApiActor(request) ?? {
+      login: "system",
+      role: "system",
+      organizationId: localOrganizationId
+    }
+  );
 }
 
 export function isAuthzFailure(value: ApiActor | AuthzDecision): value is AuthzFailure {
@@ -85,15 +112,23 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 
 function actorFromHeaders(
   loginHeader: string | string[] | undefined,
-  roleHeader: string | string[] | undefined
+  roleHeader: string | string[] | undefined,
+  organizationHeader: string | string[] | undefined,
+  defaultOrganizationId?: string
 ): ApiActor | undefined {
   const login = headerValue(loginHeader);
   const role = headerValue(roleHeader);
-  if (!login || !role) {
+  const organizationId = headerValue(organizationHeader) ?? defaultOrganizationId;
+  if (!login || !role || !organizationId) {
     return undefined;
   }
-  if (!actorPattern.test(login) || !rolePattern.test(role) || !allowedRoles.has(role)) {
+  if (
+    !actorPattern.test(login) ||
+    !rolePattern.test(role) ||
+    !allowedRoles.has(role) ||
+    !organizationPattern.test(organizationId)
+  ) {
     return undefined;
   }
-  return { login, role };
+  return { login, role, organizationId };
 }
