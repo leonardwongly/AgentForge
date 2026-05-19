@@ -23,11 +23,8 @@ export async function createRecordExport(formData: FormData): Promise<void> {
       { method: "POST", body: JSON.stringify({ format }) }
     );
   } catch (error) {
-    redirect(
-      `${returnTo}?error=${encodeURIComponent(
-        error instanceof Error ? error.message.slice(0, 180) : "Record export could not be created."
-      )}`
-    );
+    void error;
+    redirectWithError(returnTo, "record-export-failed");
   }
 
   revalidatePath("/records");
@@ -36,6 +33,101 @@ export async function createRecordExport(formData: FormData): Promise<void> {
       exportJob.id
     )}&recordCount=${encodeURIComponent(String(exportJob.recordCount))}`
   );
+}
+
+export async function submitEvidence(formData: FormData): Promise<void> {
+  const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
+  const recordId = readString(formData, "recordId");
+  const evidenceId = readString(formData, "evidenceId");
+  const kind = readString(formData, "kind");
+  const content = readString(formData, "content");
+  if (!recordId || !content || (!evidenceId && !kind)) {
+    redirectWithError(returnTo, "evidence-submission-required");
+  }
+
+  try {
+    const actor = await resolveDashboardActor();
+    await requestJson(actor, `/api/pull-requests/${encodeURIComponent(recordId)}/evidence`, {
+      method: "POST",
+      body: JSON.stringify({ evidenceId, kind, content })
+    });
+  } catch (error) {
+    void error;
+    redirectWithError(returnTo, "evidence-submission-failed");
+  }
+
+  revalidateEvidencePaths(returnTo);
+  redirect(`${returnTo}?updated=evidence-submitted`);
+}
+
+export async function approveEvidence(formData: FormData): Promise<void> {
+  const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
+  const evidenceId = readString(formData, "evidenceId");
+  const recordId = readString(formData, "recordId");
+  if (!evidenceId) {
+    redirectWithError(returnTo, "evidence-approval-required");
+  }
+
+  try {
+    const actor = await resolveDashboardActor();
+    await requestJson(actor, `/api/evidence/${encodeURIComponent(evidenceId)}/approve`, {
+      method: "PATCH",
+      body: JSON.stringify({ recordId })
+    });
+  } catch (error) {
+    void error;
+    redirectWithError(returnTo, "evidence-approval-failed");
+  }
+
+  revalidateEvidencePaths(returnTo);
+  redirect(`${returnTo}?updated=evidence-approved`);
+}
+
+export async function rejectEvidence(formData: FormData): Promise<void> {
+  const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
+  const evidenceId = readString(formData, "evidenceId");
+  const recordId = readString(formData, "recordId");
+  const reason = readString(formData, "reason");
+  if (!evidenceId || !reason) {
+    redirectWithError(returnTo, "evidence-rejection-required");
+  }
+
+  try {
+    const actor = await resolveDashboardActor();
+    await requestJson(actor, `/api/evidence/${encodeURIComponent(evidenceId)}/reject`, {
+      method: "PATCH",
+      body: JSON.stringify({ recordId, reason })
+    });
+  } catch (error) {
+    void error;
+    redirectWithError(returnTo, "evidence-rejection-failed");
+  }
+
+  revalidateEvidencePaths(returnTo);
+  redirect(`${returnTo}?updated=evidence-rejected`);
+}
+
+export async function approveReviewer(formData: FormData): Promise<void> {
+  const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
+  const reviewerId = readString(formData, "reviewerId");
+  const recordId = readString(formData, "recordId");
+  if (!reviewerId) {
+    redirectWithError(returnTo, "reviewer-approval-required");
+  }
+
+  try {
+    const actor = await resolveDashboardActor();
+    await requestJson(actor, `/api/reviewers/${encodeURIComponent(reviewerId)}/approve`, {
+      method: "PATCH",
+      body: JSON.stringify({ recordId })
+    });
+  } catch (error) {
+    void error;
+    redirectWithError(returnTo, "reviewer-approval-failed");
+  }
+
+  revalidateEvidencePaths(returnTo);
+  redirect(`${returnTo}?updated=reviewer-approved`);
 }
 
 async function requestJson<T>(
@@ -91,8 +183,25 @@ function readExportFormat(formData: FormData): ExportFormat {
   return exportFormats.has(format) ? (format as ExportFormat) : "json";
 }
 
+function revalidateEvidencePaths(returnTo: string): void {
+  revalidatePath(returnTo);
+  revalidatePath("/records");
+  revalidatePath("/dashboard");
+  revalidatePath("/dashboard/evidence-completion");
+  revalidatePath("/dashboard/blocked-prs");
+}
+
+function redirectWithError(returnTo: string, code: string): never {
+  redirect(`${returnTo}?error=${encodeURIComponent(code)}`);
+}
+
 function safeReturnPath(path: string): string {
-  if (path === "/dashboard" || path === "/records" || path === "/settings") {
+  if (
+    path === "/dashboard" ||
+    path === "/dashboard/evidence-completion" ||
+    path === "/records" ||
+    path === "/settings"
+  ) {
     return path;
   }
   if (/^\/records\/[A-Za-z0-9_-]+$/u.test(path)) {

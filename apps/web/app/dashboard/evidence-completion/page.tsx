@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CheckCircle2, FileWarning, Filter } from "lucide-react";
+import { CheckCircle2, FileWarning, Filter, XCircle } from "lucide-react";
 import { MetricCard, ProgressBar, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../data-source-notice";
 import {
@@ -9,14 +9,28 @@ import {
   loadDashboardData,
   missingEvidence
 } from "../../data";
+import { approveEvidence, rejectEvidence } from "../../records/actions";
 
-export default async function EvidenceCompletionPage() {
+type EvidenceCompletionPageProps = {
+  searchParams?: Promise<{
+    updated?: string;
+    error?: string;
+  }>;
+};
+
+export default async function EvidenceCompletionPage({
+  searchParams
+}: EvidenceCompletionPageProps) {
+  const query = await searchParams;
+  const updateNotice = query?.updated ? evidenceQueueNotice(query.updated) : undefined;
+  const errorNotice = query?.error ? evidenceQueueErrorNotice(query.error) : undefined;
   const data = await loadDashboardData();
   const summary = getDashboardSummary(data.records);
   const evidenceGroups = evidenceByKind(data.records);
   const evidenceItems = data.records.flatMap((item) => item.record.requiredEvidence);
   const approved = evidenceItems.filter((item) => item.status === "approved").length;
   const provided = evidenceItems.filter((item) => item.status === "provided").length;
+  const rejected = evidenceItems.filter((item) => item.status === "rejected").length;
 
   return (
     <>
@@ -31,13 +45,31 @@ export default async function EvidenceCompletionPage() {
       </header>
 
       <section className="page">
+        {updateNotice ? (
+          <section className="notice">
+            <CheckCircle2 size={18} aria-hidden="true" />
+            <div>
+              <h2>{updateNotice}</h2>
+              <p>Evidence queues and Change Control Record summaries have been revalidated.</p>
+            </div>
+          </section>
+        ) : null}
+        {errorNotice ? (
+          <section className="notice notice--unavailable">
+            <XCircle size={18} aria-hidden="true" />
+            <div>
+              <h2>Evidence action failed</h2>
+              <p>{errorNotice}</p>
+            </div>
+          </section>
+        ) : null}
         <DataSourceNotice {...data} />
 
         <div className="metrics-grid">
           <MetricCard
             label="Completion"
             value={`${summary.evidenceCompletion}%`}
-            detail="Provided or approved evidence requirements."
+            detail="Approved evidence requirements."
             tone="pass"
           />
           <MetricCard
@@ -58,6 +90,12 @@ export default async function EvidenceCompletionPage() {
             detail="Evidence accepted by reviewer or authorized actor."
             tone="neutral"
           />
+          <MetricCard
+            label="Rejected"
+            value={String(rejected)}
+            detail="Evidence that needs corrected submission before approval."
+            tone={rejected > 0 ? "block" : "neutral"}
+          />
         </div>
 
         <div className="two-column">
@@ -75,15 +113,13 @@ export default async function EvidenceCompletionPage() {
               ) : null}
               {evidenceGroups.map((group) => {
                 const complete =
-                  group.total === 0
-                    ? 100
-                    : Math.round(((group.total - group.missing) / group.total) * 100);
+                  group.total === 0 ? 100 : Math.round((group.approved / group.total) * 100);
                 return (
                   <div className="bar-row" key={group.kind}>
                     <header>
                       <span>{humanize(group.kind)}</span>
                       <strong>
-                        {group.total - group.missing}/{group.total}
+                        {group.approved}/{group.total}
                       </strong>
                     </header>
                     <ProgressBar value={complete} label={`${humanize(group.kind)} completion`} />
@@ -143,12 +179,13 @@ export default async function EvidenceCompletionPage() {
                 <th>Status</th>
                 <th>Source</th>
                 <th>Summary</th>
+                <th>Action</th>
               </tr>
             </thead>
             <tbody>
               {evidenceItems.length === 0 ? (
                 <tr>
-                  <td className="empty-row" colSpan={6}>
+                  <td className="empty-row" colSpan={7}>
                     No evidence requirements are stored yet.
                   </td>
                 </tr>
@@ -168,6 +205,52 @@ export default async function EvidenceCompletionPage() {
                     </td>
                     <td>{evidence.source ? humanize(evidence.source) : "not provided"}</td>
                     <td>{evidence.contentSummary ?? "Required evidence missing."}</td>
+                    <td>
+                      {evidence.status === "provided" ? (
+                        <div className="evidence-actions">
+                          <form action={approveEvidence}>
+                            <input
+                              name="returnTo"
+                              type="hidden"
+                              value="/dashboard/evidence-completion"
+                            />
+                            <input name="recordId" type="hidden" value={item.record.id} />
+                            <input name="evidenceId" type="hidden" value={evidence.id} />
+                            <button className="button" type="submit">
+                              <CheckCircle2 size={16} aria-hidden="true" /> Approve
+                            </button>
+                          </form>
+                          <form action={rejectEvidence} className="evidence-reject-form">
+                            <input
+                              name="returnTo"
+                              type="hidden"
+                              value="/dashboard/evidence-completion"
+                            />
+                            <input name="recordId" type="hidden" value={item.record.id} />
+                            <input name="evidenceId" type="hidden" value={evidence.id} />
+                            <label htmlFor={`queue-reject-${evidence.id}`}>Reject reason</label>
+                            <input
+                              className="input"
+                              id={`queue-reject-${evidence.id}`}
+                              maxLength={1000}
+                              minLength={10}
+                              name="reason"
+                              required
+                              type="text"
+                            />
+                            <button className="button button--danger" type="submit">
+                              <XCircle size={16} aria-hidden="true" /> Reject
+                            </button>
+                          </form>
+                        </div>
+                      ) : evidence.status === "approved" ? (
+                        <StatusBadge status="approved" label="complete" />
+                      ) : (
+                        <Link className="button" href={`/records/${item.record.id}`}>
+                          Submit evidence
+                        </Link>
+                      )}
+                    </td>
                   </tr>
                 ))
               )}
@@ -177,4 +260,22 @@ export default async function EvidenceCompletionPage() {
       </section>
     </>
   );
+}
+
+function evidenceQueueNotice(updated: string): string | undefined {
+  const notices: Record<string, string> = {
+    "evidence-approved": "Evidence approved",
+    "evidence-rejected": "Evidence rejected"
+  };
+  return notices[updated];
+}
+
+function evidenceQueueErrorNotice(error: string): string | undefined {
+  const notices: Record<string, string> = {
+    "evidence-approval-required": "Select an evidence requirement before approving it.",
+    "evidence-approval-failed": "Evidence could not be approved. Refresh the queue and try again.",
+    "evidence-rejection-required": "Select an evidence requirement and provide a rejection reason.",
+    "evidence-rejection-failed": "Evidence could not be rejected. Refresh the queue and try again."
+  };
+  return notices[error];
 }

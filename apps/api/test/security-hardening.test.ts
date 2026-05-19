@@ -227,7 +227,7 @@ describe("security and audit hardening", () => {
       url: `/api/pull-requests/${record.id}/evidence`,
       payload: JSON.stringify({
         actor: "spoofed-user",
-        kind: evidence.kind,
+        evidenceId: evidence.id,
         content: "Security note: provided without authenticated actor headers."
       }),
       headers: { "content-type": "application/json" }
@@ -250,7 +250,7 @@ describe("security and audit hardening", () => {
       method: "POST",
       url: `/api/pull-requests/${record.id}/evidence`,
       payload: JSON.stringify({
-        kind: evidence.kind,
+        evidenceId: evidence.id,
         content: "Security note: raw local actor headers are not production auth context."
       }),
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
@@ -262,7 +262,7 @@ describe("security and audit hardening", () => {
       method: "POST",
       url: `/api/pull-requests/${record.id}/evidence`,
       payload: JSON.stringify({
-        kind: evidence.kind,
+        evidenceId: evidence.id,
         content: "Security note: explicit production local fallback accepted."
       }),
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
@@ -283,7 +283,7 @@ describe("security and audit hardening", () => {
       method: "POST",
       url: `/api/pull-requests/${record.id}/evidence`,
       payload: JSON.stringify({
-        kind: evidence.kind,
+        evidenceId: evidence.id,
         content: "Security note: authenticated proxy header context accepted."
       }),
       headers: {
@@ -370,30 +370,30 @@ describe("security and audit hardening", () => {
   it("recomputes the Merge Guard result after evidence and reviewer approvals clear requirements", async () => {
     const { app, state } = await createPreviewRecord();
     const record = state.records[0]!;
-    const evidence = record.requiredEvidence[0]!;
     const reviewer = record.requiredReviewers[0]!;
 
     expect(record.checkStatus).toBe("block");
 
-    const provided = await app.inject({
-      method: "POST",
-      url: `/api/pull-requests/${record.id}/evidence`,
-      payload: JSON.stringify({
-        kind: evidence.kind,
-        content: "Security note: secret-like value was removed and the old token was revoked."
-      }),
-      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
-    });
-    expect(provided.statusCode).toBe(200);
-    expect(state.records[0]!.checkStatus).toBe("block");
+    for (const evidence of record.requiredEvidence) {
+      const provided = await app.inject({
+        method: "POST",
+        url: `/api/pull-requests/${record.id}/evidence`,
+        payload: JSON.stringify({
+          evidenceId: evidence.id,
+          content: "Security note: secret-like value was removed and the old token was revoked."
+        }),
+        headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+      });
+      expect(provided.statusCode).toBe(200);
 
-    const approvedEvidence = await app.inject({
-      method: "PATCH",
-      url: `/api/evidence/${evidence.id}/approve`,
-      payload: JSON.stringify({}),
-      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
-    });
-    expect(approvedEvidence.statusCode).toBe(200);
+      const approvedEvidence = await app.inject({
+        method: "PATCH",
+        url: `/api/evidence/${evidence.id}/approve`,
+        payload: JSON.stringify({}),
+        headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+      });
+      expect(approvedEvidence.statusCode).toBe(200);
+    }
     expect(state.records[0]!.checkStatus).toBe("block");
 
     const approvedReviewer = await app.inject({
@@ -416,6 +416,197 @@ describe("security and audit hardening", () => {
       lifecycle: "passed",
       decision: expect.objectContaining({ status: "passed" })
     });
+    expect(state.auditEvents.map((event) => event.action)).toEqual(
+      expect.arrayContaining(["evidence_provided", "evidence_approved", "record_reevaluated"])
+    );
+    await app.close();
+  });
+
+  it("validates manual evidence ids, payload size, and approval transitions", async () => {
+    const { app, state } = await createPreviewRecord();
+    const record = state.records[0]!;
+    const evidence = record.requiredEvidence[0]!;
+
+    const unknownRequirement = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        evidenceId: "evidence:unknown:security_note",
+        content: "Security note: unknown evidence id should not update any record."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(unknownRequirement.statusCode).toBe(404);
+
+    state.records[0]!.requiredEvidence.push({
+      ...evidence,
+      id: `${evidence.id}:duplicate`
+    });
+    const ambiguousKind = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        kind: evidence.kind,
+        content: "Security note: kind-only submission is ambiguous for duplicate requirements."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(ambiguousKind.statusCode).toBe(409);
+
+    const oversized = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        evidenceId: evidence.id,
+        content: "x".repeat(4_001)
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(oversized.statusCode).toBe(400);
+
+    const approveBeforeSubmit = await app.inject({
+      method: "PATCH",
+      url: `/api/evidence/${evidence.id}/approve`,
+      payload: JSON.stringify({}),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(approveBeforeSubmit.statusCode).toBe(409);
+
+    const developerApprove = await app.inject({
+      method: "PATCH",
+      url: `/api/evidence/${evidence.id}/approve`,
+      payload: JSON.stringify({}),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(developerApprove.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("supports evidence rejection and corrected resubmission without clearing the block", async () => {
+    const { app, state } = await createPreviewRecord();
+    const record = state.records[0]!;
+    const evidence = record.requiredEvidence[0]!;
+
+    const provided = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        evidenceId: evidence.id,
+        content: "Security note: token appears in logs but rotation proof is missing."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(provided.statusCode).toBe(200);
+
+    const rejected = await app.inject({
+      method: "PATCH",
+      url: `/api/evidence/${evidence.id}/reject`,
+      payload: JSON.stringify({ reason: "Rotation proof link is missing from the evidence." }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(rejected.statusCode).toBe(200);
+    expect(rejected.json().evidence).toMatchObject({
+      id: evidence.id,
+      status: "rejected"
+    });
+    expect(state.records[0]!).toMatchObject({
+      checkStatus: "block",
+      lifecycle: "blocked"
+    });
+
+    const corrected = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        evidenceId: evidence.id,
+        content: "Security note: token was revoked and rotation evidence is linked in SEC-123."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(corrected.statusCode).toBe(200);
+    expect(corrected.json().evidence).toMatchObject({
+      id: evidence.id,
+      status: "provided"
+    });
+    expect(corrected.json().evidence.approvedBy).toBeUndefined();
+    expect(state.auditEvents.map((event) => event.action)).toEqual(
+      expect.arrayContaining(["evidence_rejected", "record_reevaluated"])
+    );
+    await app.close();
+  });
+
+  it("scopes evidence and reviewer approvals to the selected record id", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+    const firstPreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr(), persist: true }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(firstPreview.statusCode).toBe(200);
+
+    const secondPr = sensitivePr();
+    secondPr.pullRequestNumber = 45;
+    secondPr.headSha = "sha-security-2";
+    const secondPreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: secondPr, persist: true }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(secondPreview.statusCode).toBe(200);
+
+    const firstRecord = firstPreview.json().record;
+    const secondRecord = secondPreview.json().record;
+    const sharedEvidenceId = secondRecord.requiredEvidence[0].id;
+    const sharedReviewerId = secondRecord.requiredReviewers[0].id;
+    expect(firstRecord.requiredEvidence.map((item: { id: string }) => item.id)).toContain(
+      sharedEvidenceId
+    );
+    expect(firstRecord.requiredReviewers.map((item: { id: string }) => item.id)).toContain(
+      sharedReviewerId
+    );
+
+    await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${secondRecord.id}/evidence`,
+      payload: JSON.stringify({
+        evidenceId: sharedEvidenceId,
+        content: "Security note: this evidence belongs only to the second record."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    const approvedEvidence = await app.inject({
+      method: "PATCH",
+      url: `/api/evidence/${sharedEvidenceId}/approve`,
+      payload: JSON.stringify({ recordId: secondRecord.id }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(approvedEvidence.statusCode).toBe(200);
+
+    const approvedReviewer = await app.inject({
+      method: "PATCH",
+      url: `/api/reviewers/${sharedReviewerId}/approve`,
+      payload: JSON.stringify({ recordId: secondRecord.id }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(approvedReviewer.statusCode).toBe(200);
+
+    const currentFirst = state.records.find((record) => record.id === firstRecord.id)!;
+    const currentSecond = state.records.find((record) => record.id === secondRecord.id)!;
+    expect(currentFirst.requiredEvidence.find((item) => item.id === sharedEvidenceId)?.status).toBe(
+      "missing"
+    );
+    expect(
+      currentFirst.requiredReviewers.find((item) => item.id === sharedReviewerId)?.approved
+    ).toBe(false);
+    expect(
+      currentSecond.requiredEvidence.find((item) => item.id === sharedEvidenceId)?.status
+    ).toBe("approved");
+    expect(
+      currentSecond.requiredReviewers.find((item) => item.id === sharedReviewerId)?.approved
+    ).toBe(true);
     await app.close();
   });
 
@@ -506,7 +697,7 @@ describe("security and audit hardening", () => {
       method: "POST",
       url: `/api/pull-requests/${record.id}/evidence`,
       payload: JSON.stringify({
-        kind: evidence.kind,
+        evidenceId: evidence.id,
         content: `Security note: token rotated, old value ${rawGithubToken} revoked.`
       }),
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }

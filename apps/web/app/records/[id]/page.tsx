@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Download, GitBranch, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Download, GitBranch, Send, ShieldCheck, XCircle } from "lucide-react";
 import { MetricCard, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../data-source-notice";
 import {
@@ -11,7 +11,13 @@ import {
   pendingRequiredReviewers,
   summarizeFindings
 } from "../../data";
-import { createRecordExport } from "../actions";
+import {
+  approveEvidence,
+  approveReviewer,
+  createRecordExport,
+  rejectEvidence,
+  submitEvidence
+} from "../actions";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -57,6 +63,8 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
   const record = item.record;
   const missing = missingEvidence(record);
   const pendingReviewers = pendingRequiredReviewers(record);
+  const updateNotice = query?.updated ? evidenceUpdateNotice(query.updated) : undefined;
+  const errorNotice = query?.error ? recordErrorNotice(query.error) : undefined;
 
   return (
     <>
@@ -95,12 +103,21 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
             </div>
           </section>
         ) : null}
-        {query?.error ? (
-          <section className="notice notice--unavailable">
-            <Download size={18} aria-hidden="true" />
+        {updateNotice ? (
+          <section className="notice">
+            <CheckCircle2 size={18} aria-hidden="true" />
             <div>
-              <h2>Export was not created</h2>
-              <p>{query.error}</p>
+              <h2>{updateNotice.title}</h2>
+              <p>{updateNotice.detail}</p>
+            </div>
+          </section>
+        ) : null}
+        {errorNotice ? (
+          <section className="notice notice--unavailable">
+            <XCircle size={18} aria-hidden="true" />
+            <div>
+              <h2>{errorNotice.title}</h2>
+              <p>{errorNotice.detail}</p>
             </div>
           </section>
         ) : null}
@@ -276,6 +293,72 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                       <StatusBadge status={evidence.status} />
                     </div>
                     <p>{evidence.contentSummary ?? "Required evidence missing."}</p>
+                    {evidence.providedBy ? (
+                      <p className="muted">
+                        Provided by {evidence.providedBy}
+                        {evidence.providedAt ? ` on ${formatDate(evidence.providedAt)}` : ""}.
+                      </p>
+                    ) : null}
+                    {evidence.approvedBy ? (
+                      <p className="muted">
+                        Approved by {evidence.approvedBy}
+                        {evidence.approvedAt ? ` on ${formatDate(evidence.approvedAt)}` : ""}.
+                      </p>
+                    ) : null}
+                    {evidence.status !== "approved" ? (
+                      <form action={submitEvidence} className="evidence-action-form">
+                        <input name="returnTo" type="hidden" value={`/records/${id}`} />
+                        <input name="recordId" type="hidden" value={record.id} />
+                        <input name="evidenceId" type="hidden" value={evidence.id} />
+                        <input name="kind" type="hidden" value={evidence.kind} />
+                        <label htmlFor={`evidence-content-${evidence.id}`}>
+                          {evidence.status === "rejected" ? "Correct evidence" : "Evidence content"}
+                        </label>
+                        <textarea
+                          className="input evidence-textarea"
+                          id={`evidence-content-${evidence.id}`}
+                          maxLength={4000}
+                          minLength={10}
+                          name="content"
+                          placeholder="Reference the rollback plan, migration dry run, security note, or linked artifact."
+                          required
+                          rows={3}
+                        />
+                        <button className="button button--primary" type="submit">
+                          <Send size={16} aria-hidden="true" /> Submit evidence
+                        </button>
+                      </form>
+                    ) : null}
+                    {evidence.status === "provided" ? (
+                      <div className="evidence-actions">
+                        <form action={approveEvidence}>
+                          <input name="returnTo" type="hidden" value={`/records/${id}`} />
+                          <input name="recordId" type="hidden" value={record.id} />
+                          <input name="evidenceId" type="hidden" value={evidence.id} />
+                          <button className="button" type="submit">
+                            <CheckCircle2 size={16} aria-hidden="true" /> Approve evidence
+                          </button>
+                        </form>
+                        <form action={rejectEvidence} className="evidence-reject-form">
+                          <input name="returnTo" type="hidden" value={`/records/${id}`} />
+                          <input name="recordId" type="hidden" value={record.id} />
+                          <input name="evidenceId" type="hidden" value={evidence.id} />
+                          <label htmlFor={`evidence-reject-${evidence.id}`}>Reject reason</label>
+                          <input
+                            className="input"
+                            id={`evidence-reject-${evidence.id}`}
+                            maxLength={1000}
+                            minLength={10}
+                            name="reason"
+                            required
+                            type="text"
+                          />
+                          <button className="button button--danger" type="submit">
+                            <XCircle size={16} aria-hidden="true" /> Reject evidence
+                          </button>
+                        </form>
+                      </div>
+                    ) : null}
                   </li>
                 ))
               )}
@@ -300,6 +383,21 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                       />
                     </div>
                     <p>{reviewer.reason}</p>
+                    {!reviewer.approved ? (
+                      <form action={approveReviewer}>
+                        <input name="returnTo" type="hidden" value={`/records/${id}`} />
+                        <input name="recordId" type="hidden" value={record.id} />
+                        <input name="reviewerId" type="hidden" value={reviewer.id} />
+                        <button className="button" type="submit">
+                          <CheckCircle2 size={16} aria-hidden="true" /> Approve reviewer
+                        </button>
+                      </form>
+                    ) : reviewer.approvedBy ? (
+                      <p className="muted">
+                        Approved by {reviewer.approvedBy}
+                        {reviewer.approvedAt ? ` on ${formatDate(reviewer.approvedAt)}` : ""}.
+                      </p>
+                    ) : null}
                   </li>
                 ))
               )}
@@ -342,4 +440,83 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
       </section>
     </>
   );
+}
+
+function evidenceUpdateNotice(updated: string): { title: string; detail: string } | undefined {
+  switch (updated) {
+    case "evidence-submitted":
+      return {
+        title: "Evidence submitted",
+        detail: "The requirement is provided and awaiting approval."
+      };
+    case "evidence-approved":
+      return {
+        title: "Evidence approved",
+        detail: "Merge Guard re-evaluated the record against the remaining open requirements."
+      };
+    case "evidence-rejected":
+      return {
+        title: "Evidence rejected",
+        detail: "The requirement remains open until corrected evidence is submitted and approved."
+      };
+    case "reviewer-approved":
+      return {
+        title: "Reviewer approved",
+        detail: "Merge Guard re-evaluated the record after the reviewer requirement was cleared."
+      };
+    default:
+      return undefined;
+  }
+}
+
+function recordErrorNotice(error: string): { title: string; detail: string } | undefined {
+  switch (error) {
+    case "record-export-failed":
+      return {
+        title: "Export was not created",
+        detail: "The export request failed. Refresh the record and try again."
+      };
+    case "evidence-submission-required":
+      return {
+        title: "Evidence was not submitted",
+        detail: "Select an evidence requirement and provide at least 10 characters of content."
+      };
+    case "evidence-submission-failed":
+      return {
+        title: "Evidence was not submitted",
+        detail: "The evidence request failed. Refresh the record and try again."
+      };
+    case "evidence-approval-required":
+      return {
+        title: "Evidence was not approved",
+        detail: "Select an evidence requirement before approving it."
+      };
+    case "evidence-approval-failed":
+      return {
+        title: "Evidence was not approved",
+        detail: "The approval request failed. Refresh the record and try again."
+      };
+    case "evidence-rejection-required":
+      return {
+        title: "Evidence was not rejected",
+        detail: "Select an evidence requirement and provide a rejection reason."
+      };
+    case "evidence-rejection-failed":
+      return {
+        title: "Evidence was not rejected",
+        detail: "The rejection request failed. Refresh the record and try again."
+      };
+    case "reviewer-approval-required":
+      return {
+        title: "Reviewer was not approved",
+        detail: "Select a reviewer requirement before approving it."
+      };
+    case "reviewer-approval-failed":
+      return {
+        title: "Reviewer was not approved",
+        detail: "The reviewer approval request failed. Refresh the record and try again."
+      };
+    default:
+      return undefined;
+  }
 }

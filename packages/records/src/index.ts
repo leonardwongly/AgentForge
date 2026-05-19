@@ -284,6 +284,7 @@ export function explainChangeControlRecord(record: ChangeControlRecord): string[
   ];
   const missingEvidence = record.requiredEvidence.filter((item) => item.status === "missing");
   const unapprovedEvidence = record.requiredEvidence.filter((item) => item.status === "provided");
+  const rejectedEvidence = record.requiredEvidence.filter((item) => item.status === "rejected");
   const pendingReviewers = record.requiredReviewers.filter(
     (item) => item.tier === "required" && !item.approved
   );
@@ -321,12 +322,16 @@ export function explainChangeControlRecord(record: ChangeControlRecord): string[
   for (const item of unapprovedEvidence) {
     lines.push(`Required evidence awaiting approval: ${humanize(item.kind)}.`);
   }
+  for (const item of rejectedEvidence) {
+    lines.push(`Required evidence rejected: ${humanize(item.kind)}.`);
+  }
   for (const reviewer of pendingReviewers) {
     lines.push(`Reviewer approval required: ${reviewer.reviewer}.`);
   }
   if (
     missingEvidence.length === 0 &&
     unapprovedEvidence.length === 0 &&
+    rejectedEvidence.length === 0 &&
     pendingReviewers.length === 0 &&
     record.checkStatus !== "block"
   ) {
