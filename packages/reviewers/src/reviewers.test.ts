@@ -280,4 +280,21 @@ describe("CODEOWNERS preview", () => {
       })
     ]);
   });
+
+  it("rejects oversized CODEOWNERS patterns before preview matching", () => {
+    const overlongPattern = `${"a".repeat(201)} @acme/docs-team`;
+    const preview = previewCodeowners(overlongPattern, ["aaa"]);
+
+    expect(preview.diagnostics[0]).toContain("pattern exceeds 200 characters");
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("rejects excessive CODEOWNERS wildcard groups before preview matching", () => {
+    const preview = previewCodeowners("docs/**/**/**/**/README.md @acme/docs-team", [
+      "docs/a/b/c/d/README.md"
+    ]);
+
+    expect(preview.diagnostics[0]).toContain("too many wildcard groups");
+    expect(preview.suggestions).toEqual([]);
+  });
 });

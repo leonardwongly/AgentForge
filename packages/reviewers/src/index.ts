@@ -32,6 +32,10 @@ export type CodeownersPreview = {
   diagnostics: string[];
 };
 
+const MAX_CODEOWNERS_PATTERN_LENGTH = 200;
+const MAX_CODEOWNERS_GLOBSTARS = 3;
+const neverMatchPattern = /a^/u;
+
 const defaultOptions: Required<ReviewerRoutingOptions> = {
   maxRequiredReviewersWithoutCritical: 4
 };
@@ -154,6 +158,17 @@ export function parseCodeowners(content: string): CodeownersRule[] {
           negated: false,
           valid: false,
           reason: "missing owner"
+        };
+      }
+      const patternRejectionReason = codeownersPatternRejectionReason(rawPattern);
+      if (patternRejectionReason) {
+        return {
+          lineNumber: index + 1,
+          pattern: rawPattern,
+          owners,
+          negated: false,
+          valid: false,
+          reason: patternRejectionReason
         };
       }
       return {
@@ -304,6 +319,9 @@ function ownerKeyFromReviewer(reviewer: string): string {
 }
 
 function codeownersPatternToRegExp(pattern: string): RegExp {
+  if (codeownersPatternRejectionReason(pattern)) {
+    return neverMatchPattern;
+  }
   const normalizedPattern = normalizePath(pattern).replace(/^\/+/u, "");
   const anchored = pattern.startsWith("/");
   const directoryPattern = normalizedPattern.endsWith("/");
@@ -316,6 +334,17 @@ function codeownersPatternToRegExp(pattern: string): RegExp {
     return new RegExp(`${prefix}${body}(?:/.*)?$`, "u");
   }
   return new RegExp(`${prefix}${body}$`, "u");
+}
+
+function codeownersPatternRejectionReason(pattern: string): string | undefined {
+  if (pattern.length > MAX_CODEOWNERS_PATTERN_LENGTH) {
+    return `pattern exceeds ${MAX_CODEOWNERS_PATTERN_LENGTH} characters`;
+  }
+  const globstarCount = pattern.match(/\*\*/gu)?.length ?? 0;
+  if (globstarCount > MAX_CODEOWNERS_GLOBSTARS || /\*{3,}/u.test(pattern)) {
+    return "pattern uses too many wildcard groups for safe preview matching";
+  }
+  return undefined;
 }
 
 function globToRegexBody(glob: string): string {
