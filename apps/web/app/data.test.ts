@@ -8,6 +8,7 @@ import {
   openRequirementCounts,
   summarizeEvidenceRequirements,
   summarizeFindings,
+  loadRecord,
   summarizeReviewerRequirements
 } from "./data";
 import type { ChangeControlRecord } from "@agentforge/core";
@@ -29,7 +30,7 @@ describe("dashboard API data loaders", () => {
     const data = await loadDashboardData();
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:4000/api/dashboard/records",
+      "http://localhost:4000/api/dashboard/records?limit=50&offset=0&sort=updated_desc",
       expect.objectContaining({ cache: "no-store" })
     );
     expect(data).toMatchObject({
@@ -69,6 +70,22 @@ describe("dashboard API data loaders", () => {
       source: "unavailable"
     });
     expect(data.message).toContain("Settings API unavailable");
+  });
+
+  it("treats missing record lookups as empty instead of API unavailable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("not found", { status: 404, statusText: "Not Found" }))
+    );
+
+    const data = await loadRecord("missing-record");
+
+    expect(data).toMatchObject({
+      records: [],
+      item: undefined,
+      source: "empty",
+      message: "No matching Change Control Record was found."
+    });
   });
 
   it("summarizes repeated findings and requirements for dense tables", () => {

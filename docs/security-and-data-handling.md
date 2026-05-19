@@ -38,6 +38,8 @@ Audit readiness:
 - Policy and repository settings changes require `platform_admin` or `engineering_manager`.
 - Dashboard onboarding and settings forms submit through Next.js server actions. Development/test can use `AGENTFORGE_DASHBOARD_ACTOR`, `AGENTFORGE_DASHBOARD_ROLE`, and `AGENTFORGE_DASHBOARD_ORGANIZATION` as a local actor fallback. Deployed environments should set `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true` only behind a trusted auth proxy that injects actor, role, and organization identity headers; otherwise dashboard mutations fail closed.
 - Change Control Record exports and audit-event access require `auditor`, `platform_admin`, or `engineering_manager` and are filtered to the authenticated actor organization.
+- Dashboard record APIs default to 50 records per page and reject page sizes above 100. Query filters are server-validated for status, lifecycle, mode, repository, policy version, and sort order.
+- Change Control Record exports default to 500 records and reject `maxRecords` values above 1,000. Export responses report `totalMatchingRecords` and `truncated` so operators can page exports deliberately instead of allocating an unbounded dataset.
 - GitHub webhooks fail closed when `GITHUB_WEBHOOK_SECRET` is not configured. Unsigned fixture replay requires explicit local-only `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=true`.
 - Production configuration fails closed if unsigned webhooks, source-code storage, unredacted secrets, missing trusted proxy auth, local actor fallbacks, or missing ingress header-stripping acknowledgement are detected.
 - Audit events are emitted for policy changes, repository settings changes, owner mapping changes, overrides, evidence updates, reviewer approvals, check publishing, exports, and retention changes.
