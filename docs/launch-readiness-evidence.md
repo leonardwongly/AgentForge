@@ -124,6 +124,7 @@ Launch readiness depends on these invariants:
 - full diffs are disabled by default;
 - retained snippets are redacted before persistence or output;
 - JSON and CSV exports exclude source blobs and raw secrets;
+- Change Control Record exports include schema-versioned audit events for the record trail, including actor role, source, policy identity, request id, and correlation id where available;
 - GitHub webhook secrets, private keys, OAuth secrets, installation tokens, and
   session secrets are never logged;
 - LLM features remain disabled by default and cannot affect blocking decisions.

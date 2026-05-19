@@ -41,4 +41,12 @@ Audit readiness:
 - GitHub webhooks fail closed when `GITHUB_WEBHOOK_SECRET` is not configured. Unsigned fixture replay requires explicit local-only `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=true`.
 - Production configuration fails closed if unsigned webhooks, source-code storage, or unredacted secrets are enabled.
 - Audit events are emitted for policy changes, repository settings changes, owner mapping changes, overrides, evidence updates, reviewer approvals, check publishing, exports, and retention changes.
+- Audit events use schema version `1` and expose actor role, source, request id, correlation id, and policy identity as first-class fields when available. The same values are repeated in sanitized metadata for export compatibility.
+- JSON and CSV Change Control Record exports include the matching append-only audit event trail so auditors can reconstruct evidence, reviewer, override, check-publication, and settings lifecycle changes without relying on mutable record snapshots alone.
 - JSON and CSV exports are sanitized through the same metadata-only storage policy used for dashboard/API output.
+
+Current compliance limitations and non-goals:
+
+- Exports are point-in-time artifacts, not a legal-hold archive or WORM storage layer.
+- `requestId` is available for API-originated events; worker-originated events use webhook delivery ids as correlation ids when available.
+- Source code, raw patches, private keys, webhook secrets, OAuth secrets, and installation tokens remain intentionally excluded from records and exports.

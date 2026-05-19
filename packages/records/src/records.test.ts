@@ -194,18 +194,36 @@ describe("records", () => {
       repositoryId: "repo",
       pullRequestId: "pr",
       actor: "alex",
+      actorRole: "auditor",
       action: "record_exported",
       targetType: "change_control_record",
       targetId: "record",
       metadataJson: {
         format: "json",
+        recordCount: 1,
         token: "ghp_123456789012345678901234567890123456",
         patch: "+ raw source"
       },
       createdAt: "2026-05-12T00:00:00.000Z"
     });
 
-    expect(event.metadataJson).toEqual({ format: "json", token: "[REDACTED]" });
+    expect(event).toMatchObject({
+      schemaVersion: 1,
+      actorRole: "auditor",
+      source: "api"
+    });
+    expect(event.metadataJson).toEqual(
+      expect.objectContaining({
+        schemaVersion: 1,
+        actorRole: "auditor",
+        source: "api",
+        recordId: "record",
+        format: "json",
+        recordCount: 1,
+        token: "[REDACTED]"
+      })
+    );
+    expect(event.metadataJson).not.toHaveProperty("patch");
   });
 
   it("explains blocked and overridden decisions with explicit missing requirements", () => {
