@@ -324,8 +324,13 @@ function globToRegexBody(glob: string): string {
     const char = glob[index];
     const next = glob[index + 1];
     if (char === "*" && next === "*") {
-      body += ".*";
-      index += 1;
+      if (glob[index + 2] === "/") {
+        body += "(?:[^/]+/)*";
+        index += 2;
+      } else {
+        body += ".*";
+        index += 1;
+      }
     } else if (char === "*") {
       body += "[^/]*";
     } else if (char === "?") {

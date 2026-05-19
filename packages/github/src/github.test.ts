@@ -355,6 +355,39 @@ describe("github integration", () => {
     expect(reviews.every((review) => review.teamSlugs?.includes("security-team"))).toBe(true);
   });
 
+  it("treats GitHub team membership 404 responses as verified non-membership", async () => {
+    const notFound = new Error("Not Found") as Error & { status: number };
+    notFound.status = 404;
+    const reviews = await enrichPullRequestReviewsWithTeamMemberships({
+      client: {
+        pulls: {
+          get: async () => ({ data: {} }),
+          listFiles: async () => ({ data: [] }),
+          listReviews: async () => ({ data: [] }),
+          listCommits: async () => ({ data: [] })
+        },
+        teams: {
+          getMembershipForUserInOrg: async () => {
+            throw notFound;
+          }
+        }
+      },
+      org: "acme",
+      teamSlugs: ["security-team"],
+      reviews: [
+        {
+          reviewer: "alice",
+          reviewerType: "user",
+          state: "APPROVED",
+          submittedAt: "2026-05-14T00:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(reviews[0]?.teamSlugs).toBeUndefined();
+    expect(reviews[0]?.teamVerification).toBeUndefined();
+  });
+
   it("keeps PR extraction usable when manifest content fetch is unavailable", async () => {
     const client: GithubAdapterClient = {
       pulls: {

@@ -243,7 +243,10 @@ function validReviewerForType(reviewer: string, reviewerType: "user" | "team"): 
     const [org, team, ...rest] = normalized.split("/");
     return rest.length === 0 && githubTeamSegment(org) && githubTeamSegment(team);
   }
-  return githubTeamSegment(normalized);
+  return (
+    githubTeamSegment(normalized) &&
+    (normalized.toLowerCase().endsWith("-team") || normalized.toLowerCase().endsWith("-owner"))
+  );
 }
 
 function normalizeReviewerForStorage(reviewer: string, reviewerType: "user" | "team"): string {

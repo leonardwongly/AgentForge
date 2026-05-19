@@ -409,9 +409,11 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                   <span>Members permission</span>
                   <StatusBadge
                     status={
-                      routingDiagnostics?.membersReadPermission.status === "required"
-                        ? "warn"
-                        : "approved"
+                      !routingDiagnostics
+                        ? "low"
+                        : routingDiagnostics.membersReadPermission.status === "required"
+                          ? "warn"
+                          : "approved"
                     }
                     label={routingDiagnostics?.membersReadPermission.status ?? "not_required"}
                   />

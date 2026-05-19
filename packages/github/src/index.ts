@@ -637,13 +637,33 @@ async function checkActiveTeamMember(input: {
       teamSlug: input.teamSlug,
       active: stringValue(response?.data.state)?.toLowerCase() === "active"
     };
-  } catch {
+  } catch (error) {
+    if (githubErrorStatus(error) === 404) {
+      return {
+        status: "verified",
+        teamSlug: input.teamSlug,
+        active: false
+      };
+    }
     return {
       status: "failed",
       teamSlug: input.teamSlug,
-      reason: "GitHub team membership API rejected the verification request."
+      reason: `GitHub team membership API rejected the verification request${githubErrorMessage(error)}.`
     };
   }
+}
+
+function githubErrorStatus(error: unknown): number | undefined {
+  return typeof error === "object" && error !== null && "status" in error
+    ? Number((error as { status?: unknown }).status)
+    : undefined;
+}
+
+function githubErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) {
+    return `: ${error.message.trim()}`;
+  }
+  return "";
 }
 
 function normalizeReviewTeamSlugs(review: PullRequestReview): PullRequestReview {

@@ -348,6 +348,7 @@ describe("runtime data surfaces", () => {
 
     for (const ownerMapping of [
       { ownerKey: "security_team", reviewer: "acme/security-team", reviewerType: "user" },
+      { ownerKey: "platform_team", reviewer: "platform", reviewerType: "team" },
       { ownerKey: "security_team", reviewer: "security_team", reviewerType: "team" },
       { ownerKey: "security_team", reviewer: "acme/platform/security", reviewerType: "team" }
     ]) {

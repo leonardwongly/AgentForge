@@ -317,9 +317,11 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
                       <span>Team verification</span>
                       <StatusBadge
                         status={
-                          routingDiagnostics?.membersReadPermission.status === "required"
-                            ? "warn"
-                            : "approved"
+                          !routingDiagnostics
+                            ? "low"
+                            : routingDiagnostics.membersReadPermission.status === "required"
+                              ? "warn"
+                              : "approved"
                         }
                         label={routingDiagnostics?.membersReadPermission.status ?? "not_required"}
                       />

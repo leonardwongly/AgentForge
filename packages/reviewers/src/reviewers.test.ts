@@ -265,4 +265,19 @@ describe("CODEOWNERS preview", () => {
       })
     ]);
   });
+
+  it("matches double-star directory globs with zero or more nested directories", () => {
+    const preview = previewCodeowners("docs/**/README.md @acme/docs-team", [
+      "docs/README.md",
+      "docs/api/README.md",
+      "docs/api/v2/README.md"
+    ]);
+
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        reviewer: "acme/docs-team",
+        matchedPaths: ["docs/README.md", "docs/api/README.md", "docs/api/v2/README.md"]
+      })
+    ]);
+  });
 });
