@@ -208,6 +208,10 @@ function dashboardQueryString(request: DashboardDataRequest): string {
   return `?${params.toString()}`;
 }
 
+function isApiNotFound(error: unknown): boolean {
+  return error instanceof Error && /^404\b/u.test(error.message);
+}
+
 export async function loadRecord(
   id: string
 ): Promise<DashboardData & { item: DashboardRecord | undefined }> {
@@ -225,6 +229,14 @@ export async function loadRecord(
       item
     };
   } catch (error) {
+    if (isApiNotFound(error)) {
+      return {
+        records: [],
+        source: "empty",
+        message: "No matching Change Control Record was found.",
+        item: undefined
+      };
+    }
     return {
       records: [],
       source: "unavailable",

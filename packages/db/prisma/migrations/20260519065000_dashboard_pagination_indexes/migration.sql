@@ -19,3 +19,12 @@ CREATE INDEX "ChangeControlRecord_policyVersion_updatedAt_idx"
 
 CREATE INDEX "ChangeControlRecord_pullRequestNumber_updatedAt_idx"
   ON "ChangeControlRecord"("pullRequestNumber", "updatedAt");
+
+-- Rollback reference:
+-- DROP INDEX IF EXISTS "ChangeControlRecord_pullRequestNumber_updatedAt_idx";
+-- DROP INDEX IF EXISTS "ChangeControlRecord_policyVersion_updatedAt_idx";
+-- DROP INDEX IF EXISTS "ChangeControlRecord_mode_updatedAt_idx";
+-- DROP INDEX IF EXISTS "ChangeControlRecord_lifecycle_updatedAt_idx";
+-- DROP INDEX IF EXISTS "ChangeControlRecord_checkStatus_updatedAt_idx";
+-- DROP INDEX IF EXISTS "PullRequest_repositoryId_number_updatedAt_idx";
+-- DROP INDEX IF EXISTS "Repository_organizationId_mode_updatedAt_idx";

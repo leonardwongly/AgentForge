@@ -3036,6 +3036,8 @@ async function saveExportJob(
       status: job.status,
       format: job.format,
       recordCount: job.recordCount,
+      totalMatchingRecords: job.totalMatchingRecords,
+      truncated: job.truncated,
       content: job.content,
       createdAt: new Date(job.createdAt)
     }
@@ -3058,8 +3060,8 @@ async function getExportJob(
         status: "completed",
         format: row.format === "csv" ? "csv" : "json",
         recordCount: row.recordCount,
-        totalMatchingRecords: row.recordCount,
-        truncated: false,
+        totalMatchingRecords: row.totalMatchingRecords,
+        truncated: row.truncated,
         content: row.content,
         createdAt: row.createdAt.toISOString()
       }

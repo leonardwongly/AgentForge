@@ -97,6 +97,11 @@ describe("dashboard pagination and bounded exports", () => {
       truncated: true
     });
     const job = state.exports[0]!;
+    expect(job).toMatchObject({
+      recordCount: 2,
+      totalMatchingRecords: 3,
+      truncated: true
+    });
     expect(job.content).toContain("record-a-3");
     expect(job.content).not.toContain("record-b-1");
     await app.close();
@@ -110,7 +115,8 @@ function record(
   lifecycle: ChangeControlRecord["lifecycle"],
   organizationId = "org_local"
 ): ChangeControlRecord {
-  const timestamp = `2026-05-19T00:00:0${pullRequestNumber}.000Z`;
+  const seconds = String(pullRequestNumber % 60).padStart(2, "0");
+  const timestamp = `2026-05-19T00:00:${seconds}.000Z`;
   return {
     id,
     organizationId,
