@@ -2,6 +2,11 @@
 
 Built-in policy packs keep teams from starting with blank YAML.
 
+Policy packs are governance starting points, not certifications. Teams should
+begin in `observe` or `warn`, review real Change Control Records, tune noisy
+rules, and only move selected repositories to `enforce` after evidence and
+reviewer workflows are proven.
+
 ## Startup Default
 
 Intended for small teams that want visibility without too much enforcement. Default mode is `warn`. It detects CI changes, deleted/skipped tests, dependency additions, and migrations with easy overrides and minimal reviewer routing.
@@ -25,3 +30,8 @@ Intended for maintainers who want contributor-friendly warnings. Default mode is
 ## Enterprise Strict
 
 Intended for larger organizations with mature security and platform workflows. Default mode is `enforce`. It includes strict sensitive path checks, required reviewers, required evidence, override role restrictions, export-ready records, long audit retention, and LLM disabled unless explicitly enabled.
+
+Enterprise Strict should be sold and enabled as a mature-control posture, not as
+a blanket promise that every unsafe, vulnerable, or non-compliant change will be
+detected. The control promise is deterministic enforcement of configured policy
+requirements plus exportable evidence for human review.

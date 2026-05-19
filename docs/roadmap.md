@@ -40,16 +40,24 @@
 ## Sprint 5: Beta Hardening
 
 - Audit exports
+- Compliance evidence packages with manifest, control mappings, audit timeline, and redaction report
 - Retention settings
 - Data handling docs
 - Design partner feedback
 - Advisory policy tuning insights from override rate, evidence rejection, repeated findings,
   reviewer bottlenecks, and observe/warn open requirements
+- Liability-safe launch messaging, protected-asset pricing hypothesis, and validation gate
 
 Policy tuning remains deterministic and read-only in V1. Insights cite Change Control Records
 and help platform owners decide where to narrow rules, improve evidence instructions, add reviewer
 fallbacks, or preview mode changes. Generated YAML diffs should only be produced after an explicit
 authorized platform-admin request; insights must never block, unblock, or mutate policy on their own.
+
+Launch positioning remains evidence-backed in V1. The pricing hypothesis is protected repositories
+as the primary metric, protected PR volume bands for usage alignment, and enterprise packaging for
+audit exports, retention, SSO/auth proxy requirements, and support. Broad enforce-mode sales
+positioning should wait until at least three external target-user observations or interviews are
+captured in `docs/launch-positioning-and-pricing.md`.
 
 ## V2 Or Later Backlog
 

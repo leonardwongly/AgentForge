@@ -34,6 +34,7 @@
     "format:check": "prettier --check .",
     "fixtures:run": "tsx scripts/run-fixtures.ts",
     "github:smoke": "tsx scripts/smoke-github-app.ts",
+    "messaging:validate": "tsx scripts/check-liability-copy.ts",
     "policy:validate": "tsx scripts/validate-policy.ts",
     "policy:preview": "tsx scripts/preview-policy.ts",
     "prisma:validate": "pnpm --filter @agentforge/db prisma:validate"

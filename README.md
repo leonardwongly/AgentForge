@@ -8,6 +8,13 @@ Core principle:
 
 Merge Guard is not a vague AI code review product. V1 governs configured pull requests, detects high-risk change-control facts, applies stricter controls when agent-assistance signals are present, and records why a PR passed, warned, blocked, was overridden, merged, or closed.
 
+V1 launch positioning is intentionally liability-conscious: Merge Guard reports
+whether configured policy requirements are satisfied; it does not certify that a
+pull request is secure, correct, compliant, or vulnerability-free. Pricing and
+packaging hypotheses are documented around protected repositories, protected PR
+volume bands, policy packs, audit exports, and enterprise seats in
+`docs/launch-positioning-and-pricing.md`.
+
 ## Repository Structure
 
 ```text
@@ -223,6 +230,7 @@ Every evaluated PR receives a structured Change Control Record with repository, 
 Runtime evaluations are also normalized into policy-version, evaluation, verified-fact, evidence-requirement, reviewer-requirement, check-run, and override tables for audit queries. Evidence counts as complete only after approval; provided-but-unapproved evidence remains open.
 
 Records are exportable as JSON and CSV and intentionally exclude full source code by default.
+Auditor and platform-admin users can also create bounded JSON compliance evidence packages with manifest, control-family mappings, sanitized record summaries, audit timeline entries, and a redaction report.
 
 ## Data Handling Defaults
 
@@ -238,3 +246,17 @@ Records are exportable as JSON and CSV and intentionally exclude full source cod
 V1 intentionally excludes autonomous merge decisions, full agent orchestration, semantic architecture review, prompt/session replay, IDE extensions, agentic blame, line-by-line AI authorship labeling, semantic duplicate detection, full provenance SDKs, LLM-based blocking, and numeric risk-score-centered workflows.
 
 Backlog placeholders are documented in `docs/roadmap.md`.
+
+## Messaging And Pricing Validation
+
+Launch copy must stay evidence-backed and avoid absolute safety claims. Use:
+
+```bash
+pnpm messaging:validate
+```
+
+The current V1 pricing hypothesis is protected repositories as the primary
+metric, protected PR volume bands for usage alignment, and enterprise packaging
+for audit exports, retention, SSO/auth proxy requirements, and support. Broad
+enforce-mode sales positioning should wait until at least three external
+target-user interviews or observations are captured in the validation artifact.
