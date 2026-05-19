@@ -77,9 +77,9 @@ SET
   );
 
 UPDATE "AuditEvent" AS audit
-SET "metadataJson" = jsonb_strip_nulls(
+SET "metadataJson" =
   COALESCE(audit."metadataJson", '{}'::jsonb) ||
-  jsonb_build_object(
+  jsonb_strip_nulls(jsonb_build_object(
     'schemaVersion', audit."schemaVersion",
     'actorRole', audit."actorRole",
     'source', audit."source",
@@ -112,5 +112,8 @@ SET "metadataJson" = jsonb_strip_nulls(
         )
       END
     )
-  )
-);
+  ));
+
+ALTER TABLE "AuditEvent"
+  ALTER COLUMN "actorRole" DROP DEFAULT,
+  ALTER COLUMN "source" DROP DEFAULT;

@@ -331,11 +331,11 @@ model AuditEvent {
   repositoryId      String?
   pullRequestId     String?
   actor             String
-  actorRole         String       @default("system")
+  actorRole         String
   action            String
   targetType        String
   targetId          String
-  source            String       @default("api")
+  source            String
   requestId         String?
   correlationId     String?
   policyVersion     String?
