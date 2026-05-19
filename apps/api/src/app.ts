@@ -35,6 +35,7 @@ import {
   explainChangeControlRecord,
   sanitizeChangeControlRecord
 } from "@agentforge/records";
+import { previewCodeowners } from "@agentforge/reviewers";
 import {
   sanitizeForMetadataStorage,
   summarizeSafeSnippet,
@@ -201,7 +202,7 @@ const dataHandlingPatchSchema = z
     auditRecordRetentionDays: z.number().int().positive().max(3650).optional()
   })
   .strict();
-const ownerMappingPatchSchema = z
+const ownerMappingBaseSchema = z
   .object({
     ownerKey: z
       .string()
@@ -217,14 +218,47 @@ const ownerMappingPatchSchema = z
       .regex(/^@?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?$/u),
     reviewerType: z.enum(["user", "team"])
   })
-  .strict();
+  .strict()
+  .superRefine((mapping, context) => {
+    if (!validReviewerForType(mapping.reviewer, mapping.reviewerType)) {
+      context.addIssue({
+        code: "custom",
+        path: ["reviewer"],
+        message:
+          mapping.reviewerType === "team"
+            ? "Team reviewers must be a GitHub team slug or org/team value."
+            : "User reviewers must be a GitHub user login and cannot include a team path."
+      });
+    }
+  });
+const ownerMappingPatchSchema = ownerMappingBaseSchema.transform((mapping) => ({
+  ownerKey: mapping.ownerKey.toLowerCase(),
+  reviewer: normalizeReviewerForStorage(mapping.reviewer, mapping.reviewerType),
+  reviewerType: mapping.reviewerType
+}));
+const ownerMappingsPatchSchema = z
+  .array(ownerMappingPatchSchema)
+  .max(20)
+  .superRefine((mappings, context) => {
+    const seenOwnerKeys = new Set<string>();
+    for (const [index, mapping] of mappings.entries()) {
+      if (seenOwnerKeys.has(mapping.ownerKey)) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "ownerKey"],
+          message: "Owner mapping keys must be unique after normalization."
+        });
+      }
+      seenOwnerKeys.add(mapping.ownerKey);
+    }
+  });
 const repositorySettingsPatchSchema = z
   .object({
     enabled: z.boolean().optional(),
     mode: policyModeSchema.optional(),
     policyVersion: z.string().trim().min(1).max(160).optional(),
     dataHandling: dataHandlingPatchSchema.optional(),
-    ownerMappings: z.array(ownerMappingPatchSchema).max(20).optional(),
+    ownerMappings: ownerMappingsPatchSchema.optional(),
     sourceCodeStorage: z.boolean().optional(),
     fullDiffRetention: diffRetentionSchema.optional(),
     redactSecrets: z.boolean().optional(),
@@ -237,6 +271,12 @@ const policyPreviewSchema = z
     contentYaml: z.string().optional(),
     pr: z.custom<PullRequestInput>((value) => Boolean(value && typeof value === "object")),
     persist: z.boolean().optional()
+  })
+  .strict();
+const codeownersPreviewSchema = z
+  .object({
+    content: z.string().min(1).max(200_000),
+    changedPaths: z.array(z.string().trim().min(1).max(500)).max(200).optional()
   })
   .strict();
 
@@ -455,11 +495,16 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   app.get("/api/settings", async () => {
     const repositories = await listRepositories();
     const ownerMappings = await listOwnerMappings();
+    const githubInstallation = await githubInstallationSummary(prisma, config);
     return safe({
-      githubInstallation: await githubInstallationSummary(prisma, config),
+      githubInstallation,
       repositories,
       dataHandling: await defaultDataHandlingSettings(prisma, config),
       ownerMappings: ownerMappings.map(ownerMappingForApi),
+      routingDiagnostics: routingDiagnosticsFromOwnerMappings(
+        ownerMappings,
+        githubInstallation.connected
+      ),
       exports: {
         json: true,
         csv: true,
@@ -590,6 +635,22 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   });
 
   app.get("/api/policy-packs", async () => ({ policyPacks: builtinPolicyPacks }));
+  app.post("/api/codeowners/preview", async (request, reply) => {
+    const parsed = codeownersPreviewSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: "Invalid CODEOWNERS preview request",
+        details: parsed.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message
+        }))
+      });
+    }
+    return safe(
+      previewCodeowners(parsed.data.content, parsed.data.changedPaths?.filter(Boolean) ?? [])
+    );
+  });
+
   app.get("/api/policy-packs/:id", async (request, reply) => {
     const pack = getPolicyPack((request.params as { id: string }).id);
     if (!pack) {
@@ -2387,6 +2448,57 @@ function ownerMappingsFromRecords(records: ChangeControlRecord[]) {
     }
   }
   return [...reviewers.values()].sort((a, b) => a.reviewer.localeCompare(b.reviewer));
+}
+
+function routingDiagnosticsFromOwnerMappings(
+  ownerMappings: OwnerMappingState[],
+  githubConnected: boolean
+) {
+  const teamMappings = ownerMappings.filter((mapping) => mapping.reviewerType === "team");
+  const userMappings = ownerMappings.filter((mapping) => mapping.reviewerType === "user");
+  return {
+    codeownersPreviewSupported: true,
+    ownerMappingsConfigured: ownerMappings.length,
+    teamMappings: teamMappings.length,
+    userMappings: userMappings.length,
+    membersReadPermission: {
+      status: githubConnected && teamMappings.length > 0 ? "required" : "not_required",
+      detail:
+        githubConnected && teamMappings.length > 0
+          ? "GitHub App Members: read permission is required to verify team approvals. Missing access fails closed."
+          : "Team approval verification becomes active after a GitHub installation and team mappings are configured."
+    }
+  };
+}
+
+function validReviewerForType(reviewer: string, reviewerType: "user" | "team"): boolean {
+  const normalized = reviewer.trim().replace(/^@/u, "");
+  if (reviewerType === "user") {
+    return githubUserLogin(normalized);
+  }
+  if (normalized.includes("/")) {
+    const [org, team, ...rest] = normalized.split("/");
+    return rest.length === 0 && githubTeamSegment(org) && githubTeamSegment(team);
+  }
+  return (
+    githubTeamSegment(normalized) &&
+    (normalized.toLowerCase().endsWith("-team") || normalized.toLowerCase().endsWith("-owner"))
+  );
+}
+
+function normalizeReviewerForStorage(reviewer: string, reviewerType: "user" | "team"): string {
+  const normalized = reviewer.trim().replace(/^@/u, "");
+  return reviewerType === "team" ? normalized.toLowerCase() : normalized;
+}
+
+function githubUserLogin(value: string | undefined): value is string {
+  return Boolean(
+    value && !value.includes("/") && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$/u.test(value)
+  );
+}
+
+function githubTeamSegment(value: string | undefined): value is string {
+  return Boolean(value && /^[A-Za-z0-9][A-Za-z0-9-]*$/u.test(value));
 }
 
 function onboardingStepsFromRuntime(input: {

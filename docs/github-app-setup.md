@@ -26,6 +26,19 @@ The worker uses the installation credentials to fetch PR files, reviews, commits
 
 Team reviewer requirements are cleared only after GitHub confirms that the approving user is an active member of the required team slug. Missing `Members: read`, unavailable membership APIs, or inactive memberships fail closed and leave the team reviewer requirement pending.
 
+The Settings and Onboarding pages expose routing diagnostics for this path. When team owner mappings exist, the diagnostics call out that `Members: read` must be granted before team approvals can clear enforce-mode checks. Reviewer requirements also retain the routing reason and team-verification failure so a blocked PR shows whether the pending state came from a missing approval, missing permission, or failed membership lookup.
+
+CODEOWNERS preview is available through:
+
+```bash
+curl -sS \
+  -H "content-type: application/json" \
+  -d '{"content":"* @org/platform-team\n/src/billing/** @org/billing-owner","changedPaths":["src/billing/checkout.ts"]}' \
+  http://localhost:4000/api/codeowners/preview
+```
+
+The preview uses last-match-wins CODEOWNERS precedence, preserves ownerless override rules, normalizes `@org/team` to `org/team`, skips email owners that cannot become GitHub reviewer routes, and reports unsupported negated patterns, unsupported bracket patterns, unsupported escaped leading-`#` patterns, missing `@` owner prefixes, and malformed owners as diagnostics instead of silently treating them as owner routes.
+
 Webhook URL:
 
 ```text

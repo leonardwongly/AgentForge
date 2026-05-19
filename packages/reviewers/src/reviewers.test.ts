@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PolicyHit, VerifiedFact } from "@agentforge/core";
-import { routeReviewers } from "./index.js";
+import { parseCodeowners, previewCodeowners, routeReviewers } from "./index.js";
 
 const fact: VerifiedFact = {
   id: "fact_1",
@@ -59,7 +59,7 @@ describe("reviewer router", () => {
       reviewer: "maintainer",
       reviewerType: "user",
       tier: "suggested",
-      reason: "Maintainer review suggested."
+      reason: expect.stringContaining("Maintainer review suggested.")
     });
   });
 
@@ -134,6 +134,45 @@ describe("reviewer router", () => {
     });
   });
 
+  it("surfaces team membership permission diagnostics when approvals cannot be verified", () => {
+    const reviewers = routeReviewers(
+      [
+        {
+          id: "hit_team",
+          ruleId: "security",
+          finding: fact,
+          action: "require_review",
+          severity: "high",
+          requiredEvidence: [],
+          requiredReviewers: ["security-team"],
+          explanation: "Security team approval required."
+        }
+      ],
+      {
+        reviews: [
+          {
+            reviewer: "alice",
+            reviewerType: "user",
+            teamVerification: {
+              status: "unavailable",
+              reason: "GitHub Members: read permission is required.",
+              checkedTeamSlugs: ["security-team"]
+            },
+            state: "APPROVED",
+            submittedAt: "2026-05-14T00:00:00.000Z"
+          }
+        ]
+      }
+    );
+
+    expect(reviewers[0]).toMatchObject({
+      reviewer: "security-team",
+      approved: false,
+      reason: expect.stringContaining("Team verification unavailable")
+    });
+    expect(reviewers[0]?.reason).toContain("Members: read");
+  });
+
   it("caps non-critical required reviewer groups as conditional reviewers", () => {
     const hits: PolicyHit[] = ["billing-owner", "security-team", "database-owner"].map(
       (reviewer, index) => ({
@@ -153,5 +192,209 @@ describe("reviewer router", () => {
     expect(reviewers[0]?.tier).toBe("required");
     expect(reviewers.slice(1).every((reviewer) => reviewer.tier === "conditional")).toBe(true);
     expect(reviewers.slice(1).every((reviewer) => reviewer.reason.includes("capped"))).toBe(true);
+  });
+});
+
+describe("CODEOWNERS preview", () => {
+  it("suggests the last matching owner for overlapping and fallback rules", () => {
+    const preview = previewCodeowners(
+      `
+* @acme/platform-team
+/src/billing/** @acme/billing-owner
+/src/billing/checkout.ts @acme/checkout-team @alice
+`,
+      ["src/billing/checkout.ts", "docs/readme.md"]
+    );
+
+    expect(preview.suggestions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ownerKey: "checkout_team",
+          reviewer: "acme/checkout-team",
+          reviewerType: "team",
+          pattern: "/src/billing/checkout.ts",
+          matchedPaths: ["src/billing/checkout.ts"]
+        }),
+        expect.objectContaining({
+          ownerKey: "platform_team",
+          reviewer: "acme/platform-team",
+          reviewerType: "team",
+          pattern: "*",
+          matchedPaths: ["docs/readme.md"]
+        }),
+        expect.objectContaining({
+          ownerKey: "alice",
+          reviewer: "alice",
+          reviewerType: "user"
+        })
+      ])
+    );
+  });
+
+  it("records unsupported negated CODEOWNERS patterns as diagnostics", () => {
+    const rules = parseCodeowners("!docs/** @acme/docs-team\nsrc/** @acme/platform-team");
+    const preview = previewCodeowners("!docs/** @acme/docs-team\nsrc/** @acme/platform-team", [
+      "docs/guide.md",
+      "src/index.ts"
+    ]);
+
+    expect(rules[0]).toMatchObject({
+      pattern: "!docs/**",
+      negated: true,
+      valid: false
+    });
+    expect(preview.diagnostics[0]).toContain("negated CODEOWNERS patterns");
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        reviewer: "acme/platform-team",
+        matchedPaths: ["src/index.ts"]
+      })
+    ]);
+  });
+
+  it("matches unanchored directory patterns anywhere in the repository", () => {
+    const preview = previewCodeowners("docs/ @acme/docs-team", [
+      "docs/guide.md",
+      "src/docs/reference.md"
+    ]);
+
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        reviewer: "acme/docs-team",
+        matchedPaths: ["docs/guide.md", "src/docs/reference.md"]
+      })
+    ]);
+  });
+
+  it("matches double-star directory globs with zero or more nested directories", () => {
+    const preview = previewCodeowners("docs/**/README.md @acme/docs-team", [
+      "docs/README.md",
+      "docs/api/README.md",
+      "docs/api/v2/README.md"
+    ]);
+
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        reviewer: "acme/docs-team",
+        matchedPaths: ["docs/README.md", "docs/api/README.md", "docs/api/v2/README.md"]
+      })
+    ]);
+  });
+
+  it("rejects oversized CODEOWNERS patterns before preview matching", () => {
+    const overlongPattern = `${"a".repeat(201)} @acme/docs-team`;
+    const preview = previewCodeowners(overlongPattern, ["aaa"]);
+
+    expect(preview.diagnostics[0]).toContain("pattern exceeds 200 characters");
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("rejects excessive CODEOWNERS wildcard groups before preview matching", () => {
+    const preview = previewCodeowners("docs/**/**/**/**/README.md @acme/docs-team", [
+      "docs/a/b/c/d/README.md"
+    ]);
+
+    expect(preview.diagnostics[0]).toContain("too many wildcard groups");
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("rejects CODEOWNERS bracket patterns that GitHub ignores", () => {
+    const preview = previewCodeowners("src/[ab]/** @acme/platform-team", ["src/a/index.ts"]);
+
+    expect(preview.diagnostics[0]).toContain("unsupported bracket patterns");
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("requires CODEOWNERS owner tokens to use @ prefixes", () => {
+    const preview = previewCodeowners("src/** acme/platform-team", ["src/index.ts"]);
+
+    expect(preview.diagnostics[0]).toContain('malformed owner "acme/platform-team"');
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("invalidates CODEOWNERS lines with any malformed owner", () => {
+    const preview = previewCodeowners("src/** @acme/platform-team bad@@owner", ["src/index.ts"]);
+
+    expect(preview.diagnostics[0]).toContain('malformed owner "bad@@owner"');
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("rejects malformed CODEOWNERS team owners with extra path segments", () => {
+    const preview = previewCodeowners("src/** @acme/platform/team", ["src/index.ts"]);
+
+    expect(preview.diagnostics[0]).toContain('malformed owner "@acme/platform/team"');
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("deduplicates CODEOWNERS user owners case-insensitively", () => {
+    const preview = previewCodeowners("* @Alice @alice");
+
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        ownerKey: "alice",
+        reviewer: "alice",
+        reviewerType: "user"
+      })
+    ]);
+  });
+
+  it("preserves ownerless CODEOWNERS overrides as last-match wins", () => {
+    const preview = previewCodeowners(
+      `
+* @acme/platform-team
+/apps/github
+`,
+      ["apps/github/index.ts"]
+    );
+
+    expect(preview.diagnostics).toEqual([]);
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("matches directory descendants for patterns without trailing slashes", () => {
+    const preview = previewCodeowners("**/logs @acme/observability-team", [
+      "logs/a.txt",
+      "src/logs/a.txt"
+    ]);
+
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        reviewer: "acme/observability-team",
+        matchedPaths: ["logs/a.txt", "src/logs/a.txt"]
+      })
+    ]);
+  });
+
+  it("keeps slash-containing CODEOWNERS patterns root-relative", () => {
+    const preview = previewCodeowners("docs/* @acme/docs-team", [
+      "docs/readme.md",
+      "src/docs/readme.md"
+    ]);
+
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        reviewer: "acme/docs-team",
+        matchedPaths: ["docs/readme.md"]
+      })
+    ]);
+  });
+
+  it("allows CODEOWNERS email owners without producing reviewer suggestions", () => {
+    const preview = previewCodeowners("*.go docs@example.com @acme/go-team", ["main.go"]);
+
+    expect(preview.diagnostics).toEqual([]);
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        reviewer: "acme/go-team",
+        matchedPaths: ["main.go"]
+      })
+    ]);
+  });
+
+  it("rejects escaped leading-hash CODEOWNERS patterns that GitHub ignores", () => {
+    const preview = previewCodeowners("\\#secrets @acme/security-team", ["#secrets"]);
+
+    expect(preview.diagnostics[0]).toContain("escaped leading # patterns");
+    expect(preview.suggestions).toEqual([]);
   });
 });

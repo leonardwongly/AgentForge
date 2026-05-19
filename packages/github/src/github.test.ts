@@ -276,6 +276,116 @@ describe("github integration", () => {
     });
 
     expect(reviews[0]?.teamSlugs).toBeUndefined();
+    expect(reviews[0]?.teamVerification).toMatchObject({
+      status: "failed",
+      checkedTeamSlugs: ["security-team"],
+      reason: expect.stringContaining("membership verification failed")
+    });
+  });
+
+  it("marks approved user reviews as unverifiable when Members read permission is unavailable", async () => {
+    const reviews = await enrichPullRequestReviewsWithTeamMemberships({
+      client: {
+        pulls: {
+          get: async () => ({ data: {} }),
+          listFiles: async () => ({ data: [] }),
+          listReviews: async () => ({ data: [] }),
+          listCommits: async () => ({ data: [] })
+        }
+      },
+      org: "acme",
+      teamSlugs: ["security-team"],
+      reviews: [
+        {
+          reviewer: "alice",
+          reviewerType: "user",
+          state: "APPROVED",
+          submittedAt: "2026-05-14T00:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(reviews[0]).toMatchObject({
+      reviewer: "alice",
+      teamSlugs: undefined,
+      teamVerification: {
+        status: "unavailable",
+        checkedTeamSlugs: ["security-team"],
+        reason: expect.stringContaining("Members: read")
+      }
+    });
+  });
+
+  it("caches team membership checks for duplicate approved reviews by the same user", async () => {
+    let checks = 0;
+    const reviews = await enrichPullRequestReviewsWithTeamMemberships({
+      client: {
+        pulls: {
+          get: async () => ({ data: {} }),
+          listFiles: async () => ({ data: [] }),
+          listReviews: async () => ({ data: [] }),
+          listCommits: async () => ({ data: [] })
+        },
+        teams: {
+          getMembershipForUserInOrg: async () => {
+            checks += 1;
+            return { data: { state: "active" } };
+          }
+        }
+      },
+      org: "acme",
+      teamSlugs: ["security-team", "platform-team"],
+      reviews: [
+        {
+          reviewer: "alice",
+          reviewerType: "user",
+          state: "APPROVED",
+          submittedAt: "2026-05-14T00:00:00.000Z"
+        },
+        {
+          reviewer: "alice",
+          reviewerType: "user",
+          state: "APPROVED",
+          submittedAt: "2026-05-15T00:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(checks).toBe(2);
+    expect(reviews.every((review) => review.teamSlugs?.includes("security-team"))).toBe(true);
+  });
+
+  it("treats GitHub team membership 404 responses as verified non-membership", async () => {
+    const notFound = new Error("Not Found") as Error & { status: number };
+    notFound.status = 404;
+    const reviews = await enrichPullRequestReviewsWithTeamMemberships({
+      client: {
+        pulls: {
+          get: async () => ({ data: {} }),
+          listFiles: async () => ({ data: [] }),
+          listReviews: async () => ({ data: [] }),
+          listCommits: async () => ({ data: [] })
+        },
+        teams: {
+          getMembershipForUserInOrg: async () => {
+            throw notFound;
+          }
+        }
+      },
+      org: "acme",
+      teamSlugs: ["security-team"],
+      reviews: [
+        {
+          reviewer: "alice",
+          reviewerType: "user",
+          state: "APPROVED",
+          submittedAt: "2026-05-14T00:00:00.000Z"
+        }
+      ]
+    });
+
+    expect(reviews[0]?.teamSlugs).toBeUndefined();
+    expect(reviews[0]?.teamVerification).toBeUndefined();
   });
 
   it("keeps PR extraction usable when manifest content fetch is unavailable", async () => {

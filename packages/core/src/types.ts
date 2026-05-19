@@ -133,6 +133,13 @@ export type PullRequestReview = {
   reviewer: string;
   reviewerType?: "user" | "team" | undefined;
   teamSlugs?: string[] | undefined;
+  teamVerification?:
+    | {
+        status: "verified" | "unavailable" | "failed";
+        reason: string;
+        checkedTeamSlugs: string[];
+      }
+    | undefined;
   state: PullRequestReviewState;
   submittedAt: string;
 };

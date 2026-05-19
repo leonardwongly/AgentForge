@@ -103,6 +103,16 @@ export type SettingsData = {
     reviewerType: string;
     sources: string[];
   }>;
+  routingDiagnostics?: {
+    codeownersPreviewSupported: boolean;
+    ownerMappingsConfigured: number;
+    teamMappings: number;
+    userMappings: number;
+    membersReadPermission: {
+      status: "required" | "not_required";
+      detail: string;
+    };
+  };
   exports: {
     json: boolean;
     csv: boolean;
