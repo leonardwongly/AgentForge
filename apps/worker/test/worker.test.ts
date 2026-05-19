@@ -1,9 +1,14 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadConfig } from "@agentforge/config";
 import type { PolicyResult, PullRequestInput } from "@agentforge/core";
 import type { GithubAdapterClient, GithubWebhookEnvelope } from "@agentforge/github";
-import { processMergeGuardEvaluationJob } from "../src/index.js";
+import {
+  processMergeGuardEvaluationJob,
+  RepositoryNotConfiguredError,
+  resolveRuntimeEvaluationContext
+} from "../src/index.js";
 
 const mutableEnvKeys = [
   "NODE_ENV",
@@ -79,6 +84,49 @@ describe("Merge Guard worker evaluation jobs", () => {
     expect(agent.status).toBe("block");
     expect(human.checkConclusion).toBe("failure");
     expect(agent.checkConclusion).toBe("failure");
+  });
+
+  it("rejects DB-backed runtime fallback when a repository has no configured policy", async () => {
+    const pr = await loadPr("billing-path.json");
+    const config = loadConfig();
+    const prisma = {
+      repository: {
+        findFirst: vi.fn().mockResolvedValue(null)
+      }
+    };
+
+    await expect(
+      resolveRuntimeEvaluationContext({
+        prisma: prisma as never,
+        pr,
+        config
+      })
+    ).rejects.toThrow(RepositoryNotConfiguredError);
+  });
+
+  it("allows DB-backed runtime evaluation only with an explicit job policy for unknown repositories", async () => {
+    const pr = await loadPr("billing-path.json");
+    const policyYaml = await loadPolicy("fintech.yaml");
+    const config = loadConfig();
+    const prisma = {
+      repository: {
+        findFirst: vi.fn().mockResolvedValue(null)
+      }
+    };
+
+    const runtime = await resolveRuntimeEvaluationContext({
+      prisma: prisma as never,
+      pr,
+      config,
+      policyYaml
+    });
+
+    expect(runtime).toMatchObject({
+      organizationId: "org_explicit_policy",
+      policyYaml,
+      modeOverride: undefined,
+      ownerMappings: []
+    });
   });
 
   it("fetches live GitHub PR facts before evaluating webhook jobs and publishing checks", async () => {

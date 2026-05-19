@@ -179,6 +179,30 @@ describe("runtime data surfaces", () => {
     await app.close();
   });
 
+  it("requires explicit policy content for previews before a repository is configured", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ pr: pullRequest }),
+      headers: { "content-type": "application/json" }
+    });
+
+    expect(preview.statusCode).toBe(400);
+    expect(preview.json()).toEqual({
+      error: "contentYaml is required when the repository has no active policy"
+    });
+    expect(state.records).toEqual([]);
+    expect(state.repositoryPolicies.size).toBe(0);
+
+    const repositories = await app.inject({ method: "GET", url: "/api/repositories" });
+    expect(repositories.json().repositories).toEqual([]);
+
+    await app.close();
+  });
+
   it("persists repository settings and configured owner mappings", async () => {
     const state = createInitialState();
     const app = createApp(state);

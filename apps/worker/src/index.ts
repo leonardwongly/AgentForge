@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { loadConfig } from "@agentforge/config";
-import type { ChangeControlRecord, PullRequestInput } from "@agentforge/core";
+import type { ChangeControlRecord, PolicyResult, PullRequestInput } from "@agentforge/core";
 import { PrismaClient } from "@agentforge/db";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/detectors";
 import {
@@ -47,6 +47,15 @@ type PersistedWorkerRecordRefs = {
 
 let workerPrisma: PrismaClient | undefined;
 
+export class RepositoryNotConfiguredError extends Error {
+  constructor(repositoryFullName: string) {
+    super(
+      `Repository ${repositoryFullName} is not configured for Merge Guard evaluation. Configure a repository policy or provide an explicit policy for this job.`
+    );
+    this.name = "RepositoryNotConfiguredError";
+  }
+}
+
 export type MergeGuardEvaluationJobData = {
   deliveryId: string;
   envelope?: GithubWebhookEnvelope | undefined;
@@ -76,12 +85,25 @@ export async function processMergeGuardEvaluationJob(
 
   const githubContext = await resolvePullRequestForJob(data, config);
   let pr = githubContext.pr;
-  const runtime = await resolveRuntimeEvaluationContext({
-    prisma,
-    pr,
-    config,
-    policyYaml: data.policyYaml
-  });
+  let runtime: Awaited<ReturnType<typeof resolveRuntimeEvaluationContext>>;
+  try {
+    runtime = await resolveRuntimeEvaluationContext({
+      prisma,
+      pr,
+      config,
+      policyYaml: data.policyYaml
+    });
+  } catch (error) {
+    if (error instanceof RepositoryNotConfiguredError) {
+      return publishNotConfiguredEvaluation({
+        data,
+        githubContext,
+        pr,
+        reason: error.message
+      });
+    }
+    throw error;
+  }
 
   const parsed = parsePolicyYaml(runtime.policyYaml);
   if (parsed.errors.length > 0) {
@@ -154,6 +176,56 @@ export async function processMergeGuardEvaluationJob(
     checkConclusion: checkRun.conclusion,
     checkPublished: published.published,
     publishedCheckRunId: published.id
+  };
+}
+
+async function publishNotConfiguredEvaluation(input: {
+  data: MergeGuardEvaluationJobData;
+  githubContext: {
+    owner: string;
+    repo: string;
+    checkPublisherClient?: GithubCheckPublisherClient | undefined;
+  };
+  pr: PullRequestInput;
+  reason: string;
+}): Promise<MergeGuardEvaluationJobResult> {
+  const result = notConfiguredPolicyResult(input.reason);
+  const checkRun = buildCheckRunPayload(input.pr, result);
+  const published = await publishCheckIfConfigured({
+    data: input.data,
+    githubContext: input.githubContext,
+    pr: input.pr,
+    result
+  });
+
+  return {
+    processedAt: new Date().toISOString(),
+    recordId: `not_configured:${input.data.deliveryId}`,
+    repositoryFullName: input.pr.repositoryFullName,
+    pullRequestNumber: input.pr.pullRequestNumber,
+    status: result.status,
+    lifecycle: "evaluated",
+    checkConclusion: checkRun.conclusion,
+    checkPublished: published.published,
+    publishedCheckRunId: published.id
+  };
+}
+
+function notConfiguredPolicyResult(reason: string): PolicyResult {
+  return {
+    mode: "warn",
+    status: "warn",
+    policyVersion: "not_configured",
+    policyPackId: "not_configured",
+    policyPackVersion: "not_configured",
+    findings: [],
+    requiredEvidence: [],
+    requiredReviewers: [],
+    explanation: [
+      reason,
+      "Merge Guard skipped deterministic policy evaluation because no repository policy was selected."
+    ],
+    evaluatedAt: new Date().toISOString()
   };
 }
 
@@ -284,7 +356,7 @@ async function githubClientForEnvelope(
   };
 }
 
-async function resolveRuntimeEvaluationContext(input: {
+export async function resolveRuntimeEvaluationContext(input: {
   prisma: PrismaClient | undefined;
   pr: PullRequestInput;
   config: ReturnType<typeof loadConfig>;
@@ -324,17 +396,16 @@ async function resolveRuntimeEvaluationContext(input: {
   if (repository && !repository.enabled) {
     throw new Error(`Repository ${repository.fullName} is disabled for Merge Guard evaluation.`);
   }
+  if (!input.policyYaml && (!repository || !repository.currentPolicyVersion)) {
+    throw new RepositoryNotConfiguredError(input.pr.repositoryFullName);
+  }
 
   return {
-    organizationId: repository?.organizationId ?? "org_local",
+    organizationId: repository?.organizationId ?? "org_explicit_policy",
     repositoryId: repository?.id ?? repositoryIdFromFullName(input.pr.repositoryFullName),
     policyYaml:
       input.policyYaml ?? repository?.currentPolicyVersion?.contentYaml ?? defaultPolicyYaml,
-    modeOverride:
-      repository?.mode ??
-      (input.policyYaml || repository?.currentPolicyVersion
-        ? undefined
-        : input.config.defaultPolicyMode),
+    modeOverride: repository?.mode ?? undefined,
     storagePolicy: repository?.settings
       ? storagePolicyFromRepositorySetting(repository.settings)
       : storagePolicyFromConfig(input.config),
@@ -502,7 +573,7 @@ async function publishCheckIfConfigured(input: {
     checkPublisherClient?: GithubCheckPublisherClient | undefined;
   };
   pr: PullRequestInput;
-  result: ReturnType<typeof evaluateMergeGuard>;
+  result: PolicyResult;
   detailsUrl?: string | undefined;
 }): Promise<{ published: boolean; id?: number | undefined }> {
   if (input.data.githubCheckPublisher) {

@@ -56,6 +56,7 @@ pnpm dev
 
 The local Compose Postgres service is exposed on `localhost:15432` to avoid common conflicts with a developer workstation Postgres on `5432`. The Prisma scripts use `postgresql://agentforge:agentforge@localhost:15432/agentforge` unless `DATABASE_URL` is set.
 The local Redis service is exposed on `localhost:6379`; `.env.example` includes both local service URLs so the API and worker start connected after a fresh copy.
+`pnpm db:seed` loads built-in policy packs and demo data only. Production repositories must still be onboarded with an explicit repository policy through the dashboard or API before DB-backed worker evaluations persist Change Control Records.
 
 Useful commands:
 
@@ -199,6 +200,8 @@ pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.
 ```
 
 `agentforge.apply_to` supports `all_pull_requests`, `repo:<glob>`, `base:<glob>`, `head:<glob>`, `branch:<glob>`, and `label:<glob>`. API policy previews are read-only by default; persisting preview-generated Change Control Records requires `persist: true` plus a server-resolved `platform_admin` or `engineering_manager` actor.
+
+DB-backed worker evaluations do not silently fall back to the built-in fintech policy for unknown repositories. A production repository must have an active repository policy version, or the job must carry an explicit policy payload; otherwise Merge Guard publishes a non-blocking `not_configured` result and skips persistence. Local no-database demo runs still use the built-in policy pack so fixture workflows remain easy to run.
 
 ## Change Control Records
 
