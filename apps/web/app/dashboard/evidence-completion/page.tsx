@@ -67,7 +67,7 @@ export default async function EvidenceCompletionPage({
           <MetricCard
             label="Completion"
             value={`${summary.evidenceCompletion}%`}
-            detail="Provided or approved evidence requirements."
+            detail="Approved evidence requirements."
             tone="pass"
           />
           <MetricCard

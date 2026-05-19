@@ -829,9 +829,15 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       });
     }
     const body = parsedBody.data;
-    const evidence = record.requiredEvidence.find((item) =>
-      body.evidenceId ? item.id === body.evidenceId : item.kind === body.kind
-    );
+    const matches = body.evidenceId
+      ? record.requiredEvidence.filter((item) => item.id === body.evidenceId)
+      : record.requiredEvidence.filter((item) => item.kind === body.kind);
+    if (!body.evidenceId && matches.length > 1) {
+      return reply
+        .code(409)
+        .send({ error: "evidenceId is required when multiple requirements share the same kind." });
+    }
+    const [evidence] = matches;
     if (!evidence) {
       return reply.code(404).send({ error: "Evidence requirement not found" });
     }
@@ -963,15 +969,11 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         const previousStatus = record.checkStatus;
         const rejectedAt = new Date().toISOString();
         const reasonSummary = summarizeSafeSnippet(parsedBody.data.reason);
-        for (const item of record.requiredEvidence) {
-          if (item.id === evidence.id) {
-            item.status = "rejected";
-            item.approvedBy = undefined;
-            item.approvedAt = undefined;
-            item.contentSummary = `Rejected: ${reasonSummary}`;
-            item.providedAt = item.providedAt ?? rejectedAt;
-          }
-        }
+        evidence.status = "rejected";
+        evidence.approvedBy = undefined;
+        evidence.approvedAt = undefined;
+        evidence.contentSummary = `Rejected: ${reasonSummary}`;
+        evidence.providedAt = evidence.providedAt ?? rejectedAt;
         const savedRecord = await saveRecord(recomputeRequirementStatus(record));
         await audit({
           organizationId: record.organizationId,

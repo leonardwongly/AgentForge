@@ -227,7 +227,7 @@ describe("security and audit hardening", () => {
       url: `/api/pull-requests/${record.id}/evidence`,
       payload: JSON.stringify({
         actor: "spoofed-user",
-        kind: evidence.kind,
+        evidenceId: evidence.id,
         content: "Security note: provided without authenticated actor headers."
       }),
       headers: { "content-type": "application/json" }
@@ -250,7 +250,7 @@ describe("security and audit hardening", () => {
       method: "POST",
       url: `/api/pull-requests/${record.id}/evidence`,
       payload: JSON.stringify({
-        kind: evidence.kind,
+        evidenceId: evidence.id,
         content: "Security note: raw local actor headers are not production auth context."
       }),
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
@@ -262,7 +262,7 @@ describe("security and audit hardening", () => {
       method: "POST",
       url: `/api/pull-requests/${record.id}/evidence`,
       payload: JSON.stringify({
-        kind: evidence.kind,
+        evidenceId: evidence.id,
         content: "Security note: explicit production local fallback accepted."
       }),
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
@@ -283,7 +283,7 @@ describe("security and audit hardening", () => {
       method: "POST",
       url: `/api/pull-requests/${record.id}/evidence`,
       payload: JSON.stringify({
-        kind: evidence.kind,
+        evidenceId: evidence.id,
         content: "Security note: authenticated proxy header context accepted."
       }),
       headers: {
@@ -437,6 +437,21 @@ describe("security and audit hardening", () => {
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
     });
     expect(unknownRequirement.statusCode).toBe(404);
+
+    state.records[0]!.requiredEvidence.push({
+      ...evidence,
+      id: `${evidence.id}:duplicate`
+    });
+    const ambiguousKind = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        kind: evidence.kind,
+        content: "Security note: kind-only submission is ambiguous for duplicate requirements."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(ambiguousKind.statusCode).toBe(409);
 
     const oversized = await app.inject({
       method: "POST",
@@ -607,7 +622,7 @@ describe("security and audit hardening", () => {
       method: "POST",
       url: `/api/pull-requests/${record.id}/evidence`,
       payload: JSON.stringify({
-        kind: evidence.kind,
+        evidenceId: evidence.id,
         content: `Security note: token rotated, old value ${rawGithubToken} revoked.`
       }),
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
