@@ -70,7 +70,9 @@ pnpm typecheck
 pnpm test
 pnpm test:unit
 pnpm test:integration
+pnpm test:e2e:preflight
 pnpm test:e2e
+pnpm smoke:e2e-readiness
 pnpm fixtures:run
 pnpm policy:validate fixtures/policies/fintech.yaml
 pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.json
@@ -79,6 +81,14 @@ pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.
 `pnpm test` should be safe to run from a clean shell. DB-backed checks such as
 integration and E2E runs expect the local Compose services to be running and
 seeded with `pnpm db:migrate && pnpm db:seed`.
+
+`pnpm test:e2e` is the supported browser smoke path. It preflights the default
+isolated ports (`127.0.0.1:3100` for web and `127.0.0.1:4100` for API), takes an
+E2E lock, builds the web app once, and then lets Playwright start and stop the
+test servers. Use `pnpm test:e2e:preflight` for a fast local-state check and
+`pnpm smoke:e2e-readiness` to verify already-running local API/web services.
+Browser-use CLI and Computer Use can still support manual exploration, but they
+are not required for CI or repeatable local validation.
 
 Production launch and rollback steps are documented in `docs/runbook.md`.
 Railway-specific service setup, migration, and webhook cutover steps are documented in `docs/railway-deployment.md`.
