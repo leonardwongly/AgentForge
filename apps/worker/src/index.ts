@@ -369,12 +369,12 @@ export async function resolveRuntimeEvaluationContext(input: {
   storagePolicy: MetadataStoragePolicy;
   ownerMappings: OwnerMappingRuntime[];
 }> {
-  const defaultPolicyYaml = getPolicyPack("fintech")?.contentYaml;
-  if (!defaultPolicyYaml) {
-    throw new Error("Merge Guard evaluation job could not resolve a policy.");
-  }
-
   if (!input.prisma) {
+    const defaultPolicyYaml = getPolicyPack("fintech")?.contentYaml;
+    if (!defaultPolicyYaml) {
+      throw new Error("Merge Guard evaluation job could not resolve a policy.");
+    }
+
     return {
       organizationId: "org_local",
       repositoryId: repositoryIdFromFullName(input.pr.repositoryFullName),
@@ -399,12 +399,15 @@ export async function resolveRuntimeEvaluationContext(input: {
   if (!input.policyYaml && (!repository || !repository.currentPolicyVersion)) {
     throw new RepositoryNotConfiguredError(input.pr.repositoryFullName);
   }
+  const resolvedPolicyYaml = input.policyYaml ?? repository?.currentPolicyVersion?.contentYaml;
+  if (!resolvedPolicyYaml) {
+    throw new RepositoryNotConfiguredError(input.pr.repositoryFullName);
+  }
 
   return {
     organizationId: repository?.organizationId ?? "org_explicit_policy",
     repositoryId: repository?.id ?? repositoryIdFromFullName(input.pr.repositoryFullName),
-    policyYaml:
-      input.policyYaml ?? repository?.currentPolicyVersion?.contentYaml ?? defaultPolicyYaml,
+    policyYaml: resolvedPolicyYaml,
     modeOverride: repository?.mode ?? undefined,
     storagePolicy: repository?.settings
       ? storagePolicyFromRepositorySetting(repository.settings)
