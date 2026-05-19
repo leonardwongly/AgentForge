@@ -43,7 +43,7 @@ export type EvidenceRequirement = {
     | "security_note"
     | "ci_change_reason"
     | "manual_attestation";
-  status: "missing" | "provided" | "approved";
+  status: "missing" | "provided" | "approved" | "rejected";
   source?:
     | "pr_body"
     | "review"
@@ -216,7 +216,9 @@ export type AuditEventAction =
   | "override_created"
   | "evidence_provided"
   | "evidence_approved"
+  | "evidence_rejected"
   | "reviewer_approved"
+  | "record_reevaluated"
   | "check_published"
   | "record_exported"
   | "retention_changed"

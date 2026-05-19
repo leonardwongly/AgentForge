@@ -370,30 +370,30 @@ describe("security and audit hardening", () => {
   it("recomputes the Merge Guard result after evidence and reviewer approvals clear requirements", async () => {
     const { app, state } = await createPreviewRecord();
     const record = state.records[0]!;
-    const evidence = record.requiredEvidence[0]!;
     const reviewer = record.requiredReviewers[0]!;
 
     expect(record.checkStatus).toBe("block");
 
-    const provided = await app.inject({
-      method: "POST",
-      url: `/api/pull-requests/${record.id}/evidence`,
-      payload: JSON.stringify({
-        kind: evidence.kind,
-        content: "Security note: secret-like value was removed and the old token was revoked."
-      }),
-      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
-    });
-    expect(provided.statusCode).toBe(200);
-    expect(state.records[0]!.checkStatus).toBe("block");
+    for (const evidence of record.requiredEvidence) {
+      const provided = await app.inject({
+        method: "POST",
+        url: `/api/pull-requests/${record.id}/evidence`,
+        payload: JSON.stringify({
+          evidenceId: evidence.id,
+          content: "Security note: secret-like value was removed and the old token was revoked."
+        }),
+        headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+      });
+      expect(provided.statusCode).toBe(200);
 
-    const approvedEvidence = await app.inject({
-      method: "PATCH",
-      url: `/api/evidence/${evidence.id}/approve`,
-      payload: JSON.stringify({}),
-      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
-    });
-    expect(approvedEvidence.statusCode).toBe(200);
+      const approvedEvidence = await app.inject({
+        method: "PATCH",
+        url: `/api/evidence/${evidence.id}/approve`,
+        payload: JSON.stringify({}),
+        headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+      });
+      expect(approvedEvidence.statusCode).toBe(200);
+    }
     expect(state.records[0]!.checkStatus).toBe("block");
 
     const approvedReviewer = await app.inject({
@@ -416,6 +416,107 @@ describe("security and audit hardening", () => {
       lifecycle: "passed",
       decision: expect.objectContaining({ status: "passed" })
     });
+    expect(state.auditEvents.map((event) => event.action)).toEqual(
+      expect.arrayContaining(["evidence_provided", "evidence_approved", "record_reevaluated"])
+    );
+    await app.close();
+  });
+
+  it("validates manual evidence ids, payload size, and approval transitions", async () => {
+    const { app, state } = await createPreviewRecord();
+    const record = state.records[0]!;
+    const evidence = record.requiredEvidence[0]!;
+
+    const unknownRequirement = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        evidenceId: "evidence:unknown:security_note",
+        content: "Security note: unknown evidence id should not update any record."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(unknownRequirement.statusCode).toBe(404);
+
+    const oversized = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        evidenceId: evidence.id,
+        content: "x".repeat(4_001)
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(oversized.statusCode).toBe(400);
+
+    const approveBeforeSubmit = await app.inject({
+      method: "PATCH",
+      url: `/api/evidence/${evidence.id}/approve`,
+      payload: JSON.stringify({}),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(approveBeforeSubmit.statusCode).toBe(409);
+
+    const developerApprove = await app.inject({
+      method: "PATCH",
+      url: `/api/evidence/${evidence.id}/approve`,
+      payload: JSON.stringify({}),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(developerApprove.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("supports evidence rejection and corrected resubmission without clearing the block", async () => {
+    const { app, state } = await createPreviewRecord();
+    const record = state.records[0]!;
+    const evidence = record.requiredEvidence[0]!;
+
+    const provided = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        evidenceId: evidence.id,
+        content: "Security note: token appears in logs but rotation proof is missing."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(provided.statusCode).toBe(200);
+
+    const rejected = await app.inject({
+      method: "PATCH",
+      url: `/api/evidence/${evidence.id}/reject`,
+      payload: JSON.stringify({ reason: "Rotation proof link is missing from the evidence." }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(rejected.statusCode).toBe(200);
+    expect(rejected.json().evidence).toMatchObject({
+      id: evidence.id,
+      status: "rejected"
+    });
+    expect(state.records[0]!).toMatchObject({
+      checkStatus: "block",
+      lifecycle: "blocked"
+    });
+
+    const corrected = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({
+        evidenceId: evidence.id,
+        content: "Security note: token was revoked and rotation evidence is linked in SEC-123."
+      }),
+      headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
+    });
+    expect(corrected.statusCode).toBe(200);
+    expect(corrected.json().evidence).toMatchObject({
+      id: evidence.id,
+      status: "provided"
+    });
+    expect(corrected.json().evidence.approvedBy).toBeUndefined();
+    expect(state.auditEvents.map((event) => event.action)).toEqual(
+      expect.arrayContaining(["evidence_rejected", "record_reevaluated"])
+    );
     await app.close();
   });
 

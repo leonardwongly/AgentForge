@@ -38,6 +38,114 @@ export async function createRecordExport(formData: FormData): Promise<void> {
   );
 }
 
+export async function submitEvidence(formData: FormData): Promise<void> {
+  const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
+  const recordId = readString(formData, "recordId");
+  const evidenceId = readString(formData, "evidenceId");
+  const kind = readString(formData, "kind");
+  const content = readString(formData, "content");
+  if (!recordId || !content || (!evidenceId && !kind)) {
+    redirect(
+      `${returnTo}?error=${encodeURIComponent("Evidence requirement and content are required.")}`
+    );
+  }
+
+  try {
+    const actor = await resolveDashboardActor();
+    await requestJson(actor, `/api/pull-requests/${encodeURIComponent(recordId)}/evidence`, {
+      method: "POST",
+      body: JSON.stringify({ evidenceId, kind, content })
+    });
+  } catch (error) {
+    redirect(
+      `${returnTo}?error=${encodeURIComponent(
+        error instanceof Error ? error.message.slice(0, 180) : "Evidence could not be submitted."
+      )}`
+    );
+  }
+
+  revalidateEvidencePaths(returnTo);
+  redirect(`${returnTo}?updated=evidence-submitted`);
+}
+
+export async function approveEvidence(formData: FormData): Promise<void> {
+  const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
+  const evidenceId = readString(formData, "evidenceId");
+  if (!evidenceId) {
+    redirect(`${returnTo}?error=${encodeURIComponent("Evidence requirement is required.")}`);
+  }
+
+  try {
+    const actor = await resolveDashboardActor();
+    await requestJson(actor, `/api/evidence/${encodeURIComponent(evidenceId)}/approve`, {
+      method: "PATCH",
+      body: JSON.stringify({})
+    });
+  } catch (error) {
+    redirect(
+      `${returnTo}?error=${encodeURIComponent(
+        error instanceof Error ? error.message.slice(0, 180) : "Evidence could not be approved."
+      )}`
+    );
+  }
+
+  revalidateEvidencePaths(returnTo);
+  redirect(`${returnTo}?updated=evidence-approved`);
+}
+
+export async function rejectEvidence(formData: FormData): Promise<void> {
+  const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
+  const evidenceId = readString(formData, "evidenceId");
+  const reason = readString(formData, "reason");
+  if (!evidenceId || !reason) {
+    redirect(
+      `${returnTo}?error=${encodeURIComponent("Evidence requirement and reason are required.")}`
+    );
+  }
+
+  try {
+    const actor = await resolveDashboardActor();
+    await requestJson(actor, `/api/evidence/${encodeURIComponent(evidenceId)}/reject`, {
+      method: "PATCH",
+      body: JSON.stringify({ reason })
+    });
+  } catch (error) {
+    redirect(
+      `${returnTo}?error=${encodeURIComponent(
+        error instanceof Error ? error.message.slice(0, 180) : "Evidence could not be rejected."
+      )}`
+    );
+  }
+
+  revalidateEvidencePaths(returnTo);
+  redirect(`${returnTo}?updated=evidence-rejected`);
+}
+
+export async function approveReviewer(formData: FormData): Promise<void> {
+  const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
+  const reviewerId = readString(formData, "reviewerId");
+  if (!reviewerId) {
+    redirect(`${returnTo}?error=${encodeURIComponent("Reviewer requirement is required.")}`);
+  }
+
+  try {
+    const actor = await resolveDashboardActor();
+    await requestJson(actor, `/api/reviewers/${encodeURIComponent(reviewerId)}/approve`, {
+      method: "PATCH",
+      body: JSON.stringify({})
+    });
+  } catch (error) {
+    redirect(
+      `${returnTo}?error=${encodeURIComponent(
+        error instanceof Error ? error.message.slice(0, 180) : "Reviewer could not be approved."
+      )}`
+    );
+  }
+
+  revalidateEvidencePaths(returnTo);
+  redirect(`${returnTo}?updated=reviewer-approved`);
+}
+
 async function requestJson<T>(
   actor: DashboardActorContext,
   path: string,
@@ -91,8 +199,21 @@ function readExportFormat(formData: FormData): ExportFormat {
   return exportFormats.has(format) ? (format as ExportFormat) : "json";
 }
 
+function revalidateEvidencePaths(returnTo: string): void {
+  revalidatePath(returnTo);
+  revalidatePath("/records");
+  revalidatePath("/dashboard");
+  revalidatePath("/dashboard/evidence-completion");
+  revalidatePath("/dashboard/blocked-prs");
+}
+
 function safeReturnPath(path: string): string {
-  if (path === "/dashboard" || path === "/records" || path === "/settings") {
+  if (
+    path === "/dashboard" ||
+    path === "/dashboard/evidence-completion" ||
+    path === "/records" ||
+    path === "/settings"
+  ) {
     return path;
   }
   if (/^\/records\/[A-Za-z0-9_-]+$/u.test(path)) {

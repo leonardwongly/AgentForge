@@ -25,6 +25,7 @@ type StatusBadgeProps = {
     | "missing"
     | "provided"
     | "approved"
+    | "rejected"
     | "required"
     | "enforce"
     | "optimize"

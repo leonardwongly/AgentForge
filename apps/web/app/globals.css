@@ -471,6 +471,7 @@ button {
 
 .status-badge--block,
 .status-badge--missing,
+.status-badge--rejected,
 .status-badge--required,
 .status-badge--enforce,
 .status-badge--optimize,
@@ -607,6 +608,32 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr) minmax(130px, 0.45fr);
   gap: 14px;
+}
+
+.evidence-action-form,
+.evidence-reject-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.evidence-action-form label,
+.evidence-reject-form label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.evidence-textarea {
+  min-height: 92px;
+  resize: vertical;
+}
+
+.evidence-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .toggle-row {

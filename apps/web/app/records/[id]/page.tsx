@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Download, GitBranch, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Download, GitBranch, Send, ShieldCheck, XCircle } from "lucide-react";
 import { MetricCard, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../data-source-notice";
 import {
@@ -11,7 +11,13 @@ import {
   pendingRequiredReviewers,
   summarizeFindings
 } from "../../data";
-import { createRecordExport } from "../actions";
+import {
+  approveEvidence,
+  approveReviewer,
+  createRecordExport,
+  rejectEvidence,
+  submitEvidence
+} from "../actions";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -57,6 +63,7 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
   const record = item.record;
   const missing = missingEvidence(record);
   const pendingReviewers = pendingRequiredReviewers(record);
+  const updateNotice = query?.updated ? evidenceUpdateNotice(query.updated) : undefined;
 
   return (
     <>
@@ -92,6 +99,15 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                 Job {query.exportId ?? "created"} contains {query.recordCount ?? "0"} Change Control
                 Records.
               </p>
+            </div>
+          </section>
+        ) : null}
+        {updateNotice ? (
+          <section className="notice">
+            <CheckCircle2 size={18} aria-hidden="true" />
+            <div>
+              <h2>{updateNotice.title}</h2>
+              <p>{updateNotice.detail}</p>
             </div>
           </section>
         ) : null}
@@ -276,6 +292,70 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                       <StatusBadge status={evidence.status} />
                     </div>
                     <p>{evidence.contentSummary ?? "Required evidence missing."}</p>
+                    {evidence.providedBy ? (
+                      <p className="muted">
+                        Provided by {evidence.providedBy}
+                        {evidence.providedAt ? ` on ${formatDate(evidence.providedAt)}` : ""}.
+                      </p>
+                    ) : null}
+                    {evidence.approvedBy ? (
+                      <p className="muted">
+                        Approved by {evidence.approvedBy}
+                        {evidence.approvedAt ? ` on ${formatDate(evidence.approvedAt)}` : ""}.
+                      </p>
+                    ) : null}
+                    {evidence.status !== "approved" ? (
+                      <form action={submitEvidence} className="evidence-action-form">
+                        <input name="returnTo" type="hidden" value={`/records/${id}`} />
+                        <input name="recordId" type="hidden" value={record.id} />
+                        <input name="evidenceId" type="hidden" value={evidence.id} />
+                        <input name="kind" type="hidden" value={evidence.kind} />
+                        <label htmlFor={`evidence-content-${evidence.id}`}>
+                          {evidence.status === "rejected" ? "Correct evidence" : "Evidence content"}
+                        </label>
+                        <textarea
+                          className="input evidence-textarea"
+                          id={`evidence-content-${evidence.id}`}
+                          maxLength={4000}
+                          minLength={10}
+                          name="content"
+                          placeholder="Reference the rollback plan, migration dry run, security note, or linked artifact."
+                          required
+                          rows={3}
+                        />
+                        <button className="button button--primary" type="submit">
+                          <Send size={16} aria-hidden="true" /> Submit evidence
+                        </button>
+                      </form>
+                    ) : null}
+                    {evidence.status === "provided" ? (
+                      <div className="evidence-actions">
+                        <form action={approveEvidence}>
+                          <input name="returnTo" type="hidden" value={`/records/${id}`} />
+                          <input name="evidenceId" type="hidden" value={evidence.id} />
+                          <button className="button" type="submit">
+                            <CheckCircle2 size={16} aria-hidden="true" /> Approve evidence
+                          </button>
+                        </form>
+                        <form action={rejectEvidence} className="evidence-reject-form">
+                          <input name="returnTo" type="hidden" value={`/records/${id}`} />
+                          <input name="evidenceId" type="hidden" value={evidence.id} />
+                          <label htmlFor={`evidence-reject-${evidence.id}`}>Reject reason</label>
+                          <input
+                            className="input"
+                            id={`evidence-reject-${evidence.id}`}
+                            maxLength={1000}
+                            minLength={10}
+                            name="reason"
+                            required
+                            type="text"
+                          />
+                          <button className="button button--danger" type="submit">
+                            <XCircle size={16} aria-hidden="true" /> Reject evidence
+                          </button>
+                        </form>
+                      </div>
+                    ) : null}
                   </li>
                 ))
               )}
@@ -300,6 +380,20 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                       />
                     </div>
                     <p>{reviewer.reason}</p>
+                    {!reviewer.approved ? (
+                      <form action={approveReviewer}>
+                        <input name="returnTo" type="hidden" value={`/records/${id}`} />
+                        <input name="reviewerId" type="hidden" value={reviewer.id} />
+                        <button className="button" type="submit">
+                          <CheckCircle2 size={16} aria-hidden="true" /> Approve reviewer
+                        </button>
+                      </form>
+                    ) : reviewer.approvedBy ? (
+                      <p className="muted">
+                        Approved by {reviewer.approvedBy}
+                        {reviewer.approvedAt ? ` on ${formatDate(reviewer.approvedAt)}` : ""}.
+                      </p>
+                    ) : null}
                   </li>
                 ))
               )}
@@ -342,4 +436,31 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
       </section>
     </>
   );
+}
+
+function evidenceUpdateNotice(updated: string): { title: string; detail: string } | undefined {
+  switch (updated) {
+    case "evidence-submitted":
+      return {
+        title: "Evidence submitted",
+        detail: "The requirement is provided and awaiting approval."
+      };
+    case "evidence-approved":
+      return {
+        title: "Evidence approved",
+        detail: "Merge Guard re-evaluated the record against the remaining open requirements."
+      };
+    case "evidence-rejected":
+      return {
+        title: "Evidence rejected",
+        detail: "The requirement remains open until corrected evidence is submitted and approved."
+      };
+    case "reviewer-approved":
+      return {
+        title: "Reviewer approved",
+        detail: "Merge Guard re-evaluated the record after the reviewer requirement was cleared."
+      };
+    default:
+      return undefined;
+  }
 }

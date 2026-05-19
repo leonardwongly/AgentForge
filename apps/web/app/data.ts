@@ -467,18 +467,33 @@ export function findingGroups(records: DashboardRecord[] = []) {
 export function evidenceByKind(records: DashboardRecord[] = []) {
   const groups = new Map<
     EvidenceRequirement["kind"],
-    { kind: EvidenceRequirement["kind"]; total: number; missing: number; approved: number }
+    {
+      kind: EvidenceRequirement["kind"];
+      total: number;
+      missing: number;
+      provided: number;
+      rejected: number;
+      approved: number;
+    }
   >();
   for (const item of records.flatMap((record) => record.record.requiredEvidence)) {
     const existing = groups.get(item.kind) ?? {
       kind: item.kind,
       total: 0,
       missing: 0,
+      provided: 0,
+      rejected: 0,
       approved: 0
     };
     existing.total += 1;
     if (item.status === "missing") {
       existing.missing += 1;
+    }
+    if (item.status === "provided") {
+      existing.provided += 1;
+    }
+    if (item.status === "rejected") {
+      existing.rejected += 1;
     }
     if (item.status === "approved") {
       existing.approved += 1;

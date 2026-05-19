@@ -183,3 +183,51 @@ test("first-user actions create exports and route to preview/configuration", asy
   await page.getByRole("link", { name: "Tune filters" }).click();
   await expect(page).toHaveURL(/\/settings$/u);
 });
+
+test("evidence workflow resolves requirements through record actions", async ({
+  page,
+  request
+}) => {
+  const record = await seedMergeGuardRecord(request, {
+    mode: "enforce",
+    repositoryFullName: "acme/evidence-workflow"
+  });
+
+  await page.goto("/dashboard/evidence-completion");
+  await page.getByRole("link", { name: "Submit evidence" }).first().click();
+  await expect(page).toHaveURL(new RegExp(`/records/${record.id}$`, "u"));
+
+  for (let index = 0; index < record.requiredEvidence.length; index += 1) {
+    await page
+      .getByLabel("Evidence content")
+      .first()
+      .fill("Security note: token was revoked and the rotation evidence is linked in SEC-123.");
+    await page.getByRole("button", { name: "Submit evidence" }).first().click();
+    await expect(page.getByRole("heading", { name: "Evidence submitted" })).toBeVisible();
+  }
+  await expect(page.getByText("provided").first()).toBeVisible();
+
+  for (let index = 0; index < record.requiredEvidence.length; index += 1) {
+    await page.getByRole("button", { name: "Approve evidence" }).first().click();
+    await expect(page.getByRole("heading", { name: "Evidence approved" })).toBeVisible();
+  }
+  await expect(page.getByText("approved").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Approve reviewer" }).first().click();
+  await expect(page.getByRole("heading", { name: "Reviewer approved" })).toBeVisible();
+  await expect(page.getByText("pass").first()).toBeVisible();
+
+  const updated = await request.get(
+    `${apiBaseUrl}/api/pull-requests/${record.id}/change-control-record`
+  );
+  expect(updated.ok()).toBeTruthy();
+  const updatedPayload = (await updated.json()) as { record: ChangeControlRecord };
+  expect(updatedPayload.record.checkStatus).toBe("pass");
+  expect(
+    updatedPayload.record.requiredEvidence.every((evidence) => evidence.status === "approved")
+  ).toBe(true);
+
+  await page.goto("/dashboard/evidence-completion");
+  await expect(page.getByText("acme/evidence-workflow").first()).toBeVisible();
+  await expect(page.getByText("complete").first()).toBeVisible();
+});

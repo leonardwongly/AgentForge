@@ -40,7 +40,7 @@ import {
   summarizeSafeSnippet,
   type MetadataStoragePolicy
 } from "@agentforge/security";
-import { isAuthzFailure, requireApiActor, requireRole } from "./auth.js";
+import { isAuthzFailure, requireApiActor, requireRole, type ApiActor } from "./auth.js";
 import { evaluateFixturePr } from "./evaluation.js";
 
 type QueuedEvaluation = {
@@ -159,7 +159,33 @@ type RawBodyRequest = {
 };
 
 const policyModeSchema = z.enum(["observe", "warn", "enforce", "optimize"]);
+const evidenceKindSchema = z.enum([
+  "rollback_plan",
+  "migration_dry_run",
+  "dependency_justification",
+  "deleted_test_explanation",
+  "benchmark_before_after",
+  "security_note",
+  "ci_change_reason",
+  "manual_attestation"
+]);
 const diffRetentionSchema = z.enum(["disabled", "7d", "30d", "custom"]);
+const evidenceSubmissionSchema = z
+  .object({
+    evidenceId: z.string().trim().min(1).max(240).optional(),
+    kind: evidenceKindSchema.optional(),
+    content: z.string().trim().min(10).max(4_000)
+  })
+  .strict()
+  .refine((value) => value.evidenceId || value.kind, {
+    message: "evidenceId or kind is required",
+    path: ["evidenceId"]
+  });
+const evidenceRejectionSchema = z
+  .object({
+    reason: z.string().trim().min(10).max(1_000)
+  })
+  .strict();
 const dataHandlingPatchSchema = z
   .object({
     sourceCodeStorage: z.boolean().optional(),
@@ -261,6 +287,30 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   ) => updateRepositorySettings(state, prisma, repositoryId, body, config);
   const audit = (input: Parameters<typeof createAuditEvent>[0]) =>
     recordAuditEvent(state, prisma, input);
+  const auditReevaluation = (
+    record: ChangeControlRecord,
+    actor: ApiActor,
+    previousStatus: ChangeControlRecord["checkStatus"]
+  ) =>
+    audit({
+      organizationId: record.organizationId,
+      repositoryId: record.repositoryId,
+      pullRequestId: record.id,
+      actor: actor.login,
+      action: "record_reevaluated",
+      targetType: "change_control_record",
+      targetId: record.id,
+      metadataJson: {
+        previousStatus,
+        checkStatus: record.checkStatus,
+        lifecycle: record.lifecycle,
+        openEvidence: record.requiredEvidence.filter((item) => item.status !== "approved").length,
+        pendingRequiredReviewers: record.requiredReviewers.filter(
+          (item) => item.tier === "required" && !item.approved
+        ).length,
+        actorRole: actor.role
+      }
+    });
   const app = Fastify({
     logger: {
       level: config.nodeEnv === "test" ? "silent" : "info",
@@ -760,11 +810,6 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
 
   app.post("/api/pull-requests/:id/evidence", async (request, reply) => {
     const params = request.params as { id: string };
-    const body = request.body as {
-      kind?: EvidenceRequirement["kind"];
-      content?: string;
-      actor?: string;
-    };
     const record = await getRecord(params.id);
     if (!record) {
       return reply.code(404).send({ error: "Change Control Record not found" });
@@ -773,19 +818,41 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (isAuthzFailure(actor)) {
       return reply.code(actor.statusCode).send({ error: actor.reason });
     }
-    if (!body.kind || !body.content?.trim()) {
-      return reply.code(400).send({ error: "kind and content are required" });
+    const parsedBody = evidenceSubmissionSchema.safeParse(request.body ?? {});
+    if (!parsedBody.success) {
+      return reply.code(400).send({
+        error: "Invalid evidence submission",
+        details: parsedBody.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message
+        }))
+      });
     }
-    const evidenceContent = body.content;
+    const body = parsedBody.data;
+    const evidence = record.requiredEvidence.find((item) =>
+      body.evidenceId ? item.id === body.evidenceId : item.kind === body.kind
+    );
+    if (!evidence) {
+      return reply.code(404).send({ error: "Evidence requirement not found" });
+    }
+    if (body.kind && body.kind !== evidence.kind) {
+      return reply.code(400).send({ error: "Evidence kind does not match the requirement id." });
+    }
+    if (evidence.status === "approved") {
+      return reply.code(409).send({ error: "Approved evidence cannot be replaced." });
+    }
+    const previousStatus = record.checkStatus;
     record.requiredEvidence = record.requiredEvidence.map((item) =>
-      item.kind === body.kind
+      item.id === evidence.id
         ? {
             ...item,
             status: "provided",
             source: "manual_attestation",
             providedBy: actor.login,
             providedAt: new Date().toISOString(),
-            contentSummary: summarizeSafeSnippet(evidenceContent)
+            approvedBy: undefined,
+            approvedAt: undefined,
+            contentSummary: summarizeSafeSnippet(body.content)
           }
         : item
     );
@@ -797,10 +864,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       actor: actor.login,
       action: "evidence_provided",
       targetType: "evidence_requirement",
-      targetId: body.kind,
-      metadataJson: { kind: body.kind, source: "manual_attestation", actorRole: actor.role }
+      targetId: evidence.id,
+      metadataJson: { kind: evidence.kind, source: "manual_attestation", actorRole: actor.role }
     });
-    return { evidence: safe(savedRecord.requiredEvidence) };
+    await auditReevaluation(savedRecord, actor, previousStatus);
+    return {
+      evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id)),
+      record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
+    };
   });
 
   app.patch("/api/evidence/:id/approve", async (request, reply) => {
@@ -821,9 +892,15 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         (item) => item.id === (request.params as { id: string }).id
       );
       if (evidence) {
+        if (evidence.status === "missing" || evidence.status === "rejected") {
+          return reply
+            .code(409)
+            .send({ error: "Evidence must be provided before it can be approved." });
+        }
         const approvedAt = new Date().toISOString();
+        const previousStatus = record.checkStatus;
         for (const item of record.requiredEvidence) {
-          if (item.kind === evidence.kind) {
+          if (item.id === evidence.id) {
             item.status = "approved";
             item.approvedBy = actor.login;
             item.approvedAt = approvedAt;
@@ -840,8 +917,76 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           targetId: evidence.id,
           metadataJson: { kind: evidence.kind, actorRole: actor.role }
         });
+        await auditReevaluation(savedRecord, actor, previousStatus);
         return {
-          evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id))
+          evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id)),
+          record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
+        };
+      }
+    }
+    return reply.code(404).send({ error: "Evidence requirement not found" });
+  });
+
+  app.patch("/api/evidence/:id/reject", async (request, reply) => {
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      return reply.code(actor.statusCode).send({ error: actor.reason });
+    }
+    const allowed = requireRole(
+      actor,
+      ["engineering_manager", "platform_admin", "security_reviewer"],
+      "Evidence rejection"
+    );
+    if (!allowed.ok) {
+      return reply.code(allowed.statusCode).send({ error: allowed.reason });
+    }
+    const parsedBody = evidenceRejectionSchema.safeParse(request.body ?? {});
+    if (!parsedBody.success) {
+      return reply.code(400).send({
+        error: "Invalid evidence rejection",
+        details: parsedBody.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message
+        }))
+      });
+    }
+    for (const record of await listRecords()) {
+      const evidence = record.requiredEvidence.find(
+        (item) => item.id === (request.params as { id: string }).id
+      );
+      if (evidence) {
+        if (evidence.status !== "provided" && evidence.status !== "approved") {
+          return reply
+            .code(409)
+            .send({ error: "Only provided or approved evidence can be rejected." });
+        }
+        const previousStatus = record.checkStatus;
+        const rejectedAt = new Date().toISOString();
+        const reasonSummary = summarizeSafeSnippet(parsedBody.data.reason);
+        for (const item of record.requiredEvidence) {
+          if (item.id === evidence.id) {
+            item.status = "rejected";
+            item.approvedBy = undefined;
+            item.approvedAt = undefined;
+            item.contentSummary = `Rejected: ${reasonSummary}`;
+            item.providedAt = item.providedAt ?? rejectedAt;
+          }
+        }
+        const savedRecord = await saveRecord(recomputeRequirementStatus(record));
+        await audit({
+          organizationId: record.organizationId,
+          repositoryId: record.repositoryId,
+          pullRequestId: record.id,
+          actor: actor.login,
+          action: "evidence_rejected",
+          targetType: "evidence_requirement",
+          targetId: evidence.id,
+          metadataJson: { kind: evidence.kind, reason: reasonSummary, actorRole: actor.role }
+        });
+        await auditReevaluation(savedRecord, actor, previousStatus);
+        return {
+          evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id)),
+          record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
         };
       }
     }
@@ -869,6 +1014,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         reviewer.approved = true;
         reviewer.approvedBy = actor.login;
         reviewer.approvedAt = new Date().toISOString();
+        const previousStatus = record.checkStatus;
         const savedRecord = await saveRecord(recomputeRequirementStatus(record));
         await audit({
           organizationId: record.organizationId,
@@ -880,8 +1026,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           targetId: reviewer.id,
           metadataJson: { reviewer: reviewer.reviewer, tier: reviewer.tier, actorRole: actor.role }
         });
+        await auditReevaluation(savedRecord, actor, previousStatus);
         return {
-          reviewer: safe(savedRecord.requiredReviewers.find((item) => item.id === reviewer.id))
+          reviewer: safe(savedRecord.requiredReviewers.find((item) => item.id === reviewer.id)),
+          record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
         };
       }
     }
@@ -950,7 +1098,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       (await listRecords()).filter(
         (record) =>
           record.checkStatus === "block" ||
-          record.requiredEvidence.some((item) => item.status === "missing") ||
+          record.requiredEvidence.some((item) => item.status !== "approved") ||
           record.requiredReviewers.some((item) => item.tier === "required" && !item.approved)
       )
     )
