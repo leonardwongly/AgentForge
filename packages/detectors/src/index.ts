@@ -412,10 +412,7 @@ function classifySecretFinding(
   reason: string;
   label: string;
 } {
-  if (
-    (match.risk === "low" || (match.kind === "database_url" && match.localService)) &&
-    matchesAnyPath(filename, documentationExamplePatterns)
-  ) {
+  if (match.risk === "low" && matchesAnyPath(filename, documentationExamplePatterns)) {
     return {
       category: "documentation_example",
       risk: "low",

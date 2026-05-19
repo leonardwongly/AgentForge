@@ -67,15 +67,38 @@ describe("redaction", () => {
 
   it("keeps credential-bearing localhost database URLs high risk unless credentials are placeholders", () => {
     const matches = detectSecrets(
-      "DATABASE_URL=postgresql://service:prodSecret123456789@localhost:15432/app"
+      [
+        "DATABASE_URL=postgresql://service:prodSecret123456789@localhost:15432/app",
+        "DATABASE_URL=postgresql://svc-prod-2026:svc-prod-2026@localhost:15432/app"
+      ].join("\n")
     );
 
-    expect(matches.find((match) => match.kind === "database_url")).toMatchObject({
-      category: "credential_like",
-      risk: "high",
-      localService: true
-    });
+    const databaseMatches = matches.filter((match) => match.kind === "database_url");
+    expect(databaseMatches).toHaveLength(2);
+    expect(databaseMatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "credential_like",
+          risk: "high",
+          localService: true
+        })
+      ])
+    );
     expect(redactSecrets(matches[0]!.value)).not.toContain("prodSecret");
+  });
+
+  it("classifies spaced placeholder assignments before risk scoring", () => {
+    const matches = detectSecrets("API_KEY = xxxxxxxxxxxxxxxxxxxx\nTOKEN = dev-local-token-123456");
+
+    expect(matches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "api_key_assignment",
+          category: "local_placeholder",
+          risk: "low"
+        })
+      ])
+    );
   });
 
   it("does not downgrade real assignment values", () => {

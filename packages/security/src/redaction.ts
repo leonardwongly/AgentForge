@@ -177,7 +177,7 @@ function isPlaceholderToken(value: string): boolean {
 }
 
 function inspectSecretValue(value: string): string {
-  const assignment = /^[^:=]{2,40}[:=]\s*["']?([^"'\s]+)["']?$/u.exec(value);
+  const assignment = /^\s*[^:=]{2,40}?\s*[:=]\s*["']?([^"'\s]+)["']?$/u.exec(value);
   if (assignment?.[1]) {
     return assignment[1];
   }
@@ -192,9 +192,6 @@ function hasPlaceholderDatabaseCredentials(value: string): boolean {
     const username = decodeURIComponent(parsed.username).toLowerCase();
     const password = decodeURIComponent(parsed.password).toLowerCase();
     if (!username && !password) {
-      return true;
-    }
-    if (username && password && username === password) {
       return true;
     }
     return [username, password].every((part) => !part || isPlaceholderToken(part));

@@ -160,6 +160,11 @@ describe("deterministic detectors", () => {
             status: "modified",
             patch:
               "+SESSION_SECRET='rL8PZ1hGx7sQw9Nf4Mb2Vc6Xd8Yt3Ka5Le0Ru9Pi2Zo='\n+UNICODE_TOKEN = sk_live_abcdefghijklmnopqrstuvwx1234567890\n+DATABASE_URL=postgresql://service:prodSecret123456789@localhost:15432/app"
+          },
+          {
+            filename: "docs/setup.md",
+            status: "modified",
+            patch: "+DATABASE_URL=postgresql://service:prodSecret123456789@localhost:15432/app"
           }
         ]
       },
@@ -181,6 +186,7 @@ describe("deterministic detectors", () => {
     );
     expect(JSON.stringify(facts)).not.toContain("rL8PZ1hGx7sQ");
     expect(JSON.stringify(facts)).not.toContain("sk_live_abcdefghijkl");
+    expect(JSON.stringify(facts)).not.toContain("prodSecret");
   });
 
   it("detects renamed sensitive paths and nested Prisma migration edits", () => {
