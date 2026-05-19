@@ -24,7 +24,7 @@ export default async function EvidenceCompletionPage({
   const query = await searchParams;
   const updateNotice = query?.updated ? evidenceQueueNotice(query.updated) : undefined;
   const errorNotice = query?.error ? evidenceQueueErrorNotice(query.error) : undefined;
-  const data = await loadDashboardData();
+  const data = await loadDashboardData({ queue: "action_required", limit: 50 });
   const summary = getDashboardSummary(data.records);
   const evidenceGroups = evidenceByKind(data.records);
   const evidenceItems = data.records.flatMap((item) => item.record.requiredEvidence);

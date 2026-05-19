@@ -15,7 +15,7 @@ import {
 } from "../../data";
 
 export default async function BlockedPrsPage() {
-  const data = await loadDashboardData();
+  const data = await loadDashboardData({ queue: "action_required", limit: 50 });
   const actionRequired = actionRequiredRecords(data.records);
 
   return (

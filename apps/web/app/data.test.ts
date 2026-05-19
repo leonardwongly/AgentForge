@@ -29,7 +29,7 @@ describe("dashboard API data loaders", () => {
     const data = await loadDashboardData();
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:4000/api/dashboard/records",
+      "http://localhost:4000/api/dashboard/records?limit=50&offset=0&sort=updated_desc",
       expect.objectContaining({ cache: "no-store" })
     );
     expect(data).toMatchObject({

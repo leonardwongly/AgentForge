@@ -11,7 +11,10 @@ import {
 } from "../../data";
 
 export default async function PolicyViolationsPage() {
-  const [data, policyPacks] = await Promise.all([loadDashboardData(), loadPolicyPacks()]);
+  const [data, policyPacks] = await Promise.all([
+    loadDashboardData({ limit: 50 }),
+    loadPolicyPacks()
+  ]);
   const groups = findingGroups(data.records);
   const deterministicFindings = data.records.flatMap((item) =>
     item.record.verifiedFindings.filter((finding) => finding.type !== "agent_signal_detected")

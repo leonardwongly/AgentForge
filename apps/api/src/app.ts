@@ -108,8 +108,25 @@ type ExportJob = {
   status: "completed";
   format: "json" | "csv";
   recordCount: number;
+  totalMatchingRecords: number;
+  truncated: boolean;
   content: string;
   createdAt: string;
+};
+
+type PageInfo = {
+  limit: number;
+  offset: number;
+  total: number;
+  nextOffset?: number | undefined;
+  hasMore: boolean;
+};
+
+type RecordPageQuery = z.infer<typeof recordPageQuerySchema>;
+
+type RecordPage = {
+  records: ChangeControlRecord[];
+  pageInfo: PageInfo;
 };
 
 type RepositoryPolicyState = {
@@ -222,8 +239,62 @@ type RawBodyRequest = {
 
 const QUEUE_STATUS_TIMEOUT_MS = 750;
 const QUEUE_FAILED_JOB_LIMIT = 25;
+const DASHBOARD_DEFAULT_PAGE_SIZE = 50;
+const DASHBOARD_MAX_PAGE_SIZE = 100;
+const EXPORT_DEFAULT_RECORD_LIMIT = 500;
+const EXPORT_MAX_RECORD_LIMIT = 1_000;
 
+const optionalQueryString = z.string().trim().min(1).max(240).optional();
 const policyModeSchema = z.enum(["observe", "warn", "enforce", "optimize"]);
+const recordStatusSchema = z.enum(["pass", "warn", "block"]);
+const lifecycleSchema = z.enum([
+  "opened",
+  "evaluated",
+  "blocked",
+  "warned",
+  "passed",
+  "overridden",
+  "merged",
+  "closed"
+]);
+const recordSortSchema = z.enum([
+  "updated_desc",
+  "updated_asc",
+  "created_desc",
+  "created_asc",
+  "pr_asc",
+  "pr_desc"
+]);
+const recordPageQuerySchema = z
+  .object({
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(DASHBOARD_MAX_PAGE_SIZE)
+      .default(DASHBOARD_DEFAULT_PAGE_SIZE),
+    offset: z.coerce.number().int().min(0).default(0),
+    repositoryId: optionalQueryString,
+    status: recordStatusSchema.optional(),
+    lifecycle: lifecycleSchema.optional(),
+    mode: policyModeSchema.optional(),
+    policyVersion: optionalQueryString,
+    queue: z.enum(["action_required"]).optional(),
+    sort: recordSortSchema.default("updated_desc")
+  })
+  .strict();
+const exportRequestSchema = z
+  .object({
+    format: z.enum(["json", "csv"]).default("json"),
+    maxRecords: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(EXPORT_MAX_RECORD_LIMIT)
+      .default(EXPORT_DEFAULT_RECORD_LIMIT),
+    offset: z.coerce.number().int().min(0).default(0)
+  })
+  .strict();
 const evidenceKindSchema = z.enum([
   "rollback_plan",
   "migration_dry_run",
@@ -1512,39 +1583,106 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   });
 
   app.get("/api/dashboard/summary", async () => safe(dashboardSummary(await listRecords())));
-  app.get("/api/dashboard/records", async () => ({
-    records: safe(
-      (await listRecords()).map((record) => sanitizeChangeControlRecord(record, storagePolicy))
-    )
-  }));
-  app.get("/api/dashboard/blocked-prs", async () => ({
-    blockedPullRequests: safe(
-      (await listRecords()).filter(
-        (record) =>
-          record.checkStatus === "block" ||
-          record.requiredEvidence.some((item) => item.status !== "approved") ||
-          record.requiredReviewers.some((item) => item.tier === "required" && !item.approved)
-      )
-    )
-  }));
-  app.get("/api/dashboard/policy-violations", async () => ({
-    violations: safe(
-      groupBy(
-        (await listRecords()).flatMap((record) => record.verifiedFindings),
-        (finding) => finding.type
-      )
-    )
-  }));
-  app.get("/api/dashboard/overrides", async () => ({
-    overrides: safe((await listRecords()).filter((record) => record.lifecycle === "overridden"))
-  }));
-  app.get("/api/dashboard/evidence-completion", async () => {
-    const evidence = (await listRecords()).flatMap((record) => record.requiredEvidence);
+  app.get("/api/dashboard/records", async (request, reply) => {
+    const query = recordPageQuerySchema.safeParse(request.query ?? {});
+    if (!query.success) {
+      return reply.code(400).send({
+        error: "Invalid record query parameters",
+        details: query.error.flatten().fieldErrors
+      });
+    }
+    const page = await listChangeControlRecordPage(state, prisma, query.data);
+    return {
+      records: safe(
+        page.records.map((record) => sanitizeChangeControlRecord(record, storagePolicy))
+      ),
+      pageInfo: page.pageInfo
+    };
+  });
+  app.get("/api/dashboard/blocked-prs", async (request, reply) => {
+    const query = recordPageQuerySchema.safeParse(request.query ?? {});
+    if (!query.success) {
+      return reply.code(400).send({
+        error: "Invalid blocked PR query parameters",
+        details: query.error.flatten().fieldErrors
+      });
+    }
+    const filtered = filterAndSortRecords(await listRecords(), query.data).filter((record) =>
+      recordRequiresAction(record)
+    );
+    const page = paginateRecords(filtered, query.data);
+    return {
+      blockedPullRequests: safe(page.records),
+      pageInfo: page.pageInfo
+    };
+  });
+  app.get("/api/dashboard/policy-violations", async (request, reply) => {
+    const query = recordPageQuerySchema.safeParse(request.query ?? {});
+    if (!query.success) {
+      return reply.code(400).send({
+        error: "Invalid policy violation query parameters",
+        details: query.error.flatten().fieldErrors
+      });
+    }
+    const page = paginateRecords(filterAndSortRecords(await listRecords(), query.data), query.data);
+    return {
+      violations: safe(
+        groupBy(
+          page.records.flatMap((record) => record.verifiedFindings),
+          (finding) => finding.type
+        )
+      ),
+      pageInfo: page.pageInfo
+    };
+  });
+  app.get("/api/dashboard/overrides", async (request, reply) => {
+    const query = recordPageQuerySchema.safeParse({
+      ...(request.query ?? {}),
+      lifecycle: "overridden"
+    });
+    if (!query.success) {
+      return reply.code(400).send({
+        error: "Invalid override query parameters",
+        details: query.error.flatten().fieldErrors
+      });
+    }
+    const page = await listChangeControlRecordPage(state, prisma, query.data);
+    return {
+      overrides: safe(page.records),
+      pageInfo: page.pageInfo
+    };
+  });
+  app.get("/api/dashboard/evidence-completion", async (request, reply) => {
+    const query = recordPageQuerySchema.safeParse(request.query ?? {});
+    if (!query.success) {
+      return reply.code(400).send({
+        error: "Invalid evidence query parameters",
+        details: query.error.flatten().fieldErrors
+      });
+    }
+    const page = await listChangeControlRecordPage(state, prisma, query.data);
+    const evidence = page.records.flatMap((record) => record.requiredEvidence);
     const complete = evidence.filter((item) => item.status === "approved").length;
     return {
       total: evidence.length,
       complete,
-      completionRate: evidence.length === 0 ? 1 : complete / evidence.length
+      completionRate: evidence.length === 0 ? 1 : complete / evidence.length,
+      evidence: safe(evidence),
+      pageInfo: page.pageInfo
+    };
+  });
+  app.get("/api/dashboard/reviewers", async (request, reply) => {
+    const query = recordPageQuerySchema.safeParse(request.query ?? {});
+    if (!query.success) {
+      return reply.code(400).send({
+        error: "Invalid reviewer query parameters",
+        details: query.error.flatten().fieldErrors
+      });
+    }
+    const page = await listChangeControlRecordPage(state, prisma, query.data);
+    return {
+      reviewers: safe(page.records.flatMap((record) => record.requiredReviewers)),
+      pageInfo: page.pageInfo
     };
   });
 
@@ -1561,11 +1699,18 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (!allowed.ok) {
       return reply.code(allowed.statusCode).send({ error: allowed.reason });
     }
-    const body = request.body as { format?: "json" | "csv" };
-    const format = body.format ?? "json";
-    const records = (await listRecords()).filter(
+    const parsedBody = exportRequestSchema.safeParse(request.body ?? {});
+    if (!parsedBody.success) {
+      return reply.code(400).send({
+        error: "Invalid export request",
+        details: parsedBody.error.flatten().fieldErrors
+      });
+    }
+    const { format, maxRecords, offset } = parsedBody.data;
+    const matchingRecords = (await listRecords()).filter(
       (record) => record.organizationId === actor.organizationId
     );
+    const records = matchingRecords.slice(offset, offset + maxRecords);
     const jobId = randomUUID();
     const auditEvents = await listAuditEventsForRecordExport(state, prisma, records);
     const exportAuditEvent = createAuditEvent({
@@ -1579,6 +1724,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       metadataJson: {
         format,
         recordCount: records.length,
+        totalMatchingRecords: matchingRecords.length,
+        offset,
+        maxRecords,
+        truncated: offset + records.length < matchingRecords.length,
         recordIds: records.map((record) => record.id),
         repositoryIds: [...new Set(records.map((record) => record.repositoryId))],
         actorRole: actor.role
@@ -1597,12 +1746,20 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       status: "completed",
       format,
       recordCount: records.length,
+      totalMatchingRecords: matchingRecords.length,
+      truncated: offset + records.length < matchingRecords.length,
       content,
       createdAt: new Date().toISOString()
     };
     await saveExportJob(state, prisma, job, actor.login, actor.role);
     await saveAuditEvent(state, prisma, exportAuditEvent);
-    return reply.code(201).send({ id: job.id, status: job.status, recordCount: job.recordCount });
+    return reply.code(201).send({
+      id: job.id,
+      status: job.status,
+      recordCount: job.recordCount,
+      totalMatchingRecords: job.totalMatchingRecords,
+      truncated: job.truncated
+    });
   });
   app.get("/api/exports/:id", async (request, reply) => {
     const actor = requireApiActor(request);
@@ -2174,6 +2331,124 @@ async function listChangeControlRecords(
     orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
   });
   return rows.map(changeControlRecordFromRow);
+}
+
+async function listChangeControlRecordPage(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  query: RecordPageQuery
+): Promise<RecordPage> {
+  if (!prisma) {
+    return paginateRecords(filterAndSortRecords(state.records, query), query);
+  }
+  if (query.queue) {
+    return paginateRecords(
+      filterAndSortRecords(await listChangeControlRecords(state, prisma), query),
+      query
+    );
+  }
+
+  const where = {
+    ...(query.status ? { checkStatus: query.status } : {}),
+    ...(query.lifecycle ? { lifecycle: query.lifecycle } : {}),
+    ...(query.mode ? { mode: query.mode } : {}),
+    ...(query.policyVersion ? { policyVersion: query.policyVersion } : {}),
+    ...(query.repositoryId ? { pullRequest: { repositoryId: query.repositoryId } } : {})
+  };
+  const orderBy =
+    query.sort === "created_asc"
+      ? [{ createdAt: "asc" as const }]
+      : query.sort === "created_desc"
+        ? [{ createdAt: "desc" as const }]
+        : query.sort === "updated_asc"
+          ? [{ updatedAt: "asc" as const }]
+          : query.sort === "pr_asc"
+            ? [{ pullRequestNumber: "asc" as const }]
+            : query.sort === "pr_desc"
+              ? [{ pullRequestNumber: "desc" as const }]
+              : [{ updatedAt: "desc" as const }, { createdAt: "desc" as const }];
+  const [total, rows] = await prisma.$transaction([
+    prisma.changeControlRecord.count({ where }),
+    prisma.changeControlRecord.findMany({
+      where,
+      include: { pullRequest: { select: { repositoryId: true } } },
+      orderBy,
+      skip: query.offset,
+      take: query.limit
+    })
+  ]);
+
+  return {
+    records: rows.map(changeControlRecordFromRow),
+    pageInfo: pageInfo(total, query)
+  };
+}
+
+function filterAndSortRecords(
+  records: ChangeControlRecord[],
+  query: RecordPageQuery
+): ChangeControlRecord[] {
+  return [...records]
+    .filter(
+      (record) =>
+        (!query.repositoryId || record.repositoryId === query.repositoryId) &&
+        (!query.status || record.checkStatus === query.status) &&
+        (!query.lifecycle || record.lifecycle === query.lifecycle) &&
+        (!query.mode || record.mode === query.mode) &&
+        (!query.policyVersion || record.policyVersion === query.policyVersion) &&
+        (!query.queue || recordRequiresAction(record))
+    )
+    .sort((a, b) => compareRecords(a, b, query.sort));
+}
+
+function recordRequiresAction(record: ChangeControlRecord): boolean {
+  return (
+    record.checkStatus === "block" ||
+    record.requiredEvidence.some((item) => item.status !== "approved") ||
+    record.requiredReviewers.some((item) => item.tier === "required" && !item.approved)
+  );
+}
+
+function paginateRecords(records: ChangeControlRecord[], query: RecordPageQuery): RecordPage {
+  return {
+    records: records.slice(query.offset, query.offset + query.limit),
+    pageInfo: pageInfo(records.length, query)
+  };
+}
+
+function pageInfo(total: number, query: RecordPageQuery): PageInfo {
+  const nextOffset = query.offset + query.limit;
+  const hasMore = nextOffset < total;
+  return {
+    limit: query.limit,
+    offset: query.offset,
+    total,
+    ...(hasMore ? { nextOffset } : {}),
+    hasMore
+  };
+}
+
+function compareRecords(
+  a: ChangeControlRecord,
+  b: ChangeControlRecord,
+  sort: RecordPageQuery["sort"]
+): number {
+  if (sort === "created_asc") {
+    return a.createdAt.localeCompare(b.createdAt);
+  }
+  if (sort === "created_desc") {
+    return b.createdAt.localeCompare(a.createdAt);
+  }
+  if (sort === "updated_asc") {
+    return a.updatedAt.localeCompare(b.updatedAt);
+  }
+  if (sort === "pr_asc") {
+    return a.pullRequestNumber - b.pullRequestNumber;
+  }
+  if (sort === "pr_desc") {
+    return b.pullRequestNumber - a.pullRequestNumber;
+  }
+  return b.updatedAt.localeCompare(a.updatedAt) || b.createdAt.localeCompare(a.createdAt);
 }
 
 async function getChangeControlRecord(
@@ -2783,6 +3058,8 @@ async function getExportJob(
         status: "completed",
         format: row.format === "csv" ? "csv" : "json",
         recordCount: row.recordCount,
+        totalMatchingRecords: row.recordCount,
+        truncated: false,
         content: row.content,
         createdAt: row.createdAt.toISOString()
       }

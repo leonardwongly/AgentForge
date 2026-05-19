@@ -11,12 +11,22 @@ type RecordsPageProps = {
     exportId?: string;
     recordCount?: string;
     error?: string;
+    limit?: string;
+    offset?: string;
+    status?: "pass" | "warn" | "block";
   }>;
 };
 
 export default async function RecordsPage({ searchParams }: RecordsPageProps) {
   const params = await searchParams;
-  const data = await loadDashboardData();
+  const limit = boundedNumber(params?.limit, 50);
+  const offset = boundedNumber(params?.offset, 0);
+  const data = await loadDashboardData({
+    limit,
+    offset,
+    status: params?.status,
+    sort: "updated_desc"
+  });
 
   return (
     <>
@@ -66,6 +76,20 @@ export default async function RecordsPage({ searchParams }: RecordsPageProps) {
             </div>
             <FileCheck size={18} aria-hidden="true" />
           </div>
+          <div className="control-row" aria-label="Record filters">
+            <Link className="button" href="/records">
+              All
+            </Link>
+            <Link className="button" href="/records?status=block">
+              Blocked
+            </Link>
+            <Link className="button" href="/records?status=warn">
+              Warnings
+            </Link>
+            <Link className="button" href="/records?status=pass">
+              Passing
+            </Link>
+          </div>
           <table className="data-table">
             <thead>
               <tr>
@@ -104,8 +128,61 @@ export default async function RecordsPage({ searchParams }: RecordsPageProps) {
               ))}
             </tbody>
           </table>
+          {data.pageInfo ? (
+            <div className="control-row" aria-label="Record pagination">
+              <span className="muted">
+                Showing {data.pageInfo.offset + 1}-
+                {Math.min(data.pageInfo.offset + data.records.length, data.pageInfo.total)} of{" "}
+                {data.pageInfo.total}
+              </span>
+              {data.pageInfo.offset > 0 ? (
+                <Link
+                  className="button"
+                  href={recordsPageHref({
+                    status: params?.status,
+                    limit,
+                    offset: Math.max(0, data.pageInfo.offset - data.pageInfo.limit)
+                  })}
+                >
+                  Previous
+                </Link>
+              ) : null}
+              {data.pageInfo.hasMore && data.pageInfo.nextOffset !== undefined ? (
+                <Link
+                  className="button"
+                  href={recordsPageHref({
+                    status: params?.status,
+                    limit,
+                    offset: data.pageInfo.nextOffset
+                  })}
+                >
+                  Next
+                </Link>
+              ) : null}
+            </div>
+          ) : null}
         </section>
       </section>
     </>
   );
+}
+
+function boundedNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function recordsPageHref(input: {
+  status?: "pass" | "warn" | "block" | undefined;
+  limit: number;
+  offset: number;
+}): string {
+  const params = new URLSearchParams({
+    limit: String(input.limit),
+    offset: String(input.offset)
+  });
+  if (input.status) {
+    params.set("status", input.status);
+  }
+  return `/records?${params.toString()}`;
 }

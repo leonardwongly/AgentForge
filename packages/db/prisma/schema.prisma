@@ -100,6 +100,7 @@ model Repository {
 
   @@unique([organizationId, fullName])
   @@index([organizationId, enabled])
+  @@index([organizationId, mode, updatedAt])
 }
 
 model PullRequest {
@@ -125,6 +126,7 @@ model PullRequest {
 
   @@unique([repositoryId, number])
   @@index([repositoryId, headSha])
+  @@index([repositoryId, number, updatedAt])
 }
 
 model PolicyPack {
@@ -332,6 +334,11 @@ model ChangeControlRecord {
 
   @@index([repositoryFullName, pullRequestNumber])
   @@index([checkStatus, lifecycle])
+  @@index([checkStatus, updatedAt])
+  @@index([lifecycle, updatedAt])
+  @@index([mode, updatedAt])
+  @@index([policyVersion, updatedAt])
+  @@index([pullRequestNumber, updatedAt])
 }
 
 model AuditEvent {

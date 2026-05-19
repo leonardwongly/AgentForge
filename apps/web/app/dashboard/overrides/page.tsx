@@ -5,7 +5,7 @@ import { DataSourceNotice } from "../../data-source-notice";
 import { formatDate, getDashboardSummary, loadDashboardData } from "../../data";
 
 export default async function OverridesPage() {
-  const data = await loadDashboardData();
+  const data = await loadDashboardData({ lifecycle: "overridden", limit: 50 });
   const summary = getDashboardSummary(data.records);
   const overrides = data.records.filter((item) => item.record.lifecycle === "overridden");
   const topReason = overrides[0]?.override?.reason ?? "No override reason recorded in this window.";

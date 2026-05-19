@@ -215,6 +215,10 @@ For suspected secret exposure:
 
 Exports are audit artifacts and may contain sensitive metadata even when source code is excluded. Store exports only in approved storage, restrict access to auditors/platform administrators, and purge temporary export jobs according to `AUDIT_RECORD_RETENTION_DAYS` or stricter organizational policy.
 
+Dashboard list APIs are bounded by default. Record pages request 50 records at a time and the API rejects dashboard page sizes above 100. Change Control Record exports default to 500 records and reject `maxRecords` above 1,000; use the returned `totalMatchingRecords` and `truncated` fields to page exports deliberately.
+
+The dashboard pagination index migration is additive. Rollback is safe by dropping the added indexes if a database-specific planner regression appears; no application data is rewritten by the migration.
+
 ## Adoption Path
 
 - `observe`: collect facts and records without blocking.

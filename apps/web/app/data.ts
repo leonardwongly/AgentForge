@@ -32,8 +32,36 @@ export type DashboardDataSource = "api" | "empty" | "unavailable";
 
 export type DashboardData = {
   records: DashboardRecord[];
+  pageInfo?: PageInfo | undefined;
   source: DashboardDataSource;
   message: string;
+};
+
+export type PageInfo = {
+  limit: number;
+  offset: number;
+  total: number;
+  nextOffset?: number | undefined;
+  hasMore: boolean;
+};
+
+export type DashboardDataRequest = {
+  limit?: number | undefined;
+  offset?: number | undefined;
+  repositoryId?: string | undefined;
+  status?: ChangeControlRecord["checkStatus"] | undefined;
+  lifecycle?: ChangeControlRecord["lifecycle"] | undefined;
+  mode?: ChangeControlRecord["mode"] | undefined;
+  policyVersion?: string | undefined;
+  queue?: "action_required" | undefined;
+  sort?:
+    | "updated_desc"
+    | "updated_asc"
+    | "created_desc"
+    | "created_asc"
+    | "pr_asc"
+    | "pr_desc"
+    | undefined;
 };
 
 export type BlockingModeBadge = Extract<
@@ -124,15 +152,18 @@ export type SettingsData = {
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:4000";
 const API_FETCH_TIMEOUT_MS = 5_000;
 
-export async function loadDashboardData(): Promise<DashboardData> {
+export async function loadDashboardData(
+  request: DashboardDataRequest = {}
+): Promise<DashboardData> {
   try {
-    const payload = await fetchApiJson<{ records: ChangeControlRecord[] }>(
-      "/api/dashboard/records"
+    const payload = await fetchApiJson<{ records: ChangeControlRecord[]; pageInfo?: PageInfo }>(
+      `/api/dashboard/records${dashboardQueryString(request)}`
     );
     const records = decorateRecords(payload.records ?? []);
     if (records.length === 0) {
       return {
         records: [],
+        pageInfo: payload.pageInfo,
         source: "empty",
         message:
           "No evaluated PRs are stored yet. Send a GitHub webhook or run a policy preview to create Change Control Records."
@@ -140,8 +171,9 @@ export async function loadDashboardData(): Promise<DashboardData> {
     }
     return {
       records,
+      pageInfo: payload.pageInfo,
       source: "api",
-      message: `Loaded ${records.length} Change Control Record${records.length === 1 ? "" : "s"} from the API.`
+      message: `Loaded ${records.length} of ${payload.pageInfo?.total ?? records.length} Change Control Record${records.length === 1 ? "" : "s"} from the API.`
     };
   } catch (error) {
     return {
@@ -155,14 +187,54 @@ export async function loadDashboardData(): Promise<DashboardData> {
   }
 }
 
+function dashboardQueryString(request: DashboardDataRequest): string {
+  const params = new URLSearchParams({
+    limit: String(request.limit ?? 50),
+    offset: String(request.offset ?? 0),
+    sort: request.sort ?? "updated_desc"
+  });
+  for (const [key, value] of Object.entries({
+    repositoryId: request.repositoryId,
+    status: request.status,
+    lifecycle: request.lifecycle,
+    mode: request.mode,
+    policyVersion: request.policyVersion,
+    queue: request.queue
+  })) {
+    if (value) {
+      params.set(key, value);
+    }
+  }
+  return `?${params.toString()}`;
+}
+
 export async function loadRecord(
   id: string
 ): Promise<DashboardData & { item: DashboardRecord | undefined }> {
-  const data = await loadDashboardData();
-  return {
-    ...data,
-    item: data.records.find((record) => record.record.id === id)
-  };
+  try {
+    const payload = await fetchApiJson<{ record: ChangeControlRecord }>(
+      `/api/pull-requests/${encodeURIComponent(id)}/change-control-record`
+    );
+    const item = decorateRecords([payload.record])[0];
+    return {
+      records: item ? [item] : [],
+      source: item ? "api" : "empty",
+      message: item
+        ? "Loaded the selected Change Control Record from the API."
+        : "No matching Change Control Record was found.",
+      item
+    };
+  } catch (error) {
+    return {
+      records: [],
+      source: "unavailable",
+      message:
+        error instanceof Error
+          ? `Dashboard API unavailable: ${error.message}. Start the API with pnpm dev:api.`
+          : "Dashboard API unavailable. Start the API with pnpm dev:api.",
+      item: undefined
+    };
+  }
 }
 
 export async function loadPolicyYaml(repositoryId: string): Promise<{
