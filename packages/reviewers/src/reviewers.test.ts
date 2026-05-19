@@ -337,4 +337,31 @@ describe("CODEOWNERS preview", () => {
       })
     ]);
   });
+
+  it("preserves ownerless CODEOWNERS overrides as last-match wins", () => {
+    const preview = previewCodeowners(
+      `
+* @acme/platform-team
+/apps/github
+`,
+      ["apps/github/index.ts"]
+    );
+
+    expect(preview.diagnostics).toEqual([]);
+    expect(preview.suggestions).toEqual([]);
+  });
+
+  it("matches directory descendants for patterns without trailing slashes", () => {
+    const preview = previewCodeowners("**/logs @acme/observability-team", [
+      "logs/a.txt",
+      "src/logs/a.txt"
+    ]);
+
+    expect(preview.suggestions).toEqual([
+      expect.objectContaining({
+        reviewer: "acme/observability-team",
+        matchedPaths: ["logs/a.txt", "src/logs/a.txt"]
+      })
+    ]);
+  });
 });

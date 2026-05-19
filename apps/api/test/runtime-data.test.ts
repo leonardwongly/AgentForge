@@ -370,6 +370,44 @@ describe("runtime data surfaces", () => {
     await app.close();
   });
 
+  it("rejects duplicate owner mapping keys without mutating runtime state", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest, persist: true }),
+      headers: {
+        "content-type": "application/json",
+        "x-agentforge-actor": "alex",
+        "x-agentforge-role": "platform_admin"
+      }
+    });
+    const record = preview.json().record;
+
+    const duplicate = await app.inject({
+      method: "PATCH",
+      url: `/api/repositories/${record.repositoryId}/settings`,
+      payload: JSON.stringify({
+        ownerMappings: [
+          { ownerKey: "security_team", reviewer: "security-team", reviewerType: "team" },
+          { ownerKey: "security_team", reviewer: "acme/security-team", reviewerType: "team" }
+        ]
+      }),
+      headers: {
+        "content-type": "application/json",
+        "x-agentforge-actor": "alex",
+        "x-agentforge-role": "platform_admin"
+      }
+    });
+
+    expect(duplicate.statusCode).toBe(400);
+    expect(duplicate.json().error).toContain("Invalid repository settings");
+    expect(state.ownerMappings).toEqual([]);
+
+    await app.close();
+  });
+
   it("scopes repository PR Change Control Record lookup by repository id and PR number", async () => {
     const state = createInitialState();
     const app = createApp(state);

@@ -236,13 +236,29 @@ const ownerMappingPatchSchema = ownerMappingBaseSchema.transform((mapping) => ({
   reviewer: normalizeReviewerForStorage(mapping.reviewer, mapping.reviewerType),
   reviewerType: mapping.reviewerType
 }));
+const ownerMappingsPatchSchema = z
+  .array(ownerMappingPatchSchema)
+  .max(20)
+  .superRefine((mappings, context) => {
+    const seenOwnerKeys = new Set<string>();
+    for (const [index, mapping] of mappings.entries()) {
+      if (seenOwnerKeys.has(mapping.ownerKey)) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "ownerKey"],
+          message: "Owner mapping keys must be unique after normalization."
+        });
+      }
+      seenOwnerKeys.add(mapping.ownerKey);
+    }
+  });
 const repositorySettingsPatchSchema = z
   .object({
     enabled: z.boolean().optional(),
     mode: policyModeSchema.optional(),
     policyVersion: z.string().trim().min(1).max(160).optional(),
     dataHandling: dataHandlingPatchSchema.optional(),
-    ownerMappings: z.array(ownerMappingPatchSchema).max(20).optional(),
+    ownerMappings: ownerMappingsPatchSchema.optional(),
     sourceCodeStorage: z.boolean().optional(),
     fullDiffRetention: diffRetentionSchema.optional(),
     redactSecrets: z.boolean().optional(),

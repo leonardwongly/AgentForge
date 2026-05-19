@@ -156,8 +156,7 @@ export function parseCodeowners(content: string): CodeownersRule[] {
           pattern: rawPattern,
           owners,
           negated: false,
-          valid: false,
-          reason: "missing owner"
+          valid: true
         };
       }
       const patternRejectionReason = codeownersPatternRejectionReason(rawPattern);
@@ -352,7 +351,7 @@ function codeownersPatternToRegExp(pattern: string): RegExp {
   if (directoryPattern) {
     return new RegExp(`${prefix}${body}(?:/.*)?$`, "u");
   }
-  return new RegExp(`${prefix}${body}$`, "u");
+  return new RegExp(`${prefix}${body}(?:/.*)?$`, "u");
 }
 
 function codeownersPatternRejectionReason(pattern: string): string | undefined {
