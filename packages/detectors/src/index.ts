@@ -7,7 +7,12 @@ import type {
   PullRequestInput,
   VerifiedFact
 } from "@agentforge/core";
-import { detectSecrets, redactSecrets, summarizeSafeSnippet } from "@agentforge/security";
+import {
+  detectSecrets,
+  redactSecrets,
+  summarizeSafeSnippet,
+  type RedactionMatch
+} from "@agentforge/security";
 
 export type DetectorPolicyConfig = {
   sensitivePaths?: Record<string, { paths: string[] }>;
@@ -65,6 +70,21 @@ const testFilePatterns = [
   "**/*_test.py",
   "**/test_*.py",
   "**/tests/**"
+];
+
+const documentationExamplePatterns = [
+  "README.md",
+  "docs/**",
+  "**/README.md",
+  "**/*.md",
+  "examples/**",
+  "fixtures/**",
+  "**/.env.example",
+  "**/env.example",
+  "**/.env.sample",
+  "**/env.sample",
+  "**/.env.template",
+  "**/env.template"
 ];
 
 const skipPatterns = [
@@ -359,20 +379,63 @@ export function detectSecretLikeValues(
     const additions = addedLines(boundedPatch(file.patch, merged.maxPatchBytes));
     const found = detectSecrets(additions);
     for (const match of found) {
+      const classification = classifySecretFinding(match, file.filename);
       facts.push(
         makeFact({
           type: "secret_like_value_detected",
           source: "github_diff",
           path: file.filename,
-          evidence: `Secret-like ${match.kind} detected in ${file.filename}: ${redactSecrets(match.value)}`,
+          evidence: `${classification.label} ${match.kind} detected in ${file.filename}: ${redactSecrets(match.value)}`,
           confidence: "observed",
-          severity: "critical",
-          metadata: { kind: match.kind, patch: redactSecrets(additions) }
+          severity: classification.risk === "high" ? "critical" : "low",
+          metadata: {
+            kind: match.kind,
+            secretCategory: classification.category,
+            secretRisk: classification.risk,
+            classificationReason: classification.reason,
+            policyTreatment: classification.risk === "high" ? "blocking" : "advisory",
+            patch: redactSecrets(additions)
+          }
         })
       );
     }
   }
   return dedupeFacts(facts);
+}
+
+function classifySecretFinding(
+  match: RedactionMatch,
+  filename: string
+): {
+  category: "credential_like" | "local_placeholder" | "documentation_example";
+  risk: "high" | "low";
+  reason: string;
+  label: string;
+} {
+  if (match.risk === "low" && matchesAnyPath(filename, documentationExamplePatterns)) {
+    return {
+      category: "documentation_example",
+      risk: "low",
+      reason: `documentation example: ${match.reason}`,
+      label: "Documentation example"
+    };
+  }
+
+  if (match.category === "local_placeholder") {
+    return {
+      category: "local_placeholder",
+      risk: "low",
+      reason: match.reason,
+      label: "Local placeholder"
+    };
+  }
+
+  return {
+    category: "credential_like",
+    risk: "high",
+    reason: match.reason,
+    label: "Credential-like"
+  };
 }
 
 function detectPackageJsonDependencyChanges(file: ChangedFile): VerifiedFact[] {

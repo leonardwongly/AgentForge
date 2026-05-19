@@ -31,6 +31,83 @@ describe("redaction", () => {
   it("detects secret-like values", () => {
     const matches = detectSecrets("client_secret: abcdefghijklmnopqrstuvwxyz1234567890");
     expect(matches.map((match) => match.kind)).toContain("api_key_assignment");
+    expect(matches.find((match) => match.kind === "api_key_assignment")).toMatchObject({
+      category: "credential_like",
+      risk: "high"
+    });
+  });
+
+  it("classifies local placeholders separately while still redacting them", () => {
+    const input =
+      "DATABASE_URL=postgresql://agentforge:agentforge@localhost:15432/agentforge\nAPI_KEY=placeholder-local-only-token\nBearer placeholder-local-only-token-123456";
+    const matches = detectSecrets(input);
+
+    expect(matches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "database_url",
+          category: "local_placeholder",
+          risk: "low"
+        }),
+        expect.objectContaining({
+          kind: "api_key_assignment",
+          category: "local_placeholder",
+          risk: "low"
+        }),
+        expect.objectContaining({
+          kind: "bearer_token",
+          category: "local_placeholder",
+          risk: "low"
+        })
+      ])
+    );
+    expect(redactSecrets(input)).not.toContain("agentforge:agentforge");
+    expect(redactSecrets(input)).not.toContain("placeholder-local-only-token");
+  });
+
+  it("keeps credential-bearing localhost database URLs high risk unless credentials are placeholders", () => {
+    const matches = detectSecrets(
+      [
+        "DATABASE_URL=postgresql://service:prodSecret123456789@localhost:15432/app",
+        "DATABASE_URL=postgresql://svc-prod-2026:svc-prod-2026@localhost:15432/app"
+      ].join("\n")
+    );
+
+    const databaseMatches = matches.filter((match) => match.kind === "database_url");
+    expect(databaseMatches).toHaveLength(2);
+    expect(databaseMatches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "credential_like",
+          risk: "high",
+          localService: true
+        })
+      ])
+    );
+    expect(redactSecrets(matches[0]!.value)).not.toContain("prodSecret");
+  });
+
+  it("classifies spaced placeholder assignments before risk scoring", () => {
+    const matches = detectSecrets("API_KEY = xxxxxxxxxxxxxxxxxxxx\nTOKEN = dev-local-token-123456");
+
+    expect(matches).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "api_key_assignment",
+          category: "local_placeholder",
+          risk: "low"
+        })
+      ])
+    );
+  });
+
+  it("does not downgrade real assignment values", () => {
+    const matches = detectSecrets("token=abcdefghijklmnopqrstuvwxyz1234567890");
+
+    expect(matches.find((match) => match.kind === "api_key_assignment")).toMatchObject({
+      category: "credential_like",
+      risk: "high"
+    });
   });
 
   it("removes source blobs and full diffs by default while preserving metadata", () => {

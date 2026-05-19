@@ -8,6 +8,10 @@ export type RedactionMatch = {
     | "database_url"
     | "api_key_assignment"
     | "high_entropy";
+  category: "credential_like" | "local_placeholder";
+  risk: "high" | "low";
+  reason: string;
+  localService?: boolean | undefined;
   value: string;
   redacted: string;
 };
@@ -52,7 +56,7 @@ export function detectSecrets(input: string): RedactionMatch[] {
     regex.lastIndex = 0;
     for (const match of input.matchAll(regex)) {
       const value = match[0];
-      matches.push({ kind, value, redacted: preservePrefix(value) });
+      matches.push({ kind, value, redacted: preservePrefix(value), ...classifyMatch(kind, value) });
     }
   }
   return matches;
@@ -90,4 +94,108 @@ function preservePrefix(match: string): string {
     return "Bearer [REDACTED]";
   }
   return REDACTION;
+}
+
+function classifyMatch(
+  kind: RedactionMatch["kind"],
+  value: string
+): Pick<RedactionMatch, "category" | "risk" | "reason" | "localService"> {
+  if (kind === "database_url") {
+    const localService = isLocalServiceUrl(value);
+    if (localService && hasPlaceholderDatabaseCredentials(value)) {
+      return {
+        category: "local_placeholder",
+        risk: "low",
+        reason: "local service URL with placeholder credentials",
+        localService
+      };
+    }
+
+    return {
+      category: "credential_like",
+      risk: "high",
+      reason: localService ? "credential-bearing local service URL" : "credential-shaped value",
+      localService
+    };
+  }
+
+  if (
+    (kind === "api_key_assignment" || kind === "high_entropy" || kind === "bearer_token") &&
+    isObviousPlaceholder(value)
+  ) {
+    return {
+      category: "local_placeholder",
+      risk: "low",
+      reason: "placeholder or local development value"
+    };
+  }
+
+  return {
+    category: "credential_like",
+    risk: "high",
+    reason: "credential-shaped value"
+  };
+}
+
+function isLocalServiceUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    const hostname = parsed.hostname.toLowerCase();
+    return (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "0.0.0.0" ||
+      hostname === "::1" ||
+      hostname.endsWith(".localhost")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isObviousPlaceholder(value: string): boolean {
+  const inspected = inspectSecretValue(value).toLowerCase();
+  return isPlaceholderToken(inspected);
+}
+
+function isPlaceholderToken(value: string): boolean {
+  if (
+    /(?:placeholder|example|sample|dummy|changeme|change-me|local-only|dev-only)/.test(value) ||
+    /your[_-]?(?:token|secret|password|api[_-]?key)/.test(value) ||
+    /(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[?::1\]?)/.test(value)
+  ) {
+    return true;
+  }
+
+  return (
+    /^(?:x+|0+|1+|a+|pass|password|user|root|postgres|agentforge|test-?[a-z0-9_-]*|dev-?[a-z0-9_-]*)$/u.test(
+      value
+    ) ||
+    /(?:placeholder|example|sample|dummy|changeme|change-me|local-only|dev-only)/u.test(value) ||
+    /^(.)\1{15,}$/u.test(value)
+  );
+}
+
+function inspectSecretValue(value: string): string {
+  const assignment = /^\s*[^:=]{2,40}?\s*[:=]\s*["']?([^"'\s]+)["']?$/u.exec(value);
+  if (assignment?.[1]) {
+    return assignment[1];
+  }
+
+  const bearer = /^Bearer\s+([A-Za-z0-9._~+/=-]+)$/iu.exec(value);
+  return bearer?.[1] ?? value;
+}
+
+function hasPlaceholderDatabaseCredentials(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    const username = decodeURIComponent(parsed.username).toLowerCase();
+    const password = decodeURIComponent(parsed.password).toLowerCase();
+    if (!username && !password) {
+      return true;
+    }
+    return [username, password].every((part) => !part || isPlaceholderToken(part));
+  } catch {
+    return false;
+  }
 }

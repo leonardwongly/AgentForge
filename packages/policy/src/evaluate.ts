@@ -137,6 +137,19 @@ function hitForFact(fact: VerifiedFact, policy: PolicyConfig): PolicyHit[] {
         })
       ];
     case "secret_like_value_detected":
+      if (fact.metadata?.secretRisk === "low") {
+        return [
+          makeHit({
+            ruleId: "security.secret_like_value.advisory",
+            fact,
+            action: "warn",
+            severity: "low",
+            requiredEvidence: [],
+            requiredReviewers: [],
+            explanation: "Low-risk secret-like placeholder or documentation example observed."
+          })
+        ];
+      }
       return [
         makeHit({
           ruleId: "security.secret_like_value",

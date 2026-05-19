@@ -138,6 +138,67 @@ sensitive_paths:
     expect(result.status).toBe("pass");
   });
 
+  it("treats downgraded secret-like placeholders as advisory without security requirements", async () => {
+    const yaml = await readFile(
+      path.resolve(process.cwd(), "fixtures", "policies", "fintech.yaml"),
+      "utf8"
+    );
+    const parsed = parsePolicyYaml(yaml);
+    parsed.config.agentforge.mode = "enforce";
+    const pr: PullRequestInput = {
+      repositoryFullName: "acme/billing-service",
+      pullRequestNumber: 99,
+      title: "Document local database",
+      authorLogin: "sam",
+      baseBranch: "main",
+      headBranch: "docs/local-db",
+      headSha: "sha99",
+      changedFiles: [
+        {
+          filename: "docs/setup.md",
+          status: "modified",
+          patch:
+            "+Use DATABASE_URL=postgresql://agentforge:agentforge@localhost:15432/agentforge for local development."
+        }
+      ]
+    };
+    const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(parsed.config));
+    const result = evaluateMergeGuard(pr, facts, parsed.config);
+
+    expect(result.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "secret_like_value_detected",
+          severity: "low",
+          metadata: expect.objectContaining({
+            secretCategory: "documentation_example",
+            policyTreatment: "advisory"
+          })
+        })
+      ])
+    );
+    expect(result.status).toBe("pass");
+    expect(result.requiredEvidence).toHaveLength(0);
+    expect(result.requiredReviewers).toHaveLength(0);
+  });
+
+  it("still blocks credential-shaped secret findings and requires security review", async () => {
+    const yaml = await readFile(
+      path.resolve(process.cwd(), "fixtures", "policies", "fintech.yaml"),
+      "utf8"
+    );
+    const parsed = parsePolicyYaml(yaml);
+    parsed.config.agentforge.mode = "enforce";
+    const pr = await load("secret-like-token.json");
+    const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(parsed.config));
+    const result = evaluateMergeGuard(pr, facts, parsed.config);
+
+    expect(result.status).toBe("block");
+    expect(result.requiredEvidence.map((item) => item.kind)).toContain("security_note");
+    expect(result.requiredReviewers.map((item) => item.reviewer)).toContain("security-team");
+    expect(JSON.stringify(result)).not.toContain("ghp_123456");
+  });
+
   it("preserves policy pack version in result", async () => {
     const result = await evaluate("policy-update-after-open.json");
     expect(result.policyVersion).toBe("fintech@1.0.0");
