@@ -131,6 +131,7 @@ The local Postgres port is `15432` to avoid conflicts with a workstation Postgre
 
 ```bash
 # Run services
+pnpm dev:preflight
 pnpm dev
 pnpm dev:api
 pnpm dev:web
@@ -208,8 +209,13 @@ When `NODE_ENV=production`, startup fails closed if webhook signing, redaction, 
 For routine development, run all three application services:
 
 ```bash
+pnpm dev:preflight
 pnpm dev
 ```
+
+`pnpm dev` runs the same local preflight before starting the stack. If Docker,
+Postgres, Redis, or `.env` are missing, the command fails before noisy API or
+worker connection errors and prints the exact setup command to run.
 
 To run services separately:
 

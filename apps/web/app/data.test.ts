@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   governanceDisposition,
+  governanceDecisionLabel,
   hasOpenRequirements,
   isObservePassWithOpenRequirements,
   loadDashboardData,
@@ -142,6 +143,21 @@ describe("dashboard API data loaders", () => {
     expect(governanceDisposition(reviewersOnly).detail).toBe(
       "1 reviewer requirement remains open and would block in enforce or optimize mode."
     );
+  });
+
+  it("does not present open-requirement governance as a final passed decision", () => {
+    expect(governanceDecisionLabel(recordWithOpenRequirements())).toBe(
+      "observing; requirements open"
+    );
+    expect(governanceDecisionLabel({ ...recordWithOpenRequirements(), mode: "warn" })).toBe(
+      "warning; requirements open"
+    );
+    expect(
+      governanceDecisionLabel({
+        ...recordWithOpenRequirements({ evidence: 0, reviewers: 0 }),
+        decision: { status: "passed" }
+      })
+    ).toBe("passed");
   });
 });
 

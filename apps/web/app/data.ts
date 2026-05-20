@@ -152,6 +152,7 @@ export type OnboardingStep = {
 export type SettingsData = {
   githubInstallation: {
     connected: boolean;
+    credentialsConfigured?: boolean | undefined;
     accountLogin?: string | undefined;
     accountType?: string | undefined;
     githubInstallationId?: string | undefined;
@@ -577,6 +578,18 @@ export function governanceDisposition(record: ChangeControlRecord): {
     label: "pass",
     detail: "Configured policy requirements are satisfied."
   };
+}
+
+export function governanceDecisionLabel(record: ChangeControlRecord): string {
+  if (hasOpenRequirements(record)) {
+    if (record.mode === "observe") {
+      return "observing; requirements open";
+    }
+    if (record.mode === "warn") {
+      return "warning; requirements open";
+    }
+  }
+  return record.decision?.status ?? "pending";
 }
 
 export function hasAgentSignal(record: ChangeControlRecord): boolean {

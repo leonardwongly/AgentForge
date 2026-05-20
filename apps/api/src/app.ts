@@ -3596,6 +3596,7 @@ async function githubInstallationSummary(
     if (installation) {
       return {
         connected: true,
+        credentialsConfigured: true,
         accountLogin: installation.accountLogin,
         accountType: installation.accountType,
         githubInstallationId: installation.githubInstallationId.toString()
@@ -3603,7 +3604,8 @@ async function githubInstallationSummary(
     }
   }
   return {
-    connected: Boolean(
+    connected: false,
+    credentialsConfigured: Boolean(
       config.github.appId && config.github.privateKey && config.github.webhookSecret
     ),
     accountLogin: undefined,

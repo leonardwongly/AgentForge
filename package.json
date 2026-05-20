@@ -9,7 +9,8 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "dev": "turbo run dev --parallel",
+    "dev": "tsx scripts/dev-preflight.ts && turbo run dev",
+    "dev:preflight": "tsx scripts/dev-preflight.ts",
     "dev:api": "pnpm --filter @agentforge/api dev",
     "dev:web": "pnpm --filter @agentforge/web dev",
     "dev:worker": "pnpm --filter @agentforge/worker dev",
@@ -52,7 +53,7 @@
     "prisma": "6.19.3",
     "supertest": "7.2.2",
     "tsx": "4.21.0",
-    "turbo": "2.9.12",
+    "turbo": "2.9.14",
     "typescript": "6.0.3",
     "vitest": "4.1.6"
   },
