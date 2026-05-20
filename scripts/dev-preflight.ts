@@ -6,12 +6,14 @@ type ServiceCheck = {
   name: string;
   host: string;
   port: number;
+  required: boolean;
   remediation: string;
 };
 
 type CheckResult = {
   name: string;
   ok: boolean;
+  required: boolean;
   detail: string;
   remediation?: string | undefined;
 };
@@ -21,13 +23,23 @@ const requiredServices: ServiceCheck[] = [
     name: "Postgres",
     host: "127.0.0.1",
     port: 15432,
+    required: true,
     remediation: "Start local services with `docker compose up -d postgres redis minio`."
   },
   {
     name: "Redis",
     host: "127.0.0.1",
     port: 6379,
+    required: true,
     remediation: "Start local services with `docker compose up -d postgres redis minio`."
+  },
+  {
+    name: "MinIO",
+    host: "127.0.0.1",
+    port: 9000,
+    required: false,
+    remediation:
+      "Start MinIO with `docker compose up -d minio` when testing local export or object-storage behavior."
   }
 ];
 
@@ -43,7 +55,8 @@ export async function runDevPreflight(): Promise<CheckResult[]> {
 export function formatPreflightReport(results: CheckResult[]): string {
   const lines = ["AgentForge local dev preflight:"];
   for (const result of results) {
-    lines.push(`${result.ok ? "OK" : "FAIL"} ${result.name}: ${result.detail}`);
+    const status = result.ok ? "OK" : result.required ? "FAIL" : "WARN";
+    lines.push(`${status} ${result.name}: ${result.detail}`);
     if (!result.ok && result.remediation) {
       lines.push(`  Fix: ${result.remediation}`);
     }
@@ -52,7 +65,7 @@ export function formatPreflightReport(results: CheckResult[]): string {
 }
 
 export function hasPreflightFailure(results: CheckResult[]): boolean {
-  return results.some((result) => !result.ok);
+  return results.some((result) => result.required && !result.ok);
 }
 
 async function checkEnvFile(): Promise<CheckResult> {
@@ -61,12 +74,14 @@ async function checkEnvFile(): Promise<CheckResult> {
     return {
       name: ".env",
       ok: true,
+      required: true,
       detail: "local configuration file exists"
     };
   } catch {
     return {
       name: ".env",
       ok: false,
+      required: true,
       detail: "local configuration file is missing",
       remediation: "Run `cp .env.example .env`, then review local-only values before starting dev."
     };
@@ -82,6 +97,7 @@ function checkDockerCli(): CheckResult {
     return {
       name: "Docker",
       ok: true,
+      required: true,
       detail: `daemon reachable (${result.stdout.trim() || "version unknown"})`
     };
   }
@@ -89,6 +105,7 @@ function checkDockerCli(): CheckResult {
   return {
     name: "Docker",
     ok: false,
+    required: true,
     detail: stderr.replace(/\s+/g, " "),
     remediation:
       "Start Docker Desktop or another Docker-compatible runtime, then run `docker compose up -d postgres redis minio`."
@@ -100,6 +117,7 @@ async function checkService(service: ServiceCheck): Promise<CheckResult> {
   return {
     name: service.name,
     ok: reachable,
+    required: service.required,
     detail: reachable
       ? `reachable at ${service.host}:${service.port}`
       : `not reachable at ${service.host}:${service.port}`,
