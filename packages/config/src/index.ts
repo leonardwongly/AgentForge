@@ -50,6 +50,7 @@ const envSchema = z.object({
   EXPORT_STORAGE_BUCKET: optionalStringFromEnv,
   EXPORT_STORAGE_REGION: optionalStringFromEnv,
   SESSION_SECRET: optionalStringFromEnv,
+  AGENTFORGE_API_PROXY_SECRET: optionalStringFromEnv,
   AGENTFORGE_API_TRUST_PROXY_HEADERS: booleanFromEnv.default(false),
   AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS: booleanFromEnv.default(false),
   AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: booleanFromEnv.default(false),
@@ -87,6 +88,7 @@ export type AgentForgeConfig = {
     dashboardTrustProxyHeaders: boolean;
     dashboardAllowLocalActor: boolean;
     proxyStripsIdentityHeaders: boolean;
+    apiProxySecret: string | undefined;
   };
 };
 
@@ -122,7 +124,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConf
       apiAllowLocalActorHeaders: parsed.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS ?? false,
       dashboardTrustProxyHeaders: parsed.AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS ?? false,
       dashboardAllowLocalActor: parsed.AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR ?? false,
-      proxyStripsIdentityHeaders: parsed.AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS ?? false
+      proxyStripsIdentityHeaders: parsed.AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS ?? false,
+      apiProxySecret: parsed.AGENTFORGE_API_PROXY_SECRET
     }
   };
   validateProductionConfig(config);
@@ -148,6 +151,11 @@ function validateProductionConfig(config: AgentForgeConfig): void {
   }
   if (!config.auth.apiTrustProxyHeaders) {
     errors.push("AGENTFORGE_API_TRUST_PROXY_HEADERS must be true in production.");
+  }
+  if (config.auth.apiTrustProxyHeaders && !config.auth.apiProxySecret) {
+    errors.push(
+      "AGENTFORGE_API_PROXY_SECRET must be configured when AGENTFORGE_API_TRUST_PROXY_HEADERS is enabled."
+    );
   }
   if (!config.auth.dashboardTrustProxyHeaders) {
     errors.push("AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS must be true in production.");

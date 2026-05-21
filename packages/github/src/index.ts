@@ -1,11 +1,14 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { createAppAuth } from "@octokit/auth-app";
 import { Octokit } from "@octokit/rest";
-import type {
-  ChangedFile,
-  PolicyResult,
-  PullRequestInput,
-  PullRequestReview
+import {
+  type ChangedFile,
+  type PolicyResult,
+  type PullRequestInput,
+  type PullRequestReview,
+  type RedisCacheManager,
+  getMembershipCacheKey,
+  getFileContentCacheKey
 } from "@agentforge/core";
 import { redactSecrets } from "@agentforge/security";
 
@@ -198,6 +201,7 @@ export async function fetchPullRequestInputFromGithub(input: {
   includeManifestContents?: boolean | undefined;
   maxManifestBytes?: number | undefined;
   requiredReviewerTeams?: string[] | undefined;
+  cache?: RedisCacheManager | undefined;
 }): Promise<PullRequestInput> {
   const params = { owner: input.owner, repo: input.repo, pull_number: input.pullNumber };
   const prResponse = await input.client.pulls.get(params);
@@ -231,7 +235,8 @@ export async function fetchPullRequestInputFromGithub(input: {
         baseSha,
         headSha,
         includeManifestContents: input.includeManifestContents ?? true,
-        maxManifestBytes: input.maxManifestBytes ?? 200_000
+        maxManifestBytes: input.maxManifestBytes ?? 200_000,
+        cache: input.cache
       })
     )
   );
@@ -240,7 +245,8 @@ export async function fetchPullRequestInputFromGithub(input: {
     client: input.client,
     org: input.owner,
     reviews: mappedReviews,
-    teamSlugs: input.requiredReviewerTeams ?? []
+    teamSlugs: input.requiredReviewerTeams ?? [],
+    cache: input.cache
   });
 
   return {
@@ -268,6 +274,7 @@ export async function enrichPullRequestReviewsWithTeamMemberships(input: {
   org: string;
   reviews: PullRequestReview[];
   teamSlugs: string[];
+  cache?: RedisCacheManager | undefined;
 }): Promise<PullRequestReview[]> {
   const requiredTeamSlugs = uniqueNormalizedTeamSlugs(input.teamSlugs);
   if (requiredTeamSlugs.length === 0) {
@@ -292,7 +299,8 @@ export async function enrichPullRequestReviewsWithTeamMemberships(input: {
         client: input.client,
         org: input.org,
         teamSlug,
-        username
+        username,
+        cache: input.cache
       });
       membershipChecks.set(key, check);
     }
@@ -625,20 +633,50 @@ async function checkActiveTeamMember(input: {
   org: string;
   teamSlug: string;
   username: string;
+  cache?: RedisCacheManager | undefined;
 }): Promise<TeamMembershipCheck> {
+  const cacheKey = getMembershipCacheKey(input.org, input.teamSlug, input.username);
+  if (input.cache) {
+    try {
+      const cached = await input.cache.get(cacheKey);
+      if (cached === "active") {
+        return {
+          status: "verified",
+          teamSlug: input.teamSlug,
+          active: true
+        };
+      } else if (cached === "inactive") {
+        return {
+          status: "verified",
+          teamSlug: input.teamSlug,
+          active: false
+        };
+      }
+    } catch (err) {
+      console.warn("Error reading membership cache:", err);
+    }
+  }
+
   try {
     const response = await input.client.teams?.getMembershipForUserInOrg({
       org: input.org,
       team_slug: input.teamSlug,
       username: input.username
     });
+    const active = stringValue(response?.data.state)?.toLowerCase() === "active";
+    if (input.cache) {
+      await input.cache.set(cacheKey, active ? "active" : "inactive", 3600); // 1 hour TTL
+    }
     return {
       status: "verified",
       teamSlug: input.teamSlug,
-      active: stringValue(response?.data.state)?.toLowerCase() === "active"
+      active
     };
   } catch (error) {
     if (githubErrorStatus(error) === 404) {
+      if (input.cache) {
+        await input.cache.set(cacheKey, "inactive", 3600);
+      }
       return {
         status: "verified",
         teamSlug: input.teamSlug,
@@ -745,6 +783,7 @@ async function githubChangedFileToInput(input: {
   headSha: string;
   includeManifestContents: boolean;
   maxManifestBytes: number;
+  cache?: RedisCacheManager | undefined;
 }): Promise<ChangedFile> {
   const filename = stringValue(input.file.filename) ?? "";
   const status = changedFileStatus(stringValue(input.file.status));
@@ -770,7 +809,8 @@ async function githubChangedFileToInput(input: {
         repo: input.repo,
         path: changedFile.previousFilename ?? filename,
         ref: input.baseSha,
-        maxBytes: input.maxManifestBytes
+        maxBytes: input.maxManifestBytes,
+        cache: input.cache
       });
     }
     if (status !== "removed") {
@@ -780,7 +820,8 @@ async function githubChangedFileToInput(input: {
         repo: input.repo,
         path: filename,
         ref: input.headSha,
-        maxBytes: input.maxManifestBytes
+        maxBytes: input.maxManifestBytes,
+        cache: input.cache
       });
     }
   }
@@ -831,7 +872,22 @@ async function fetchTextContent(input: {
   path: string;
   ref: string;
   maxBytes: number;
+  cache?: RedisCacheManager | undefined;
 }): Promise<string | undefined> {
+  const isImmutableSha = /^[a-fA-F0-9]{40}$/.test(input.ref);
+  const cacheKey = getFileContentCacheKey(input.owner, input.repo, input.ref, input.path);
+
+  if (isImmutableSha && input.cache) {
+    try {
+      const cached = await input.cache.get(cacheKey);
+      if (cached !== null) {
+        return cached;
+      }
+    } catch (err) {
+      console.warn("Error reading file content cache:", err);
+    }
+  }
+
   let response: { data: Record<string, unknown> | Array<Record<string, unknown>> } | undefined;
   try {
     response = await input.client.repos?.getContent({
@@ -853,7 +909,17 @@ async function fetchTextContent(input: {
   }
   const decoded = Buffer.from(content, "base64");
   const bounded = decoded.length > input.maxBytes ? decoded.subarray(0, input.maxBytes) : decoded;
-  return bounded.toString("utf8");
+  const text = bounded.toString("utf8");
+
+  if (isImmutableSha && input.cache) {
+    try {
+      await input.cache.set(cacheKey, redactSecrets(text), 7 * 24 * 3600); // 7 days TTL for immutable commits
+    } catch (err) {
+      console.warn("Error writing file content cache:", err);
+    }
+  }
+
+  return text;
 }
 
 function humanize(value: string): string {

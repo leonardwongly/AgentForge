@@ -22,7 +22,12 @@ describe("dashboard API data loaders", () => {
   it("treats an empty dashboard API response as an actionable empty state", async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(init?.cache).toBe("no-store");
-      expect(init?.headers).toEqual({ accept: "application/json" });
+      expect(init?.headers).toEqual({
+        accept: "application/json",
+        "x-agentforge-actor": "dashboard-local",
+        "x-agentforge-role": "platform_admin",
+        "x-agentforge-organization": "org_local"
+      });
       expect(init?.signal).toBeInstanceOf(AbortSignal);
       return jsonResponse({ records: [] });
     });

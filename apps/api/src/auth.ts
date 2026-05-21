@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { FastifyRequest } from "fastify";
 
 export type ApiActor = {
@@ -23,11 +24,50 @@ const localOrganizationId = "org_local";
 
 export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
   if (process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS === "true") {
-    const actor = actorFromHeaders(
-      request.headers["x-agentforge-authenticated-actor"],
-      request.headers["x-agentforge-authenticated-role"],
-      request.headers["x-agentforge-authenticated-organization"]
-    );
+    const secret = process.env.AGENTFORGE_API_PROXY_SECRET;
+    if (!secret) {
+      throw new Error(
+        "AGENTFORGE_API_PROXY_SECRET must be configured when AGENTFORGE_API_TRUST_PROXY_HEADERS is enabled."
+      );
+    }
+
+    const actorStr = headerValue(request.headers["x-agentforge-authenticated-actor"]);
+    const roleStr = headerValue(request.headers["x-agentforge-authenticated-role"]);
+    const orgStr = headerValue(request.headers["x-agentforge-authenticated-organization"]);
+    const timestampStr = headerValue(request.headers["x-agentforge-signature-timestamp"]);
+    const signatureStr = headerValue(request.headers["x-agentforge-signature"]);
+
+    if (!actorStr || !roleStr || !orgStr || !timestampStr || !signatureStr) {
+      return undefined;
+    }
+
+    // Validate timestamp (5-minute window clock skew)
+    const now = Math.floor(Date.now() / 1000);
+    const timestamp = parseInt(timestampStr, 10);
+    if (isNaN(timestamp)) {
+      return undefined;
+    }
+    if (Math.abs(now - timestamp) > 5 * 60) {
+      return undefined;
+    }
+
+    // Validate signature format is hex
+    if (!/^[a-fA-F0-9]+$/.test(signatureStr)) {
+      return undefined;
+    }
+
+    // Reconstruct payload and verify HMAC-SHA256 signature
+    const payload = [timestampStr, actorStr, roleStr, orgStr].join(":");
+    const expectedSignature = createHmac("sha256", secret).update(payload).digest("hex");
+
+    const bufA = Buffer.from(signatureStr, "hex");
+    const bufB = Buffer.from(expectedSignature, "hex");
+
+    if (bufA.length !== bufB.length || !timingSafeEqual(bufA, bufB)) {
+      return undefined;
+    }
+
+    const actor = actorFromHeaders(actorStr, roleStr, orgStr);
     if (actor) {
       return actor;
     }

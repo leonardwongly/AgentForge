@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { RedisCacheManager } from "@agentforge/core";
 import { createApp, createInitialState, mergeGuardEvaluationJobOptions } from "../src/index.js";
 
 const mutableEnvKeys = [
@@ -42,7 +43,7 @@ describe("GitHub webhook API", () => {
       jobId: "delivery-1",
       attempts: 3,
       backoff: {
-        type: "exponential",
+        type: "exponentialWithJitter",
         delay: 30_000
       },
       removeOnComplete: 100,
@@ -246,5 +247,41 @@ describe("GitHub webhook API", () => {
     });
     expect(localOnly.statusCode).toBe(202);
     await allowed.close();
+  });
+
+  it("intercepts membership webhook events and evicts the corresponding cache key", async () => {
+    process.env.GITHUB_WEBHOOK_SECRET = "secret";
+    const state = createInitialState();
+    const app = createApp(state);
+
+    const spy = vi.spyOn(RedisCacheManager.prototype, "del");
+
+    const payload = {
+      action: "added",
+      scope: "team",
+      member: { login: "octocat" },
+      team: { slug: "admins" },
+      organization: { login: "github" }
+    };
+    const body = JSON.stringify(payload);
+    const signature = `sha256=${createHmac("sha256", "secret").update(body).digest("hex")}`;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload: body,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-membership-1",
+        "x-github-event": "membership",
+        "x-hub-signature-256": signature
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ accepted: true, enqueued: false });
+    expect(spy).toHaveBeenCalledWith("agentforge:cache:membership:github:admins:octocat");
+
+    await app.close();
   });
 });

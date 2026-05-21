@@ -38,6 +38,18 @@ const pullRequest: PullRequestInput = {
   ]
 };
 
+function actorHeaders(
+  actor = "alex",
+  role = "platform_admin",
+  organizationId = "org_local"
+): Record<string, string> {
+  return {
+    "x-agentforge-actor": actor,
+    "x-agentforge-role": role,
+    "x-agentforge-organization": organizationId
+  };
+}
+
 describe("runtime data surfaces", () => {
   it("exposes a readiness endpoint for deployment smoke checks", async () => {
     const state = createInitialState();
@@ -100,11 +112,19 @@ describe("runtime data surfaces", () => {
     const state = createInitialState();
     const app = createApp(state);
 
-    const emptyRepositories = await app.inject({ method: "GET", url: "/api/repositories" });
+    const emptyRepositories = await app.inject({
+      method: "GET",
+      url: "/api/repositories",
+      headers: actorHeaders()
+    });
     expect(emptyRepositories.statusCode).toBe(200);
     expect(emptyRepositories.json().repositories).toEqual([]);
 
-    const emptyRecords = await app.inject({ method: "GET", url: "/api/dashboard/records" });
+    const emptyRecords = await app.inject({
+      method: "GET",
+      url: "/api/dashboard/records",
+      headers: actorHeaders()
+    });
     expect(emptyRecords.statusCode).toBe(200);
     expect(emptyRecords.json().records).toEqual([]);
 
@@ -116,7 +136,11 @@ describe("runtime data surfaces", () => {
     });
     expect(preview.statusCode).toBe(200);
     expect(preview.json().persisted).toBe(false);
-    const stillEmptyRecords = await app.inject({ method: "GET", url: "/api/dashboard/records" });
+    const stillEmptyRecords = await app.inject({
+      method: "GET",
+      url: "/api/dashboard/records",
+      headers: actorHeaders()
+    });
     expect(stillEmptyRecords.json().records).toEqual([]);
 
     const persistedPreview = await app.inject({
@@ -125,8 +149,7 @@ describe("runtime data surfaces", () => {
       payload: JSON.stringify({ contentYaml: policyYaml, pr: pullRequest, persist: true }),
       headers: {
         "content-type": "application/json",
-        "x-agentforge-actor": "alex",
-        "x-agentforge-role": "platform_admin"
+        ...actorHeaders()
       }
     });
     expect(persistedPreview.statusCode).toBe(200);
@@ -134,7 +157,11 @@ describe("runtime data surfaces", () => {
     expect(record.repositoryFullName).toBe("runtime/payments");
     expect(record.repositoryId).toMatch(/^repo_[a-f0-9]{12}$/);
 
-    const repositories = await app.inject({ method: "GET", url: "/api/repositories" });
+    const repositories = await app.inject({
+      method: "GET",
+      url: "/api/repositories",
+      headers: actorHeaders()
+    });
     expect(repositories.json().repositories).toEqual([
       expect.objectContaining({
         id: record.repositoryId,
@@ -145,7 +172,8 @@ describe("runtime data surfaces", () => {
 
     const missingPolicy = await app.inject({
       method: "GET",
-      url: `/api/repositories/${record.repositoryId}/policy`
+      url: `/api/repositories/${record.repositoryId}/policy`,
+      headers: actorHeaders()
     });
     expect(missingPolicy.statusCode).toBe(404);
 
@@ -155,15 +183,15 @@ describe("runtime data surfaces", () => {
       payload: JSON.stringify({ contentYaml: policyYaml }),
       headers: {
         "content-type": "application/json",
-        "x-agentforge-actor": "alex",
-        "x-agentforge-role": "platform_admin"
+        ...actorHeaders()
       }
     });
     expect(savedPolicy.statusCode).toBe(200);
 
     const activePolicy = await app.inject({
       method: "GET",
-      url: `/api/repositories/${record.repositoryId}/policy`
+      url: `/api/repositories/${record.repositoryId}/policy`,
+      headers: actorHeaders()
     });
     expect(activePolicy.statusCode).toBe(200);
     expect(activePolicy.json()).toEqual(
@@ -197,7 +225,11 @@ describe("runtime data surfaces", () => {
     expect(state.records).toEqual([]);
     expect(state.repositoryPolicies.size).toBe(0);
 
-    const repositories = await app.inject({ method: "GET", url: "/api/repositories" });
+    const repositories = await app.inject({
+      method: "GET",
+      url: "/api/repositories",
+      headers: actorHeaders()
+    });
     expect(repositories.json().repositories).toEqual([]);
 
     await app.close();
@@ -281,7 +313,11 @@ describe("runtime data surfaces", () => {
       })
     );
 
-    const repositories = await app.inject({ method: "GET", url: "/api/repositories" });
+    const repositories = await app.inject({
+      method: "GET",
+      url: "/api/repositories",
+      headers: actorHeaders()
+    });
     expect(repositories.json().repositories[0]).toEqual(
       expect.objectContaining({
         id: record.repositoryId,
@@ -291,7 +327,11 @@ describe("runtime data surfaces", () => {
       })
     );
 
-    const settings = await app.inject({ method: "GET", url: "/api/settings" });
+    const settings = await app.inject({
+      method: "GET",
+      url: "/api/settings",
+      headers: actorHeaders()
+    });
     expect(settings.json().ownerMappings).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -312,7 +352,11 @@ describe("runtime data surfaces", () => {
       })
     );
 
-    const onboarding = await app.inject({ method: "GET", url: "/api/onboarding/status" });
+    const onboarding = await app.inject({
+      method: "GET",
+      url: "/api/onboarding/status",
+      headers: actorHeaders()
+    });
     expect(onboarding.json().steps).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -340,8 +384,7 @@ describe("runtime data surfaces", () => {
       method: "GET",
       url: "/api/audit-events",
       headers: {
-        "x-agentforge-actor": "alex",
-        "x-agentforge-role": "platform_admin"
+        ...actorHeaders()
       }
     });
     expect(audit.json().auditEvents.map((event: { action: string }) => event.action)).toEqual(
@@ -466,11 +509,13 @@ describe("runtime data surfaces", () => {
 
     const firstLookup = await app.inject({
       method: "GET",
-      url: `/api/repositories/${firstRecord.repositoryId}/pull-requests/${pullRequest.pullRequestNumber}/change-control-record`
+      url: `/api/repositories/${firstRecord.repositoryId}/pull-requests/${pullRequest.pullRequestNumber}/change-control-record`,
+      headers: actorHeaders()
     });
     const secondLookup = await app.inject({
       method: "GET",
-      url: `/api/repositories/${secondRecord.repositoryId}/pull-requests/${pullRequest.pullRequestNumber}/change-control-record`
+      url: `/api/repositories/${secondRecord.repositoryId}/pull-requests/${pullRequest.pullRequestNumber}/change-control-record`,
+      headers: actorHeaders()
     });
 
     expect(firstLookup.json().record.repositoryFullName).toBe("runtime/payments");

@@ -1259,7 +1259,8 @@ function advisoryGuardrail(): string {
 }
 
 function csvEscape(value: string): string {
-  const safe = value.replace(/"/g, '""');
+  const formulaSafe = /^[\s]*[=+\-@]/u.test(value) || /^[\t\r]/u.test(value) ? `'${value}` : value;
+  const safe = formulaSafe.replace(/"/g, '""');
   return /[",\n\r]/.test(safe) ? `"${safe}"` : safe;
 }
 

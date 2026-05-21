@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { Queue, type JobsOptions } from "bullmq";
@@ -17,7 +17,9 @@ import {
   MERGE_GUARD_EVALUATION_ATTEMPTS,
   MERGE_GUARD_EVALUATION_BACKOFF_MS,
   MERGE_GUARD_EVALUATION_JOB_NAME,
-  MERGE_GUARD_EVALUATION_QUEUE
+  MERGE_GUARD_EVALUATION_QUEUE,
+  RedisCacheManager,
+  getMembershipCacheKey
 } from "@agentforge/core";
 import { PrismaClient } from "@agentforge/db";
 import {
@@ -83,6 +85,8 @@ type StoredWebhookDelivery = {
   event: string;
   action: string | null;
   repositoryFullName: string | null;
+  organizationId?: string | null | undefined;
+  repositoryId?: string | null | undefined;
   pullRequestNumber: number | null;
   headSha: string | null;
   enqueued: boolean;
@@ -153,6 +157,7 @@ type RepositoryDataHandlingState = {
 
 type RepositorySummaryRow = {
   id: string;
+  organizationId: string;
   fullName: string;
   enabled: boolean;
   mode: ChangeControlRecord["mode"] | null;
@@ -247,6 +252,7 @@ const EXPORT_DEFAULT_RECORD_LIMIT = 500;
 const EXPORT_MAX_RECORD_LIMIT = 1_000;
 const COMPLIANCE_EXPORT_DEFAULT_RECORD_LIMIT = 250;
 const COMPLIANCE_EXPORT_MAX_RECORD_LIMIT = 500;
+const POLICY_YAML_MAX_BYTES = 200_000;
 
 const optionalQueryString = z.string().trim().min(1).max(240).optional();
 const policyModeSchema = z.enum(["observe", "warn", "enforce", "optimize"]);
@@ -432,9 +438,22 @@ const repositorySettingsPatchSchema = z
     auditRecordRetentionDays: z.number().int().positive().max(3650).optional()
   })
   .strict();
+const policyYamlPayloadSchema = z.string().superRefine((value, context) => {
+  if (Buffer.byteLength(value, "utf8") > POLICY_YAML_MAX_BYTES) {
+    context.addIssue({
+      code: "custom",
+      message: "Policy YAML must be 200 KB or smaller."
+    });
+  }
+});
+const policyUpdateSchema = z
+  .object({
+    contentYaml: policyYamlPayloadSchema
+  })
+  .strict();
 const policyPreviewSchema = z
   .object({
-    contentYaml: z.string().optional(),
+    contentYaml: policyYamlPayloadSchema.optional(),
     pr: z.custom<PullRequestInput>((value) => Boolean(value && typeof value === "object")),
     persist: z.boolean().optional()
   })
@@ -476,7 +495,7 @@ export function mergeGuardEvaluationJobOptions(jobId: string): JobsOptions {
     jobId,
     attempts: MERGE_GUARD_EVALUATION_ATTEMPTS,
     backoff: {
-      type: "exponential",
+      type: "exponentialWithJitter",
       delay: MERGE_GUARD_EVALUATION_BACKOFF_MS
     },
     removeOnComplete: 100,
@@ -496,6 +515,9 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     config.databaseUrl && config.nodeEnv !== "test"
       ? new PrismaClient({ datasourceUrl: config.databaseUrl })
       : undefined;
+  const apiCache = new RedisCacheManager(
+    config.redisUrl && config.nodeEnv !== "test" ? config.redisUrl : undefined
+  );
   const queueConnection =
     config.redisUrl && config.nodeEnv !== "test"
       ? new Redis(config.redisUrl, {
@@ -514,7 +536,8 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   const getRecord = (id: string) => getChangeControlRecord(state, prisma, id);
   const saveRecord = (record: ChangeControlRecord, pr?: PullRequestInput) =>
     saveChangeControlRecord(state, prisma, record, pr);
-  const listRepositories = () => listRepositorySummaries(state, prisma, config.defaultPolicyMode);
+  const listRepositories = (organizationId?: string) =>
+    listRepositorySummaries(state, prisma, config.defaultPolicyMode, organizationId);
   const getRepositoryPolicy = (id: string) => getActiveRepositoryPolicy(state, prisma, id);
   const getRecordPolicyConfig = async (record: ChangeControlRecord) => {
     const activePolicy = await getRepositoryPolicy(record.repositoryId);
@@ -580,6 +603,16 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     const record = await getRecord(recordId);
     return record ? [record] : [];
   };
+  const requireReadActor = (request: FastifyRequest, reply: FastifyReply) => {
+    const actor = requireApiActor(request);
+    if (isAuthzFailure(actor)) {
+      void reply.code(actor.statusCode).send({ error: actor.reason });
+      return undefined;
+    }
+    return actor;
+  };
+  const recordsVisibleTo = async (actor: ApiActor) =>
+    (await listRecords()).filter((record) => record.organizationId === actor.organizationId);
   const app = Fastify({
     logger: {
       level: config.nodeEnv === "test" ? "silent" : "info",
@@ -629,6 +662,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   app.addHook("onClose", async () => {
     await evaluationQueue?.close().catch(() => undefined);
     queueConnection?.disconnect();
+    await apiCache.disconnect();
     await prisma?.$disconnect();
   });
 
@@ -677,6 +711,24 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     } else if (!config.github.allowUnsignedWebhooks) {
       return reply.code(401).send({ error: "GitHub webhook secret is required" });
     }
+
+    if (event === "membership") {
+      const payload = (request.body ?? {}) as Record<string, any>;
+      const org =
+        typeof payload.organization?.login === "string" ? payload.organization.login : undefined;
+      const teamSlug = typeof payload.team?.slug === "string" ? payload.team.slug : undefined;
+      const username = typeof payload.member?.login === "string" ? payload.member.login : undefined;
+
+      if (org && teamSlug && username) {
+        const key = getMembershipCacheKey(org, teamSlug, username);
+        await apiCache.del(key);
+        app.log.info(
+          { key, org, teamSlug, username },
+          "Evicted membership cache key due to membership webhook event"
+        );
+      }
+    }
+
     if (await hasWebhookDelivery(state, prisma, deliveryId)) {
       return reply.code(202).send({ accepted: true, duplicate: true });
     }
@@ -719,7 +771,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     }
 
     const queue = await queueOperationalStatus({ state, evaluationQueue });
-    const deliveryFailures = await listRecentWebhookDeliveryFailures(prisma);
+    const deliveryFailures = await listRecentWebhookDeliveryFailures(prisma, actor.organizationId);
     return {
       queue: safe(queue),
       deliveryFailures: safe(deliveryFailures),
@@ -743,9 +795,28 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         .send({ error: parsed.error.issues[0]?.message ?? "Invalid replay request" });
     }
 
-    const replayable = await findReplayableDelivery(state, prisma, parsed.data);
+    const replayable = await findReplayableDelivery(
+      state,
+      prisma,
+      parsed.data,
+      actor.organizationId
+    );
     if (!replayable) {
       return reply.code(404).send({ error: "Replayable webhook delivery was not found." });
+    }
+    const replayOrganizationId =
+      replayable.delivery.organizationId ??
+      (replayable.delivery.repositoryId
+        ? await repositoryOrganizationId(state, prisma, replayable.delivery.repositoryId)
+        : undefined);
+    if (!replayOrganizationId) {
+      return reply
+        .code(403)
+        .send({ error: "Webhook replay requires a tenant-scoped delivery record." });
+    }
+    const tenantAccess = requireOrganizationAccess(actor, replayOrganizationId, "Webhook replay");
+    if (!tenantAccess.ok) {
+      return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
     }
     if (!shouldEnqueueEvaluation(replayable.envelope)) {
       return reply.code(400).send({ error: "Webhook delivery is not an evaluation event." });
@@ -761,7 +832,8 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     });
     await markWebhookDeliveryReplayed(prisma, replayable.envelope.deliveryId, actor.login);
     await audit({
-      organizationId: "org_operations",
+      organizationId: replayOrganizationId,
+      repositoryId: replayable.delivery.repositoryId ?? undefined,
       actor: actor.login,
       actorRole: actor.role,
       action: "webhook_replayed",
@@ -790,13 +862,25 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     });
   });
 
-  app.get("/api/repositories", async () => ({
-    repositories: safe(await listRepositories())
-  }));
+  app.get("/api/repositories", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
+    return {
+      repositories: safe(await listRepositories(actor.organizationId))
+    };
+  });
 
-  app.get("/api/settings", async () => {
-    const repositories = await listRepositories();
-    const ownerMappings = await listOwnerMappings();
+  app.get("/api/settings", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
+    const repositories = await listRepositories(actor.organizationId);
+    const ownerMappings = (await listOwnerMappings()).filter(
+      (mapping) => mapping.organizationId === actor.organizationId
+    );
     const githubInstallation = await githubInstallationSummary(prisma, config);
     return safe({
       githubInstallation,
@@ -816,12 +900,18 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     });
   });
 
-  app.get("/api/onboarding/status", async () => {
-    const repositories = await listRepositories();
-    const records = await listRecords();
+  app.get("/api/onboarding/status", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
+    const repositories = await listRepositories(actor.organizationId);
+    const records = await recordsVisibleTo(actor);
     const settings = {
       githubInstallation: await githubInstallationSummary(prisma, config),
-      ownerMappings: await listOwnerMappings()
+      ownerMappings: (await listOwnerMappings()).filter(
+        (mapping) => mapping.organizationId === actor.organizationId
+      )
     };
     return safe({
       steps: onboardingStepsFromRuntime({
@@ -1004,7 +1094,19 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   });
 
   app.get("/api/repositories/:id/policy", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
     const repositoryId = (request.params as { id: string }).id;
+    const organizationId = await repositoryOrganizationId(state, prisma, repositoryId);
+    if (!organizationId) {
+      return reply.code(404).send({ error: "Repository not found" });
+    }
+    const tenantAccess = requireOrganizationAccess(actor, organizationId, "Policy access");
+    if (!tenantAccess.ok) {
+      return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+    }
     const policy = await getRepositoryPolicy(repositoryId);
     if (!policy) {
       return reply.code(404).send({ error: "Active policy is not configured for this repository" });
@@ -1038,7 +1140,17 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     if (!tenantAccess.ok) {
       return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
     }
-    const body = request.body as { contentYaml?: string };
+    const parsedBody = policyUpdateSchema.safeParse(request.body ?? {});
+    if (!parsedBody.success) {
+      return reply.code(400).send({
+        error: "Invalid policy update input",
+        details: parsedBody.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message
+        }))
+      });
+    }
+    const body = parsedBody.data;
     const validation = validatePolicyYaml(body.contentYaml ?? "");
     if (!validation.valid) {
       return reply.code(400).send(validation);
@@ -1085,9 +1197,18 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     };
   });
 
-  app.post("/api/policies/validate", async (request) => {
-    const body = request.body as { contentYaml?: string };
-    return validatePolicyYaml(body.contentYaml ?? "");
+  app.post("/api/policies/validate", async (request, reply) => {
+    const parsedBody = policyUpdateSchema.safeParse(request.body ?? {});
+    if (!parsedBody.success) {
+      return reply.code(400).send({
+        error: "Invalid policy validation input",
+        details: parsedBody.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message
+        }))
+      });
+    }
+    return validatePolicyYaml(parsedBody.data.contentYaml);
   });
 
   app.post("/api/policies/preview", async (request, reply) => {
@@ -1204,25 +1325,44 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     return safe({ ...output, record, persisted: true });
   });
 
-  app.get("/api/pull-requests", async () => ({
-    pullRequests: (await listRecords()).map((record) => ({
-      id: record.id,
-      repositoryFullName: record.repositoryFullName,
-      pullRequestNumber: record.pullRequestNumber,
-      headSha: record.headSha,
-      mode: record.mode,
-      checkStatus: record.checkStatus,
-      missingEvidence: record.requiredEvidence.filter((item) => item.status !== "approved").length,
-      pendingReviewers: record.requiredReviewers.filter(
-        (item) => item.tier === "required" && !item.approved
-      ).length
-    }))
-  }));
+  app.get("/api/pull-requests", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
+    return {
+      pullRequests: (await recordsVisibleTo(actor)).map((record) => ({
+        id: record.id,
+        repositoryFullName: record.repositoryFullName,
+        pullRequestNumber: record.pullRequestNumber,
+        headSha: record.headSha,
+        mode: record.mode,
+        checkStatus: record.checkStatus,
+        missingEvidence: record.requiredEvidence.filter((item) => item.status !== "approved")
+          .length,
+        pendingReviewers: record.requiredReviewers.filter(
+          (item) => item.tier === "required" && !item.approved
+        ).length
+      }))
+    };
+  });
 
   app.get("/api/pull-requests/:id/change-control-record", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
     const record = await getRecord((request.params as { id: string }).id);
     if (!record) {
       return reply.code(404).send({ error: "Change Control Record not found" });
+    }
+    const tenantAccess = requireOrganizationAccess(
+      actor,
+      record.organizationId,
+      "Change Control Record access"
+    );
+    if (!tenantAccess.ok) {
+      return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
     }
     return {
       record: sanitizeChangeControlRecord(record, storagePolicy),
@@ -1233,8 +1373,12 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   app.get(
     "/api/repositories/:id/pull-requests/:number/change-control-record",
     async (request, reply) => {
+      const actor = requireReadActor(request, reply);
+      if (!actor) {
+        return;
+      }
       const params = request.params as { id: string; number: string };
-      const record = (await listRecords()).find(
+      const record = (await recordsVisibleTo(actor)).find(
         (item) =>
           item.repositoryId === params.id && item.pullRequestNumber === Number(params.number)
       );
@@ -1613,8 +1757,18 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     }
   });
 
-  app.get("/api/dashboard/summary", async () => safe(dashboardSummary(await listRecords())));
+  app.get("/api/dashboard/summary", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
+    return safe(dashboardSummary(await recordsVisibleTo(actor)));
+  });
   app.get("/api/dashboard/records", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
     const query = recordPageQuerySchema.safeParse(request.query ?? {});
     if (!query.success) {
       return reply.code(400).send({
@@ -1622,7 +1776,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         details: query.error.flatten().fieldErrors
       });
     }
-    const page = await listChangeControlRecordPage(state, prisma, query.data);
+    const page = paginateRecords(
+      filterAndSortRecords(await recordsVisibleTo(actor), query.data),
+      query.data
+    );
     return {
       records: safe(
         page.records.map((record) => sanitizeChangeControlRecord(record, storagePolicy))
@@ -1631,6 +1788,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     };
   });
   app.get("/api/dashboard/blocked-prs", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
     const query = recordPageQuerySchema.safeParse(request.query ?? {});
     if (!query.success) {
       return reply.code(400).send({
@@ -1638,8 +1799,8 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         details: query.error.flatten().fieldErrors
       });
     }
-    const filtered = filterAndSortRecords(await listRecords(), query.data).filter((record) =>
-      recordRequiresAction(record)
+    const filtered = filterAndSortRecords(await recordsVisibleTo(actor), query.data).filter(
+      (record) => recordRequiresAction(record)
     );
     const page = paginateRecords(filtered, query.data);
     return {
@@ -1648,6 +1809,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     };
   });
   app.get("/api/dashboard/policy-violations", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
     const query = recordPageQuerySchema.safeParse(request.query ?? {});
     if (!query.success) {
       return reply.code(400).send({
@@ -1655,7 +1820,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         details: query.error.flatten().fieldErrors
       });
     }
-    const page = paginateRecords(filterAndSortRecords(await listRecords(), query.data), query.data);
+    const page = paginateRecords(
+      filterAndSortRecords(await recordsVisibleTo(actor), query.data),
+      query.data
+    );
     return {
       violations: safe(
         groupBy(
@@ -1667,6 +1835,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     };
   });
   app.get("/api/dashboard/overrides", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
     const query = recordPageQuerySchema.safeParse({
       ...(request.query ?? {}),
       lifecycle: "overridden"
@@ -1677,13 +1849,20 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         details: query.error.flatten().fieldErrors
       });
     }
-    const page = await listChangeControlRecordPage(state, prisma, query.data);
+    const page = paginateRecords(
+      filterAndSortRecords(await recordsVisibleTo(actor), query.data),
+      query.data
+    );
     return {
       overrides: safe(page.records),
       pageInfo: page.pageInfo
     };
   });
   app.get("/api/dashboard/evidence-completion", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
     const query = recordPageQuerySchema.safeParse(request.query ?? {});
     if (!query.success) {
       return reply.code(400).send({
@@ -1691,7 +1870,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         details: query.error.flatten().fieldErrors
       });
     }
-    const page = await listChangeControlRecordPage(state, prisma, query.data);
+    const page = paginateRecords(
+      filterAndSortRecords(await recordsVisibleTo(actor), query.data),
+      query.data
+    );
     const evidence = page.records.flatMap((record) => record.requiredEvidence);
     const complete = evidence.filter((item) => item.status === "approved").length;
     return {
@@ -1703,6 +1885,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     };
   });
   app.get("/api/dashboard/reviewers", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
     const query = recordPageQuerySchema.safeParse(request.query ?? {});
     if (!query.success) {
       return reply.code(400).send({
@@ -1710,13 +1896,20 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         details: query.error.flatten().fieldErrors
       });
     }
-    const page = await listChangeControlRecordPage(state, prisma, query.data);
+    const page = paginateRecords(
+      filterAndSortRecords(await recordsVisibleTo(actor), query.data),
+      query.data
+    );
     return {
       reviewers: safe(page.records.flatMap((record) => record.requiredReviewers)),
       pageInfo: page.pageInfo
     };
   });
   app.get("/api/dashboard/policy-insights", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
     const query = recordPageQuerySchema.safeParse({ limit: 100, ...(request.query ?? {}) });
     if (!query.success) {
       return reply.code(400).send({
@@ -1724,7 +1917,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
         details: query.error.flatten().fieldErrors
       });
     }
-    const page = await listChangeControlRecordPage(state, prisma, query.data);
+    const page = paginateRecords(
+      filterAndSortRecords(await recordsVisibleTo(actor), query.data),
+      query.data
+    );
     return {
       ...safe(generatePolicyTuningReport(page.records)),
       pageInfo: page.pageInfo
@@ -1951,9 +2147,21 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   });
 
   app.get("/api/check-output/:recordId", async (request, reply) => {
+    const actor = requireReadActor(request, reply);
+    if (!actor) {
+      return;
+    }
     const record = await getRecord((request.params as { recordId: string }).recordId);
     if (!record) {
       return reply.code(404).send({ error: "Change Control Record not found" });
+    }
+    const tenantAccess = requireOrganizationAccess(
+      actor,
+      record.organizationId,
+      "Check output access"
+    );
+    if (!tenantAccess.ok) {
+      return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
     }
     return formatMergeGuardCheck({
       mode: record.mode,
@@ -2006,10 +2214,12 @@ async function repositoryOrganizationId(
 async function listRepositorySummaries(
   state: AppState,
   prisma: PrismaClient | undefined,
-  defaultMode: ChangeControlRecord["mode"]
+  defaultMode: ChangeControlRecord["mode"],
+  organizationId?: string
 ) {
   if (prisma) {
     const rows = await prisma.repository.findMany({
+      ...(organizationId ? { where: { organizationId } } : {}),
       include: { currentPolicyVersion: true, settings: true },
       orderBy: { fullName: "asc" }
     });
@@ -2019,6 +2229,7 @@ async function listRepositorySummaries(
         : undefined;
       return {
         id: row.id,
+        organizationId: row.organizationId,
         fullName: row.fullName,
         enabled: row.enabled,
         mode: row.mode ?? row.currentPolicyVersion?.mode ?? defaultMode,
@@ -2035,6 +2246,7 @@ async function listRepositorySummaries(
     string,
     {
       id: string;
+      organizationId?: string | undefined;
       fullName: string;
       enabled: boolean;
       mode: ChangeControlRecord["mode"];
@@ -2047,10 +2259,14 @@ async function listRepositorySummaries(
   >();
 
   for (const record of state.records) {
+    if (organizationId && record.organizationId !== organizationId) {
+      continue;
+    }
     const policy = state.repositoryPolicies.get(record.repositoryId);
     const settings = state.repositorySettings.get(record.repositoryId);
     repositories.set(record.repositoryId, {
       id: record.repositoryId,
+      organizationId: record.organizationId,
       fullName: record.repositoryFullName,
       enabled: settings?.enabled ?? true,
       mode: settings?.mode ?? policy?.mode ?? record.mode,
@@ -2063,10 +2279,17 @@ async function listRepositorySummaries(
   }
 
   for (const policy of state.repositoryPolicies.values()) {
+    const settings = state.repositorySettings.get(policy.repositoryId);
+    const policyOrganizationId =
+      settings?.organizationId ??
+      state.records.find((record) => record.repositoryId === policy.repositoryId)?.organizationId;
+    if (organizationId && policyOrganizationId !== organizationId) {
+      continue;
+    }
     if (!repositories.has(policy.repositoryId)) {
-      const settings = state.repositorySettings.get(policy.repositoryId);
       repositories.set(policy.repositoryId, {
         id: policy.repositoryId,
+        ...(policyOrganizationId ? { organizationId: policyOrganizationId } : {}),
         fullName: policy.repositoryId,
         enabled: settings?.enabled ?? true,
         mode: settings?.mode ?? policy.mode,
@@ -2080,9 +2303,13 @@ async function listRepositorySummaries(
   }
 
   for (const settings of state.repositorySettings.values()) {
+    if (organizationId && settings.organizationId !== organizationId) {
+      continue;
+    }
     if (!repositories.has(settings.repositoryId)) {
       repositories.set(settings.repositoryId, {
         id: settings.repositoryId,
+        organizationId: settings.organizationId,
         fullName: settings.repositoryId,
         enabled: settings.enabled,
         mode: settings.mode ?? defaultMode,
@@ -2476,7 +2703,11 @@ async function listChangeControlRecords(
     return state.records;
   }
   const rows = await prisma.changeControlRecord.findMany({
-    include: { pullRequest: { select: { repositoryId: true } } },
+    include: {
+      pullRequest: {
+        select: { repositoryId: true, repository: { select: { organizationId: true } } }
+      }
+    },
     orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
   });
   return rows.map(changeControlRecordFromRow);
@@ -2520,7 +2751,11 @@ async function listChangeControlRecordPage(
     prisma.changeControlRecord.count({ where }),
     prisma.changeControlRecord.findMany({
       where,
-      include: { pullRequest: { select: { repositoryId: true } } },
+      include: {
+        pullRequest: {
+          select: { repositoryId: true, repository: { select: { organizationId: true } } }
+        }
+      },
       orderBy,
       skip: query.offset,
       take: query.limit
@@ -2610,7 +2845,11 @@ async function getChangeControlRecord(
   }
   const row = await prisma.changeControlRecord.findUnique({
     where: { id },
-    include: { pullRequest: { select: { repositoryId: true } } }
+    include: {
+      pullRequest: {
+        select: { repositoryId: true, repository: { select: { organizationId: true } } }
+      }
+    }
   });
   return row ? changeControlRecordFromRow(row) : state.records.find((item) => item.id === id);
 }
@@ -2679,7 +2918,7 @@ async function saveChangeControlRecord(
   });
   const savedRecord = changeControlRecordFromRow({
     ...persisted,
-    pullRequest: { repositoryId: repository.id }
+    pullRequest: { repositoryId: repository.id, repository: { organizationId: organization.id } }
   });
   rememberRecord(state, savedRecord);
   return savedRecord;
@@ -2837,6 +3076,14 @@ async function recordWebhookDelivery(
   enqueued: boolean
 ): Promise<void> {
   state.deliveries.add(envelope.deliveryId);
+  const repositoryFullName = envelope.repository?.fullName ?? null;
+  const repositoryId = repositoryFullName
+    ? await findRepositoryIdByFullName(state, prisma, repositoryFullName)
+    : undefined;
+  const organizationId = repositoryId
+    ? await repositoryOrganizationId(state, prisma, repositoryId)
+    : state.records.find((record) => record.repositoryFullName === repositoryFullName)
+        ?.organizationId;
   if (!prisma) {
     return;
   }
@@ -2845,7 +3092,9 @@ async function recordWebhookDelivery(
       deliveryId: envelope.deliveryId,
       event: envelope.event,
       action: envelope.action ?? null,
-      repositoryFullName: envelope.repository?.fullName ?? null,
+      organizationId: organizationId ?? null,
+      repositoryId: repositoryId ?? null,
+      repositoryFullName,
       pullRequestNumber:
         envelope.pullRequest?.number ?? envelope.checkRun?.pullRequests[0]?.number ?? null,
       headSha: envelope.pullRequest?.headSha ?? envelope.checkRun?.headSha ?? null,
@@ -2897,7 +3146,7 @@ async function queueOperationalStatus(input: {
   backend: QueueBackend;
   retryPolicy: {
     attempts: number;
-    backoff: { type: "exponential"; delayMs: number };
+    backoff: { type: "exponentialWithJitter"; delayMs: number };
     removeOnComplete: number;
     removeOnFail: number;
   };
@@ -2907,7 +3156,10 @@ async function queueOperationalStatus(input: {
 }> {
   const retryPolicy = {
     attempts: MERGE_GUARD_EVALUATION_ATTEMPTS,
-    backoff: { type: "exponential" as const, delayMs: MERGE_GUARD_EVALUATION_BACKOFF_MS },
+    backoff: {
+      type: "exponentialWithJitter" as const,
+      delayMs: MERGE_GUARD_EVALUATION_BACKOFF_MS
+    },
     removeOnComplete: 100,
     removeOnFail: 500
   };
@@ -2975,9 +3227,10 @@ async function queueOperationalStatus(input: {
 async function findReplayableDelivery(
   state: AppState,
   prisma: PrismaClient | undefined,
-  target: z.infer<typeof queueReplaySchema>
+  target: z.infer<typeof queueReplaySchema>,
+  organizationId?: string
 ): Promise<ReplayableDelivery | undefined> {
-  const inMemoryDelivery = replayableDeliveryFromState(state, target);
+  const inMemoryDelivery = replayableDeliveryFromState(state, target, organizationId);
   if (inMemoryDelivery) {
     return inMemoryDelivery;
   }
@@ -2986,12 +3239,15 @@ async function findReplayableDelivery(
   }
 
   const delivery = target.deliveryId
-    ? await prisma.webhookDelivery.findUnique({ where: { deliveryId: target.deliveryId } })
+    ? await prisma.webhookDelivery.findFirst({
+        where: { deliveryId: target.deliveryId, ...(organizationId ? { organizationId } : {}) }
+      })
     : await prisma.webhookDelivery.findFirst({
         where: {
           repositoryFullName: target.repositoryFullName!,
           pullRequestNumber: target.pullRequestNumber!,
-          enqueued: true
+          enqueued: true,
+          ...(organizationId ? { organizationId } : {})
         },
         orderBy: { createdAt: "desc" }
       });
@@ -3004,7 +3260,8 @@ async function findReplayableDelivery(
 
 function replayableDeliveryFromState(
   state: AppState,
-  target: z.infer<typeof queueReplaySchema>
+  target: z.infer<typeof queueReplaySchema>,
+  organizationId?: string
 ): ReplayableDelivery | undefined {
   const candidates = [...state.queuedEvaluations].reverse();
   const queued = target.deliveryId
@@ -3017,12 +3274,21 @@ function replayableDeliveryFromState(
   if (!queued) {
     return undefined;
   }
+  const matchingRecord = state.records.find(
+    (record) => record.repositoryFullName === queued.envelope.repository?.fullName
+  );
+  const deliveryOrganizationId = matchingRecord?.organizationId ?? "org_local";
+  if (organizationId && deliveryOrganizationId !== organizationId) {
+    return undefined;
+  }
   return {
     envelope: queued.envelope,
     delivery: {
       deliveryId: queued.deliveryId,
       event: queued.envelope.event,
       action: queued.envelope.action ?? null,
+      organizationId: deliveryOrganizationId,
+      repositoryId: matchingRecord?.repositoryId ?? null,
       repositoryFullName: queued.envelope.repository?.fullName ?? null,
       pullRequestNumber: queued.envelope.pullRequest?.number ?? null,
       headSha: queued.envelope.pullRequest?.headSha ?? queued.envelope.checkRun?.headSha ?? null,
@@ -3076,14 +3342,16 @@ async function markWebhookDeliveryReplayed(
 }
 
 async function listRecentWebhookDeliveryFailures(
-  prisma: PrismaClient | undefined
+  prisma: PrismaClient | undefined,
+  organizationId?: string
 ): Promise<Array<Record<string, unknown>>> {
   if (!prisma) {
     return [];
   }
   const deliveries = await prisma.webhookDelivery.findMany({
     where: {
-      lastFailedAt: { not: null }
+      lastFailedAt: { not: null },
+      ...(organizationId ? { organizationId } : {})
     },
     orderBy: { lastFailedAt: "desc" },
     take: QUEUE_FAILED_JOB_LIMIT
@@ -3505,11 +3773,11 @@ function changeControlRecordFromRow(row: {
   decisionJson: unknown;
   createdAt: Date;
   updatedAt: Date;
-  pullRequest?: { repositoryId: string } | null;
+  pullRequest?: { repositoryId: string; repository?: { organizationId: string } | null } | null;
 }): ChangeControlRecord {
   const output = {
     id: row.id,
-    organizationId: "org_local",
+    organizationId: row.pullRequest?.repository?.organizationId ?? "org_local",
     repositoryId: row.pullRequest?.repositoryId ?? repositoryIdFromFullName(row.repositoryFullName),
     repositoryFullName: row.repositoryFullName,
     pullRequestNumber: row.pullRequestNumber,

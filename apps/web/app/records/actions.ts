@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { apiActorHeaders } from "../settings/api-actor-headers";
 import { resolveDashboardActor } from "../settings/actor";
 import type { DashboardActorContext } from "../settings/actor-context";
 
@@ -174,7 +175,7 @@ async function requestJson<T>(
     headers: {
       accept: "application/json",
       "content-type": "application/json",
-      ...actorHeaders(actor),
+      ...apiActorHeaders(actor),
       ...(init.headers ?? {})
     }
   });
@@ -182,21 +183,6 @@ async function requestJson<T>(
     throw new Error(await responseError(response));
   }
   return (await response.json()) as T;
-}
-
-function actorHeaders(actor: DashboardActorContext): Record<string, string> {
-  if (actor.source === "trusted_headers") {
-    return {
-      "x-agentforge-authenticated-actor": actor.login,
-      "x-agentforge-authenticated-role": actor.role,
-      "x-agentforge-authenticated-organization": actor.organizationId
-    };
-  }
-  return {
-    "x-agentforge-actor": actor.login,
-    "x-agentforge-role": actor.role,
-    "x-agentforge-organization": actor.organizationId
-  };
 }
 
 async function responseError(response: Response): Promise<string> {

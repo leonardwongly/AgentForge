@@ -6,6 +6,13 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -30,6 +37,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
       - run: corepack enable
       - run: corepack prepare pnpm@11.1.1 --activate
       - run: pnpm install --frozen-lockfile
@@ -38,6 +47,10 @@ jobs:
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm messaging:validate
+      - run: pnpm policy:validate fixtures/policies/fintech.yaml
+      - run: pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.json
+      - run: pnpm fixtures:run
       - run: pnpm test:unit
       - run: pnpm test:integration
       - run: pnpm build
