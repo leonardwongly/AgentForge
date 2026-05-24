@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   governanceDisposition,
+  governanceDecisionLabel,
   hasOpenRequirements,
   isObservePassWithOpenRequirements,
   loadDashboardData,
@@ -21,7 +22,12 @@ describe("dashboard API data loaders", () => {
   it("treats an empty dashboard API response as an actionable empty state", async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       expect(init?.cache).toBe("no-store");
-      expect(init?.headers).toEqual({ accept: "application/json" });
+      expect(init?.headers).toEqual({
+        accept: "application/json",
+        "x-agentforge-actor": "dashboard-local",
+        "x-agentforge-role": "platform_admin",
+        "x-agentforge-organization": "org_local"
+      });
       expect(init?.signal).toBeInstanceOf(AbortSignal);
       return jsonResponse({ records: [] });
     });
@@ -142,6 +148,21 @@ describe("dashboard API data loaders", () => {
     expect(governanceDisposition(reviewersOnly).detail).toBe(
       "1 reviewer requirement remains open and would block in enforce or optimize mode."
     );
+  });
+
+  it("does not present open-requirement governance as a final passed decision", () => {
+    expect(governanceDecisionLabel(recordWithOpenRequirements())).toBe(
+      "observing; requirements open"
+    );
+    expect(governanceDecisionLabel({ ...recordWithOpenRequirements(), mode: "warn" })).toBe(
+      "warning; requirements open"
+    );
+    expect(
+      governanceDecisionLabel({
+        ...recordWithOpenRequirements({ evidence: 0, reviewers: 0 }),
+        decision: { status: "passed" }
+      })
+    ).toBe("passed");
   });
 });
 

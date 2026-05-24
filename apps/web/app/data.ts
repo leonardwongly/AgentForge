@@ -4,6 +4,8 @@ import type {
   ReviewerRequirement,
   VerifiedFact
 } from "@agentforge/core";
+import { apiActorHeaders } from "./settings/api-actor-headers";
+import { resolveDashboardActor } from "./settings/actor";
 
 export type DashboardRecord = {
   record: ChangeControlRecord;
@@ -152,6 +154,7 @@ export type OnboardingStep = {
 export type SettingsData = {
   githubInstallation: {
     connected: boolean;
+    credentialsConfigured?: boolean | undefined;
     accountLogin?: string | undefined;
     accountType?: string | undefined;
     githubInstallationId?: string | undefined;
@@ -579,6 +582,18 @@ export function governanceDisposition(record: ChangeControlRecord): {
   };
 }
 
+export function governanceDecisionLabel(record: ChangeControlRecord): string {
+  if (hasOpenRequirements(record)) {
+    if (record.mode === "observe") {
+      return "observing; requirements open";
+    }
+    if (record.mode === "warn") {
+      return "warning; requirements open";
+    }
+  }
+  return record.decision?.status ?? "pending";
+}
+
 export function hasAgentSignal(record: ChangeControlRecord): boolean {
   return record.verifiedFindings.some((finding) => finding.type === "agent_signal_detected");
 }
@@ -684,10 +699,12 @@ export function formatDate(value: string): string {
 }
 
 async function fetchApiJson<T>(path: string): Promise<T> {
+  const actor = await resolveDashboardActor();
   const response = await fetch(`${apiBaseUrl}${path}`, {
     cache: "no-store",
     headers: {
-      accept: "application/json"
+      accept: "application/json",
+      ...apiActorHeaders(actor)
     },
     signal: AbortSignal.timeout(API_FETCH_TIMEOUT_MS)
   });

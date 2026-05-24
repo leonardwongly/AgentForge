@@ -25,18 +25,23 @@ export const metadata: Metadata = {
 };
 
 function navigation(repositoryId: string | undefined) {
-  const policyHref = repositoryId ? `/repositories/${repositoryId}/policy` : "/settings";
-  const previewHref = repositoryId ? `/repositories/${repositoryId}/policy-preview` : "/onboarding";
-  return [
+  const items = [
     { href: "/dashboard", label: "Dashboard", icon: Home },
     { href: "/dashboard/blocked-prs", label: "Blocked PRs", icon: GitPullRequestArrow },
     { href: "/dashboard/policy-violations", label: "Policy Findings", icon: ListChecks },
     { href: "/dashboard/overrides", label: "Overrides", icon: ShieldCheck },
     { href: "/dashboard/evidence-completion", label: "Evidence", icon: PieChart },
     { href: "/dashboard/policy-insights", label: "Policy Insights", icon: Lightbulb },
-    { href: "/records", label: "Records", icon: FileCheck },
-    { href: policyHref, label: "Policy", icon: SlidersHorizontal },
-    { href: previewHref, label: "Preview", icon: Gauge },
+    { href: "/records", label: "Records", icon: FileCheck }
+  ];
+  if (repositoryId) {
+    items.push(
+      { href: `/repositories/${repositoryId}/policy`, label: "Policy", icon: SlidersHorizontal },
+      { href: `/repositories/${repositoryId}/policy-preview`, label: "Preview", icon: Gauge }
+    );
+  }
+  return [
+    ...items,
     { href: "/onboarding", label: "Onboarding", icon: ClipboardCheck },
     { href: "/settings", label: "Settings", icon: Settings }
   ];

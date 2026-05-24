@@ -2,8 +2,10 @@ import Link from "next/link";
 import { CheckCircle2, Download, GitBranch, Send, ShieldCheck, XCircle } from "lucide-react";
 import { MetricCard, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../data-source-notice";
+import { AiDraftBlock } from "./ai-draft-block";
 import {
   formatDate,
+  governanceDecisionLabel,
   hasAgentSignal,
   humanize,
   loadRecord,
@@ -63,6 +65,7 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
   const record = item.record;
   const missing = missingEvidence(record);
   const pendingReviewers = pendingRequiredReviewers(record);
+  const decisionLabel = governanceDecisionLabel(record);
   const updateNotice = query?.updated ? evidenceUpdateNotice(query.updated) : undefined;
   const errorNotice = query?.error ? recordErrorNotice(query.error) : undefined;
 
@@ -202,7 +205,7 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
             </div>
             <div>
               <span>Decision</span>
-              <strong>{record.decision?.status ?? "pending"}</strong>
+              <strong>{decisionLabel}</strong>
             </div>
             <div>
               <span>Policy pack</span>
@@ -266,11 +269,13 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                 </li>
               ))}
               <li>
-                <strong>Decision: {record.decision?.status ?? "pending"}</strong>
+                <strong>Decision: {decisionLabel}</strong>
                 <p>
-                  {record.decision?.decidedAt
+                  {record.decision?.decidedAt &&
+                  missing.length === 0 &&
+                  pendingReviewers.length === 0
                     ? formatDate(record.decision.decidedAt)
-                    : "No final decision recorded."}
+                    : "Open requirements remain; no final approval is recorded."}
                 </p>
               </li>
             </ol>
@@ -324,6 +329,9 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                           required
                           rows={3}
                         />
+                        {evidence.aiDraft ? (
+                          <AiDraftBlock evidenceId={evidence.id} draftText={evidence.aiDraft} />
+                        ) : null}
                         <button className="button button--primary" type="submit">
                           <Send size={16} aria-hidden="true" /> Submit evidence
                         </button>

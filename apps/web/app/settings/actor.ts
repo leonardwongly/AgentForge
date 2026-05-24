@@ -6,7 +6,12 @@ import {
 } from "./actor-context";
 
 export async function resolveDashboardActor(): Promise<DashboardActorContext> {
-  const requestHeaders = await headers();
+  let requestHeaders: Awaited<ReturnType<typeof headers>> | undefined;
+  try {
+    requestHeaders = await headers();
+  } catch {
+    requestHeaders = undefined;
+  }
   const actor = resolveDashboardActorContext({
     headers: requestHeaders,
     env: process.env,

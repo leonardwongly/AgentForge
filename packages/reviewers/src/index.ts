@@ -37,7 +37,7 @@ const MAX_CODEOWNERS_GLOBSTARS = 3;
 const neverMatchPattern = /a^/u;
 
 const defaultOptions: Required<ReviewerRoutingOptions> = {
-  maxRequiredReviewersWithoutCritical: 4
+  maxRequiredReviewersWithoutCritical: Number.POSITIVE_INFINITY
 };
 
 export function routeReviewers(

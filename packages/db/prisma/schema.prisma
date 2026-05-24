@@ -275,6 +275,8 @@ model WebhookDelivery {
   deliveryId                String    @unique
   event                     String
   action                    String?
+  organizationId            String?
+  repositoryId              String?
   repositoryFullName        String?
   pullRequestNumber         Int?
   headSha                   String?
@@ -292,6 +294,8 @@ model WebhookDelivery {
   createdAt                 DateTime  @default(now())
 
   @@index([event, action, createdAt])
+  @@index([organizationId, createdAt])
+  @@index([repositoryId, pullRequestNumber])
   @@index([repositoryFullName, pullRequestNumber])
   @@index([evaluationTerminalFailure, lastFailedAt])
 }

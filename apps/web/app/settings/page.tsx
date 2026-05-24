@@ -21,6 +21,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
   const selectedRepository = enabledRepositories[0] ?? settings?.repositories[0];
   const selectedHandling = selectedRepository?.dataHandling ?? settings?.dataHandling;
   const defaultMode = selectedRepository?.mode;
+  const installation = installationDisplay(settings?.githubInstallation);
   const repositoryOwnerMappings =
     settings?.ownerMappings.filter((mapping) =>
       selectedRepository ? mapping.sources.includes(selectedRepository.id) : true
@@ -111,10 +112,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
               <li>
                 <div className="list-row">
                   <span>Installation</span>
-                  <StatusBadge
-                    status={settings?.githubInstallation.connected ? "approved" : "low"}
-                    label={settings?.githubInstallation.connected ? "connected" : "not connected"}
-                  />
+                  <StatusBadge status={installation.status} label={installation.label} />
                 </div>
                 <p>
                   {settings?.githubInstallation.connected
@@ -126,16 +124,10 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                           : undefined
                       ]
                         .filter(Boolean)
-                        .join(" · ") || "GitHub App credentials are configured."
-                    : "No GitHub installation is connected in the runtime data."}
+                        .join(" · ") || "GitHub installation is verified."
+                    : installation.detail}
                 </p>
-                {settings?.githubInstallation.connected &&
-                !settings.githubInstallation.accountLogin &&
-                !settings.githubInstallation.githubInstallationId ? (
-                  <p className="muted">
-                    Credentials are configured, but no installation account has been verified yet.
-                  </p>
-                ) : null}
+                {installation.help ? <p className="muted">{installation.help}</p> : null}
               </li>
               <li>
                 <div className="list-row">
@@ -500,6 +492,34 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
       </section>
     </>
   );
+}
+
+function installationDisplay(installation: SettingsData["githubInstallation"] | undefined): {
+  status: "approved" | "warn" | "low";
+  label: string;
+  detail: string;
+  help?: string | undefined;
+} {
+  if (installation?.connected) {
+    return {
+      status: "approved",
+      label: "verified",
+      detail: "GitHub App installation account is verified."
+    };
+  }
+  if (installation?.credentialsConfigured) {
+    return {
+      status: "warn",
+      label: "credentials only",
+      detail: "GitHub App credentials are configured, but no installation account is verified.",
+      help: "Complete the GitHub App installation flow or receive a signed webhook before enabling governed repositories."
+    };
+  }
+  return {
+    status: "low",
+    label: "not connected",
+    detail: "No GitHub installation is connected in the runtime data."
+  };
 }
 
 function ownerRows(

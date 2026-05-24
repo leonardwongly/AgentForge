@@ -63,17 +63,35 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
           <h1>Onboarding</h1>
           <p>Configure Merge Guard for governed repositories without writing YAML manually.</p>
         </div>
-        <button
-          className="button button--primary"
-          disabled={!selectedRepository}
-          form="onboarding-settings-form"
-          type="submit"
-        >
-          <CheckCircle2 size={16} aria-hidden="true" /> Finish setup
-        </button>
+        {selectedRepository ? (
+          <button className="button button--primary" form="onboarding-settings-form" type="submit">
+            <CheckCircle2 size={16} aria-hidden="true" /> Finish setup
+          </button>
+        ) : (
+          <Link className="button button--primary" href="/settings">
+            <GitBranch size={16} aria-hidden="true" /> Review setup state
+          </Link>
+        )}
       </header>
 
       <section className="page">
+        {!selectedRepository ? (
+          <section className="notice notice--empty">
+            <GitBranch size={18} aria-hidden="true" />
+            <div>
+              <h2>No repositories are connected yet</h2>
+              <p>
+                Install and verify the GitHub App, then send a webhook or run a persisted policy
+                preview so AgentForge can discover repositories before setup can be finished.
+              </p>
+            </div>
+            <div className="control-row">
+              <Link className="button" href="/settings">
+                Review settings
+              </Link>
+            </div>
+          </section>
+        ) : null}
         {params?.updated === "repository-settings" ? (
           <section className="notice">
             <ShieldCheck size={18} aria-hidden="true" />
@@ -445,9 +463,9 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
                     <Play size={16} aria-hidden="true" /> Run preview
                   </Link>
                 ) : (
-                  <button className="button button--primary" disabled type="button">
-                    <Play size={16} aria-hidden="true" /> Run preview
-                  </button>
+                  <Link className="button button--primary" href="/settings">
+                    <GitBranch size={16} aria-hidden="true" /> Configure repository
+                  </Link>
                 )}
               </div>
               <ul className="compact-list">

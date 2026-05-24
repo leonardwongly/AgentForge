@@ -12,6 +12,38 @@ import {
   resolveRuntimeEvaluationContext
 } from "../src/index.js";
 
+const mockPrismaUpsert = vi.fn();
+vi.mock("@agentforge/db", () => {
+  class MockPrismaClient {
+    organization = { upsert: vi.fn().mockResolvedValue({ id: "org" }) };
+    repository = {
+      findFirst: vi.fn().mockResolvedValue({
+        id: "repo",
+        organizationId: "org",
+        enabled: true,
+        currentPolicyVersion: { contentYaml: "..." },
+        settings: { llmFeatures: true },
+        ownerMappings: []
+      }),
+      upsert: vi.fn().mockResolvedValue({ id: "repo" })
+    };
+    pullRequest = { upsert: vi.fn().mockResolvedValue({ id: "pr" }) };
+    changeControlRecord = {
+      upsert: mockPrismaUpsert
+    };
+    evaluation = { create: vi.fn().mockResolvedValue({ id: "eval" }) };
+    verifiedFactRecord = { createMany: vi.fn().mockResolvedValue({}) };
+    evidenceRequirementRecord = { createMany: vi.fn().mockResolvedValue({}) };
+    reviewerRequirementRecord = { createMany: vi.fn().mockResolvedValue({}) };
+    checkRun = { create: vi.fn().mockResolvedValue({}) };
+    policyVersion = { findFirst: vi.fn().mockResolvedValue({ id: "pol" }) };
+    auditEvent = { upsert: vi.fn().mockResolvedValue({}) };
+  }
+  return {
+    PrismaClient: MockPrismaClient
+  };
+});
+
 const mutableEnvKeys = [
   "NODE_ENV",
   "DATABASE_URL",
@@ -131,6 +163,44 @@ describe("Merge Guard worker evaluation jobs", () => {
     });
   });
 
+  it("resolves llmFeatures from the repository settings if prisma is defined", async () => {
+    const pr = await loadPr("billing-path.json");
+    const policyYaml = await loadPolicy("fintech.yaml");
+    const config = loadConfig();
+    const prisma = {
+      repository: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "repo-123",
+          organizationId: "org-123",
+          fullName: pr.repositoryFullName,
+          enabled: true,
+          currentPolicyVersion: {
+            contentYaml: policyYaml
+          },
+          settings: {
+            sourceCodeStorage: true,
+            fullDiffRetention: "30d",
+            redactSecrets: true,
+            llmFeatures: true
+          },
+          ownerMappings: []
+        })
+      }
+    };
+
+    const runtime = await resolveRuntimeEvaluationContext({
+      prisma: prisma as never,
+      pr,
+      config
+    });
+
+    expect(runtime).toMatchObject({
+      organizationId: "org-123",
+      policyYaml,
+      llmFeatures: true
+    });
+  });
+
   it("fetches live GitHub PR facts before evaluating webhook jobs and publishing checks", async () => {
     const pr = await loadPr("billing-path.json");
     const envelope = webhookEnvelope(pr);
@@ -171,6 +241,41 @@ describe("Merge Guard worker evaluation jobs", () => {
     expect(published[0]?.result.findings.map((finding) => finding.type)).toContain(
       "sensitive_path_changed"
     );
+  });
+
+  it("ignores stale check_run webhooks without publishing a Merge Guard check", async () => {
+    const pr = await loadPr("billing-path.json");
+    const published = vi.fn();
+
+    const result = await processMergeGuardEvaluationJob({
+      deliveryId: "delivery-stale-check-run",
+      pr,
+      envelope: {
+        ...webhookEnvelope(pr),
+        deliveryId: "delivery-stale-check-run",
+        event: "check_run",
+        action: "completed",
+        checkRun: {
+          id: 99,
+          name: "ci",
+          status: "completed",
+          conclusion: "success",
+          headSha: "stale-sha",
+          pullRequests: [{ number: pr.pullRequestNumber, headSha: "stale-sha" }]
+        }
+      },
+      policyYaml: await loadPolicy("fintech.yaml"),
+      githubCheckPublisher: published
+    });
+
+    expect(result).toMatchObject({
+      recordId: "stale_check_run:delivery-stale-check-run",
+      repositoryFullName: pr.repositoryFullName,
+      pullRequestNumber: pr.pullRequestNumber,
+      checkConclusion: "neutral",
+      checkPublished: false
+    });
+    expect(published).not.toHaveBeenCalled();
   });
 
   it("uses verified GitHub team membership to clear required team reviewers", async () => {
@@ -310,6 +415,45 @@ describe("Merge Guard worker evaluation jobs", () => {
     });
     expect(JSON.stringify(updateMany.mock.calls)).not.toContain("envelope");
     expect(JSON.stringify(updateMany.mock.calls)).not.toContain("payload");
+  });
+
+  it("generates AI pre-drafts and persists them inside requiredEvidenceJson when llmFeatures is enabled", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/db";
+    process.env.NODE_ENV = "development";
+    process.env.LLM_FEATURES = "true";
+
+    const pr = await loadPr("billing-path.json");
+    const envelope = webhookEnvelope(pr);
+
+    mockPrismaUpsert.mockResolvedValue({
+      id: "record-123",
+      pullRequestId: "pr"
+    });
+
+    const result = await processMergeGuardEvaluationJob({
+      deliveryId: envelope.deliveryId,
+      envelope,
+      policyYaml: await loadPolicy("fintech.yaml"),
+      githubClient: githubClientForPr(pr)
+    });
+
+    expect(result.status).toBe("warn");
+    expect(mockPrismaUpsert).toHaveBeenCalled();
+
+    const upsertCall = mockPrismaUpsert.mock.calls[0];
+    const updateData = upsertCall[0].update;
+    const createData = upsertCall[0].create;
+
+    expect(updateData.requiredEvidenceJson[0]).toMatchObject({
+      kind: "rollback_plan",
+      status: "missing",
+      aiDraft: expect.stringContaining("### Rollback Plan for Database Migration")
+    });
+    expect(createData.requiredEvidenceJson[0]).toMatchObject({
+      kind: "rollback_plan",
+      status: "missing",
+      aiDraft: expect.stringContaining("### Rollback Plan for Database Migration")
+    });
   });
 });
 

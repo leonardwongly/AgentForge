@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import type { ChangeControlRecord } from "@agentforge/core";
 import { createApp, createInitialState } from "../src/index.js";
 
+function actorHeaders(organizationId = "org_local"): Record<string, string> {
+  return {
+    "x-agentforge-actor": "auditor",
+    "x-agentforge-role": "auditor",
+    "x-agentforge-organization": organizationId
+  };
+}
+
 describe("dashboard pagination and bounded exports", () => {
   it("paginates and filters dashboard records with bounded query params", async () => {
     const state = createInitialState();
@@ -14,7 +22,8 @@ describe("dashboard pagination and bounded exports", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: "/api/dashboard/records?status=block&limit=1&offset=1&sort=pr_asc"
+      url: "/api/dashboard/records?status=block&limit=1&offset=1&sort=pr_asc",
+      headers: actorHeaders()
     });
 
     expect(response.statusCode).toBe(200);
@@ -36,7 +45,8 @@ describe("dashboard pagination and bounded exports", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: "/api/dashboard/records?limit=10000"
+      url: "/api/dashboard/records?limit=10000",
+      headers: actorHeaders()
     });
 
     expect(response.statusCode).toBe(400);
@@ -53,7 +63,8 @@ describe("dashboard pagination and bounded exports", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: "/api/dashboard/records?limit=50&offset=100"
+      url: "/api/dashboard/records?limit=50&offset=100",
+      headers: actorHeaders()
     });
 
     expect(response.statusCode).toBe(200);
@@ -140,7 +151,8 @@ describe("dashboard pagination and bounded exports", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: "/api/dashboard/policy-insights?limit=50"
+      url: "/api/dashboard/policy-insights?limit=50",
+      headers: actorHeaders()
     });
 
     expect(response.statusCode).toBe(200);

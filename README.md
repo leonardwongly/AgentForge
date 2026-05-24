@@ -126,11 +126,15 @@ Default local endpoints:
 - MinIO console: `http://localhost:9001`
 
 The local Postgres port is `15432` to avoid conflicts with a workstation Postgres on `5432`.
+Redis is required for queue-backed API and worker flows. MinIO is optional for
+routine development and is only needed when testing local export or
+object-storage behavior.
 
 ## Common Commands
 
 ```bash
 # Run services
+pnpm dev:preflight
 pnpm dev
 pnpm dev:api
 pnpm dev:web
@@ -208,8 +212,15 @@ When `NODE_ENV=production`, startup fails closed if webhook signing, redaction, 
 For routine development, run all three application services:
 
 ```bash
+pnpm dev:preflight
 pnpm dev
 ```
+
+`pnpm dev` runs the same local preflight before starting the stack. If Docker,
+Postgres, Redis, or `.env` are missing, the command fails before noisy API or
+worker connection errors and prints the exact setup command to run. MinIO is
+reported as a warning when it is unavailable because it is optional unless you
+are testing local export or object-storage behavior.
 
 To run services separately:
 
@@ -424,6 +435,19 @@ docker compose up -d redis
 pnpm dev:worker
 curl -fsS http://localhost:4000/ready
 ```
+
+### MinIO is unavailable in local development
+
+MinIO backs optional local export and object-storage experiments. Start it only
+when those flows are under test:
+
+```bash
+docker compose up -d minio
+curl -fsS http://localhost:9000/minio/health/live
+```
+
+The local console is `http://localhost:9001` with username `agentforge` and
+password `agentforge-local`.
 
 ### GitHub webhooks are rejected locally
 
