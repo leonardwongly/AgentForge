@@ -47,7 +47,7 @@ export default async function BlockedPrsPage() {
           <div className="panel-header">
             <div>
               <h2>Action-required pull requests</h2>
-              <p>Blocked PRs appear first, followed by missing evidence and reviewer queues.</p>
+              <p>Blocked PRs appear first, followed by open evidence and reviewer queues.</p>
             </div>
             <StatusBadge status="block" label={`${actionRequired.length} action required`} />
           </div>
@@ -57,7 +57,7 @@ export default async function BlockedPrsPage() {
                 <th>Repository</th>
                 <th>PR</th>
                 <th>Policy finding</th>
-                <th>Missing evidence</th>
+                <th>Open evidence</th>
                 <th>Required reviewers</th>
                 <th>Mode</th>
                 <th>Links</th>

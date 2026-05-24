@@ -59,7 +59,7 @@ test("fresh onboarding can create a local sample preview", async ({ page }) => {
 
   await expect(page.getByRole("heading", { name: "Sample preview created" })).toBeVisible();
   await expect(page.locator("select#repositoryId")).toContainText("acme/first-run-payments");
-  await expect(page.getByRole("button", { name: "Finish setup" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save setup progress" })).toBeVisible();
 });
 
 test("dashboard shows action-required pull requests first", async ({ page, request }) => {
@@ -70,7 +70,7 @@ test("dashboard shows action-required pull requests first", async ({ page, reque
     page.getByLabel("Primary navigation").getByRole("link", { name: "Blocked PRs" })
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "Priority queue" })).toBeVisible();
-  await expect(page.getByText("required evidence missing").first()).toBeVisible();
+  await expect(page.getByText("evidence requirement open").first()).toBeVisible();
   await expect(page.getByText("required reviewer pending").first()).toBeVisible();
 });
 

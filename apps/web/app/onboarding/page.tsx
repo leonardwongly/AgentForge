@@ -43,6 +43,8 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
     onboarding.steps.length === 0
       ? 0
       : Math.round((completedSteps / onboarding.steps.length) * 100);
+  const canFinishSetup = onboarding.steps.length > 0 && completedSteps === onboarding.steps.length;
+  const githubInstallation = settings.settings?.githubInstallation;
   const selectedMode =
     enabledRepositories[0]?.mode ?? repositories.repositories[0]?.mode ?? "observe";
   const selectedRepository = enabledRepositories[0] ?? repositories.repositories[0];
@@ -69,8 +71,13 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
         </div>
         {selectedRepository ? (
           <button className="button button--primary" form="onboarding-settings-form" type="submit">
-            <CheckCircle2 size={16} aria-hidden="true" /> Finish setup
+            <CheckCircle2 size={16} aria-hidden="true" />{" "}
+            {canFinishSetup ? "Finish setup" : "Save setup progress"}
           </button>
+        ) : githubInstallation?.installUrl ? (
+          <Link className="button button--primary" href={githubInstallation.installUrl}>
+            <GitBranch size={16} aria-hidden="true" /> Install GitHub App
+          </Link>
         ) : canRunSamplePreview ? (
           <form action={runSamplePolicyPreview}>
             <button className="button button--primary" type="submit">
@@ -96,6 +103,11 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
               </p>
             </div>
             <div className="control-row">
+              {githubInstallation?.installUrl ? (
+                <Link className="button" href={githubInstallation.installUrl}>
+                  Install GitHub App
+                </Link>
+              ) : null}
               {canRunSamplePreview ? (
                 <form action={runSamplePolicyPreview}>
                   <button className="button" type="submit">
@@ -133,6 +145,21 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
                   : ""}
               </p>
             </div>
+          </section>
+        ) : null}
+        {githubInstallation?.status === "pending_approval" ? (
+          <section className="notice">
+            <GitBranch size={18} aria-hidden="true" />
+            <div>
+              <h2>GitHub installation is waiting for approval</h2>
+              <p>
+                A platform admin must approve the installation in Settings before AgentForge can
+                publish governed repository checks.
+              </p>
+            </div>
+            <Link className="button" href="/settings">
+              Review installation
+            </Link>
           </section>
         ) : null}
         {params?.error ? (
@@ -516,7 +543,7 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
                       </div>
                       <p>
                         {missing.length > 0
-                          ? `Missing evidence: ${summarizeEvidenceRequirements(missing)}`
+                          ? `Open evidence: ${summarizeEvidenceRequirements(missing)}`
                           : reviewers.length > 0
                             ? `Pending reviewers: ${summarizeReviewerRequirements(reviewers)}`
                             : "Configured policy requirements are satisfied."}

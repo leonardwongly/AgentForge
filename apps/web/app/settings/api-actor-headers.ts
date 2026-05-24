@@ -2,7 +2,10 @@ import { createHmac } from "node:crypto";
 import type { DashboardActorContext } from "./actor-context";
 
 export function apiActorHeaders(actor: DashboardActorContext): Record<string, string> {
-  if (actor.source !== "trusted_headers") {
+  if (
+    actor.source === "local_environment" &&
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS !== "true"
+  ) {
     return {
       "x-agentforge-actor": actor.login,
       "x-agentforge-role": actor.role,

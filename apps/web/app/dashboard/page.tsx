@@ -48,9 +48,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
       <header className="topbar">
         <div>
           <h1>Merge Guard Dashboard</h1>
-          <p>
-            Action-first governance for blocked PRs, missing evidence, reviewers, and overrides.
-          </p>
+          <p>Action-first governance for blocked PRs, open evidence, reviewers, and overrides.</p>
         </div>
         <div className="control-row">
           <Link className="button" href="/dashboard/blocked-prs">
@@ -102,12 +100,12 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
             tone="block"
           />
           <MetricCard
-            label="Missing evidence"
+            label="Open evidence"
             value={String(summary.missingEvidence)}
             detail={
               summary.missingEvidence > 0
-                ? "Required evidence missing across action-required pull requests."
-                : "No required evidence is missing across evaluated PRs."
+                ? "Required evidence is missing, provided but unapproved, or rejected."
+                : "No evidence requirements are open across evaluated PRs."
             }
             tone="warn"
           />
@@ -134,7 +132,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
             <div className="panel-header">
               <div>
                 <h2>Priority queue</h2>
-                <p>Default order: blocked PRs, missing evidence, required reviewers, overrides.</p>
+                <p>Default order: blocked PRs, open evidence, required reviewers, overrides.</p>
               </div>
               <Link className="button" href="/dashboard/blocked-prs">
                 <GitPullRequestArrow size={16} aria-hidden="true" /> Blocked PRs
@@ -143,7 +141,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
             <ol className="action-list">
               {actionRequired.length === 0 ? (
                 <li>
-                  No action-required PRs. Evaluated PRs with missing evidence or required reviewer
+                  No action-required PRs. Evaluated PRs with open evidence or required reviewer
                   approval will appear here.
                 </li>
               ) : null}
@@ -174,7 +172,8 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
                       ) : null}
                       {missing.length > 0 ? (
                         <span className="status-badge status-badge--missing">
-                          {missing.length} required evidence missing
+                          {missing.length} evidence requirement{missing.length === 1 ? "" : "s"}{" "}
+                          open
                         </span>
                       ) : null}
                       {pendingReviewers.length > 0 ? (
@@ -242,8 +241,8 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           <section className="panel">
             <div className="panel-header">
               <div>
-                <h2>Missing evidence</h2>
-                <p>Open evidence requirements by type.</p>
+                <h2>Open evidence</h2>
+                <p>Evidence requirements still missing, awaiting approval, or rejected.</p>
               </div>
               <FileWarning size={18} aria-hidden="true" />
             </div>

@@ -22,18 +22,30 @@ export async function runSamplePolicyPreview(): Promise<void> {
       readFixtureJson<Record<string, unknown>>("repos/billing-path.json"),
       readFixtureText("policies/fintech.yaml")
     ]);
-    const payload = await requestJson<{ record: { id: string } }>(actor, "/api/policies/preview", {
-      method: "POST",
-      body: JSON.stringify({
-        contentYaml,
-        persist: true,
-        pr: {
-          ...pr,
-          repositoryFullName: "acme/first-run-payments",
-          pullRequestNumber: 101
-        }
-      })
-    });
+    const payload = await requestJson<{ record: { id: string; repositoryId: string } }>(
+      actor,
+      "/api/policies/preview",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          contentYaml,
+          persist: true,
+          pr: {
+            ...pr,
+            repositoryFullName: "acme/first-run-payments",
+            pullRequestNumber: 101
+          }
+        })
+      }
+    );
+    await requestJson(
+      actor,
+      `/api/repositories/${encodeURIComponent(payload.record.repositoryId)}/policy`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ contentYaml })
+      }
+    );
     recordId = payload.record.id;
   } catch (error) {
     void error;

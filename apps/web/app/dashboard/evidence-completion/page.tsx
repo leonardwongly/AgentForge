@@ -103,7 +103,7 @@ export default async function EvidenceCompletionPage({
             <div className="panel-header">
               <div>
                 <h2>Evidence by requirement</h2>
-                <p>Missing evidence is surfaced before broad status summaries.</p>
+                <p>Open evidence is surfaced before broad status summaries.</p>
               </div>
               <CheckCircle2 size={18} aria-hidden="true" />
             </div>
@@ -132,7 +132,7 @@ export default async function EvidenceCompletionPage({
           <section className="panel">
             <div className="panel-header">
               <div>
-                <h2>Missing evidence queue</h2>
+                <h2>Open evidence queue</h2>
                 <p>Each item is tied to a policy finding and Change Control Record.</p>
               </div>
               <FileWarning size={18} aria-hidden="true" />
@@ -140,7 +140,7 @@ export default async function EvidenceCompletionPage({
             <ul className="compact-list">
               {data.records.filter((item) => missingEvidence(item.record).length > 0).length ===
               0 ? (
-                <li>No required evidence is missing in the current data set.</li>
+                <li>No evidence requirements are open in the current data set.</li>
               ) : null}
               {data.records
                 .filter((item) => missingEvidence(item.record).length > 0)

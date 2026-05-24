@@ -158,6 +158,13 @@ export type SettingsData = {
     accountLogin?: string | undefined;
     accountType?: string | undefined;
     githubInstallationId?: string | undefined;
+    status?: string | undefined;
+    pendingApprovalCount?: number | undefined;
+    installUrl?: string | undefined;
+  };
+  auth?: {
+    builtInGithubOAuthConfigured: boolean;
+    trustedProxyConfigured: boolean;
   };
   repositories: RepositoryOption[];
   dataHandling: {
@@ -189,6 +196,27 @@ export type SettingsData = {
     storageBucketConfigured: boolean;
     storageRegion?: string | undefined;
   };
+};
+
+export type GithubInstallationAdminData = {
+  installations: Array<{
+    id: string;
+    organizationId?: string | undefined;
+    githubInstallationId: string;
+    accountLogin: string;
+    accountType: string;
+    status: string;
+    approvedBy?: string | undefined;
+    approvedAt?: string | undefined;
+    rejectedBy?: string | undefined;
+    rejectedAt?: string | undefined;
+    archivedAt?: string | undefined;
+    lastWebhookAt: string;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  installUrl?: string | undefined;
+  credentialsConfigured: boolean;
 };
 
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:4000";
@@ -463,6 +491,30 @@ export async function loadSettings(): Promise<{
         error instanceof Error
           ? `Settings API unavailable: ${error.message}.`
           : "Settings API unavailable."
+    };
+  }
+}
+
+export async function loadGithubInstallations(): Promise<{
+  data: GithubInstallationAdminData | undefined;
+  source: DashboardDataSource;
+  message: string;
+}> {
+  try {
+    const data = await fetchApiJson<GithubInstallationAdminData>("/api/github/installations");
+    return {
+      data,
+      source: "api",
+      message: "Loaded GitHub installation administration state from the API."
+    };
+  } catch (error) {
+    return {
+      data: undefined,
+      source: "unavailable",
+      message:
+        error instanceof Error
+          ? `GitHub installation API unavailable: ${error.message}.`
+          : "GitHub installation API unavailable."
     };
   }
 }
