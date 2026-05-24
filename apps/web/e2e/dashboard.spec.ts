@@ -4,6 +4,11 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import type { ChangeControlRecord, PullRequestInput } from "@agentforge/core";
 
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://127.0.0.1:4100";
+const readActorHeaders = {
+  "x-agentforge-actor": "playwright",
+  "x-agentforge-role": "platform_admin",
+  "x-agentforge-organization": "org_local"
+};
 
 async function seedMergeGuardRecord(
   request: APIRequestContext,
@@ -121,7 +126,9 @@ test("settings form persists repository mode, retention, and owner mappings", as
   };
   expect(previewPayload.result).toMatchObject({ mode: "optimize", status: "block" });
 
-  const settingsResponse = await request.get(`${apiBaseUrl}/api/settings`);
+  const settingsResponse = await request.get(`${apiBaseUrl}/api/settings`, {
+    headers: readActorHeaders
+  });
   expect(settingsResponse.ok()).toBeTruthy();
   const settingsPayload = (await settingsResponse.json()) as {
     ownerMappings: Array<{ ownerKey?: string; reviewer: string; sources: string[] }>;
@@ -219,7 +226,8 @@ test("evidence workflow resolves requirements through record actions", async ({
   await expect(page.getByText("pass").first()).toBeVisible();
 
   const updated = await request.get(
-    `${apiBaseUrl}/api/pull-requests/${record.id}/change-control-record`
+    `${apiBaseUrl}/api/pull-requests/${record.id}/change-control-record`,
+    { headers: readActorHeaders }
   );
   expect(updated.ok()).toBeTruthy();
   const updatedPayload = (await updated.json()) as { record: ChangeControlRecord };
