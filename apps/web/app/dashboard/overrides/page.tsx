@@ -5,12 +5,15 @@ import { DataSourceNotice } from "../../data-source-notice";
 import { formatDate, getDashboardSummary, loadDashboardData } from "../../data";
 
 export default async function OverridesPage() {
-  const data = await loadDashboardData({ lifecycle: "overridden", limit: 50 });
-  const summary = getDashboardSummary(data.records);
-  const overrides = data.records.filter((item) => item.record.lifecycle === "overridden");
+  const [allData, overrideData] = await Promise.all([
+    loadDashboardData({ limit: 50 }),
+    loadDashboardData({ lifecycle: "overridden", limit: 50 })
+  ]);
+  const summary = getDashboardSummary(allData.records);
+  const overrides = overrideData.records.filter((item) => item.record.lifecycle === "overridden");
   const topReason = overrides[0]?.override?.reason ?? "No override reason recorded in this window.";
-  const reviewPolicyHref = data.records[0]
-    ? `/repositories/${data.records[0].record.repositoryId}/policy`
+  const reviewPolicyHref = allData.records[0]
+    ? `/repositories/${allData.records[0].record.repositoryId}/policy`
     : "/settings";
   const reasonCaptureRate =
     overrides.length === 0
@@ -60,7 +63,29 @@ export default async function OverridesPage() {
       </header>
 
       <section className="page">
-        <DataSourceNotice {...data} />
+        {allData.source === "empty" || allData.source === "unavailable" ? (
+          <DataSourceNotice {...allData} />
+        ) : null}
+        {allData.source === "api" && overrideData.source === "unavailable" ? (
+          <DataSourceNotice {...overrideData} />
+        ) : null}
+        {allData.source === "api" && overrideData.source === "empty" ? (
+          <section className="notice notice--empty">
+            <ShieldCheck size={18} aria-hidden="true" />
+            <div>
+              <h2>No authorized overrides yet</h2>
+              <p>
+                Change Control Records are available, but no authorized override activity is
+                recorded in the current window.
+              </p>
+            </div>
+            <div className="control-row">
+              <Link className="button" href="/records">
+                Review records
+              </Link>
+            </div>
+          </section>
+        ) : null}
 
         <div className="metrics-grid">
           <MetricCard
