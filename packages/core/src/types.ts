@@ -230,6 +230,9 @@ export type AuditEventAction =
   | "check_published"
   | "record_exported"
   | "webhook_replayed"
+  | "github_installation_verification_recorded"
+  | "github_installation_approved"
+  | "github_installation_rejected"
   | "retention_changed"
   | "repository_settings_changed"
   | "owner_mapping_changed";

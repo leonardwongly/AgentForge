@@ -105,9 +105,15 @@ export class RedisCacheManager implements CacheBackend {
   }
 
   async disconnect(): Promise<void> {
-    if (this.redis) {
+    const redis = this.redis;
+    this.redis = null;
+    if (redis) {
       try {
-        await this.redis.quit();
+        if (redis.status === "ready") {
+          await redis.quit();
+        } else {
+          redis.disconnect(false);
+        }
       } catch {
         // ignore
       }

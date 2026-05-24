@@ -12,6 +12,12 @@ const mutableEnvKeys = [
   "REDIS_URL",
   "NODE_ENV",
   "GITHUB_WEBHOOK_SECRET",
+  "GITHUB_APP_ID",
+  "GITHUB_APP_PRIVATE_KEY",
+  "GITHUB_APP_SLUG",
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "SESSION_SECRET",
   "SOURCE_CODE_STORAGE",
   "FULL_DIFF_RETENTION",
   "REDACT_SECRETS",
@@ -77,7 +83,15 @@ function authenticatedActorHeaders(
 
 function setProductionProxyAuthEnv() {
   process.env.NODE_ENV = "production";
+  delete process.env.REDIS_URL;
   process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
+  process.env.GITHUB_APP_ID = "123456";
+  process.env.GITHUB_APP_PRIVATE_KEY =
+    "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----";
+  process.env.GITHUB_APP_SLUG = "agentforge-test";
+  process.env.GITHUB_CLIENT_ID = "Iv1.test";
+  process.env.GITHUB_CLIENT_SECRET = "github-client-secret";
+  process.env.SESSION_SECRET = "session-secret-32-characters-long";
   process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
   process.env.AGENTFORGE_API_PROXY_SECRET = "test-proxy-secret-123456";
   process.env.AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS = "true";
