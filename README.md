@@ -178,32 +178,33 @@ Copy [.env.example](.env.example) to `.env` for local development. Defaults are 
 
 Important variables:
 
-| Variable                                          | Purpose                                                                                                         |
-| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                                    | PostgreSQL connection string. Local default is `postgresql://agentforge:agentforge@localhost:15432/agentforge`. |
-| `REDIS_URL`                                       | Redis connection string used by BullMQ. Local default is `redis://localhost:6379`.                              |
-| `NODE_ENV`                                        | `development`, `test`, or `production`. Production enables fail-closed config checks.                           |
-| `GITHUB_APP_ID`                                   | Numeric GitHub App ID.                                                                                          |
-| `GITHUB_APP_PRIVATE_KEY`                          | GitHub App private key. Use escaped newlines in hosted environment variables when required.                     |
-| `GITHUB_INSTALLATION_ID`                          | Optional installation id for smoke tests. Runtime jobs use webhook payload installation ids.                    |
-| `GITHUB_WEBHOOK_SECRET`                           | Shared secret used to verify GitHub webhook signatures. Required in production.                                 |
-| `ALLOW_UNSIGNED_GITHUB_WEBHOOKS`                  | Local fixture escape hatch. Keep `false` outside explicit local replay tests.                                   |
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`       | GitHub App OAuth values for installation flows.                                                                 |
-| `APP_BASE_URL`                                    | Public dashboard URL. Local default is `http://localhost:3000`.                                                 |
-| `API_BASE_URL`                                    | Public API URL. Local default is `http://localhost:4000`.                                                       |
-| `DEFAULT_POLICY_MODE`                             | `observe`, `warn`, `enforce`, or `optimize`.                                                                    |
-| `SOURCE_CODE_STORAGE`                             | Must remain `false` for the V1 production posture.                                                              |
-| `FULL_DIFF_RETENTION`                             | `disabled`, `7d`, `30d`, or `custom`.                                                                           |
-| `REDACT_SECRETS`                                  | Redacts secrets in logs, snippets, check output, dashboard display, exports, and prompts.                       |
-| `LLM_FEATURES`                                    | Optional advisory AI features. Blocking decisions never depend on this.                                         |
-| `AUDIT_RECORD_RETENTION_DAYS`                     | Retention period for audit and change-control records.                                                          |
-| `EXPORT_STORAGE_BUCKET` / `EXPORT_STORAGE_REGION` | Optional object storage settings for exports.                                                                   |
-| `SESSION_SECRET`                                  | Session signing secret. Required before production deployment.                                                  |
-| `AGENTFORGE_API_TRUST_PROXY_HEADERS`              | Trust authenticated API actor headers only behind a verified stripping auth proxy.                              |
-| `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS`        | Local-only API fallback for raw actor headers. Keep `false` in deployed environments.                           |
-| `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS`        | Trust authenticated dashboard actor headers only behind a verified auth proxy.                                  |
-| `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR`          | Local-only dashboard fallback. Keep `false` in deployed environments.                                           |
-| `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS`            | Production acknowledgement that ingress strips spoofable identity headers before injecting trusted headers.     |
+| Variable                                          | Purpose                                                                                                                |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                                    | PostgreSQL connection string. Local default is `postgresql://agentforge:agentforge@localhost:15432/agentforge`.        |
+| `REDIS_URL`                                       | Redis connection string used by BullMQ. Local default is `redis://localhost:6379`.                                     |
+| `NODE_ENV`                                        | `development`, `test`, or `production`. Production enables fail-closed config checks.                                  |
+| `GITHUB_APP_ID`                                   | Numeric GitHub App ID.                                                                                                 |
+| `GITHUB_APP_PRIVATE_KEY`                          | GitHub App private key. Use escaped newlines in hosted environment variables when required.                            |
+| `GITHUB_INSTALLATION_ID`                          | Optional installation id for smoke tests. Runtime jobs use webhook payload installation ids.                           |
+| `GITHUB_WEBHOOK_SECRET`                           | Shared secret used to verify GitHub webhook signatures. Required in production.                                        |
+| `ALLOW_UNSIGNED_GITHUB_WEBHOOKS`                  | Local fixture escape hatch. Keep `false` outside explicit local replay tests.                                          |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`       | GitHub App OAuth values for installation flows.                                                                        |
+| `APP_BASE_URL`                                    | Public dashboard URL. Local default is `http://localhost:3000`.                                                        |
+| `API_BASE_URL`                                    | Public API URL. Local default is `http://localhost:4000`.                                                              |
+| `DEFAULT_POLICY_MODE`                             | `observe`, `warn`, `enforce`, or `optimize`.                                                                           |
+| `SOURCE_CODE_STORAGE`                             | Must remain `false` for the V1 production posture.                                                                     |
+| `FULL_DIFF_RETENTION`                             | `disabled`, `7d`, `30d`, or `custom`.                                                                                  |
+| `REDACT_SECRETS`                                  | Redacts secrets in logs, snippets, check output, dashboard display, exports, and prompts.                              |
+| `LLM_FEATURES`                                    | Optional advisory AI features. Blocking decisions never depend on this.                                                |
+| `AUDIT_RECORD_RETENTION_DAYS`                     | Retention period for audit and change-control records.                                                                 |
+| `EXPORT_STORAGE_BUCKET` / `EXPORT_STORAGE_REGION` | Optional object storage settings for exports.                                                                          |
+| `SESSION_SECRET`                                  | Session signing secret. Required before production deployment.                                                         |
+| `AGENTFORGE_API_TRUST_PROXY_HEADERS`              | Trust authenticated API actor headers only behind a verified stripping auth proxy.                                     |
+| `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS`        | Local-only API fallback for raw actor headers. Keep `false` in deployed environments.                                  |
+| `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS`        | Trust authenticated dashboard actor headers only behind a verified auth proxy.                                         |
+| `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR`          | Local-only dashboard fallback. Keep `false` in deployed environments.                                                  |
+| `AGENTFORGE_ENABLE_SAMPLE_PREVIEW`                | Explicitly exposes the local sample-preview onboarding action in production-like E2E runs. Keep `false` when deployed. |
+| `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS`            | Production acknowledgement that ingress strips spoofable identity headers before injecting trusted headers.            |
 
 When `NODE_ENV=production`, startup fails closed if webhook signing, redaction, source-code storage, trusted proxy identity, local actor fallback, or header-stripping requirements are unsafe.
 
