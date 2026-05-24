@@ -207,8 +207,9 @@ export async function loadDashboardData(
         records: [],
         pageInfo: payload.pageInfo,
         source: "empty",
-        message:
-          "No evaluated PRs are stored yet. Send a GitHub webhook or run a policy preview to create Change Control Records."
+        message: request.repositoryId
+          ? "No evaluated PRs are stored for this repository yet. Send a GitHub webhook or run a persisted policy preview for this repository first."
+          : "No evaluated PRs are stored yet. Send a GitHub webhook or run a policy preview to create Change Control Records."
       };
     }
     return {
