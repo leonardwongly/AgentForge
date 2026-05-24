@@ -10,3 +10,4 @@ allowBuilds:
   sharp: true
 overrides:
   postcss: 8.5.14
+  qs: 6.15.2
