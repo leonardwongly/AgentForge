@@ -903,6 +903,12 @@ describe("security and audit hardening", () => {
       url: "/api/dashboard/records"
     });
     expect(unauthenticatedDashboard.statusCode).toBe(401);
+    expect(unauthenticatedDashboard.json()).toMatchObject({
+      code: "api_actor_required",
+      error: "Authenticated actor headers are required for this governance action.",
+      requestId: expect.any(String)
+    });
+    expect(unauthenticatedDashboard.body).not.toContain("x-agentforge");
 
     const orgARecords = await app.inject({
       method: "GET",

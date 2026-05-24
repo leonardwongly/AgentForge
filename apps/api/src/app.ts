@@ -606,7 +606,23 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   const requireReadActor = (request: FastifyRequest, reply: FastifyReply) => {
     const actor = requireApiActor(request);
     if (isAuthzFailure(actor)) {
-      void reply.code(actor.statusCode).send({ error: actor.reason });
+      const errorCode =
+        actor.statusCode === 401 ? "api_actor_required" : "api_actor_not_authorized";
+      request.log.warn(
+        {
+          code: errorCode,
+          method: request.method,
+          requestId: request.id,
+          route: request.routeOptions.url ?? request.url,
+          statusCode: actor.statusCode
+        },
+        "Rejected governance read request"
+      );
+      void reply.code(actor.statusCode).send({
+        code: errorCode,
+        error: actor.reason,
+        requestId: request.id
+      });
       return undefined;
     }
     return actor;
