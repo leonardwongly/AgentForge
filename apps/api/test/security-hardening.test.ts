@@ -18,6 +18,7 @@ const mutableEnvKeys = [
   "LLM_FEATURES",
   "ALLOW_UNSIGNED_GITHUB_WEBHOOKS",
   "AGENTFORGE_API_TRUST_PROXY_HEADERS",
+  "AGENTFORGE_API_PROXY_SECRET",
   "AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS",
   "AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS",
   "AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR",
@@ -60,10 +61,17 @@ function authenticatedActorHeaders(
   role: string,
   organizationId = "org_local"
 ): Record<string, string> {
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const secret = process.env.AGENTFORGE_API_PROXY_SECRET || "test-proxy-secret-123456";
+  const payload = [timestamp, actor, role, organizationId].join(":");
+  const signature = createHmac("sha256", secret).update(payload).digest("hex");
+
   return {
     "x-agentforge-authenticated-actor": actor,
     "x-agentforge-authenticated-role": role,
-    "x-agentforge-authenticated-organization": organizationId
+    "x-agentforge-authenticated-organization": organizationId,
+    "x-agentforge-signature-timestamp": timestamp,
+    "x-agentforge-signature": signature
   };
 }
 
@@ -71,6 +79,7 @@ function setProductionProxyAuthEnv() {
   process.env.NODE_ENV = "production";
   process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
   process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
+  process.env.AGENTFORGE_API_PROXY_SECRET = "test-proxy-secret-123456";
   process.env.AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS = "true";
   process.env.AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS = "true";
 }
@@ -215,10 +224,18 @@ describe("security and audit hardening", () => {
       expect(artifact).not.toContain("patch");
     }
 
-    const dashboard = await app.inject({ method: "GET", url: "/api/dashboard/blocked-prs" });
+    const dashboard = await app.inject({
+      method: "GET",
+      url: "/api/dashboard/blocked-prs",
+      headers: actorHeaders("alex", "platform_admin")
+    });
     expect(dashboard.body).not.toContain(rawGithubToken);
     expect(dashboard.body).not.toContain(rawSource);
-    const records = await app.inject({ method: "GET", url: "/api/dashboard/records" });
+    const records = await app.inject({
+      method: "GET",
+      url: "/api/dashboard/records",
+      headers: actorHeaders("alex", "platform_admin")
+    });
     expect(records.statusCode).toBe(200);
     expect(records.body).toContain("records");
     expect(records.body).not.toContain(rawGithubToken);
@@ -465,7 +482,8 @@ describe("security and audit hardening", () => {
 
     const updated = await app.inject({
       method: "GET",
-      url: `/api/pull-requests/${record.id}/change-control-record`
+      url: `/api/pull-requests/${record.id}/change-control-record`,
+      headers: actorHeaders("alex", "platform_admin")
     });
     expect(updated.json().record).toMatchObject({
       checkStatus: "pass",
@@ -827,6 +845,109 @@ describe("security and audit hardening", () => {
     await app.close();
   });
 
+  it("requires actor context and tenant scope for read APIs", async () => {
+    const state = createInitialState();
+    const { app } = await createPreviewRecord({ state, organizationId: "org-a" });
+    await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({
+        contentYaml: policyYaml,
+        pr: sensitivePr({
+          repositoryFullName: "beta/payments",
+          pullRequestNumber: 45,
+          headSha: "sha-security-b"
+        }),
+        persist: true
+      }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("brenda", "platform_admin", "org-b")
+      }
+    });
+    const orgARecord = state.records.find((record) => record.organizationId === "org-a")!;
+    const orgBRecord = state.records.find((record) => record.organizationId === "org-b")!;
+    state.queuedEvaluations.push({
+      id: "delivery-org-b",
+      deliveryId: "delivery-org-b",
+      queuedAt: new Date().toISOString(),
+      envelope: {
+        deliveryId: "delivery-org-b",
+        event: "pull_request",
+        action: "opened",
+        repository: {
+          id: 2,
+          fullName: orgBRecord.repositoryFullName,
+          owner: "beta",
+          name: "payments",
+          defaultBranch: "main"
+        },
+        pullRequest: {
+          id: 45,
+          number: orgBRecord.pullRequestNumber,
+          title: "Tenant B PR",
+          authorLogin: "brenda",
+          baseBranch: "main",
+          headBranch: "feature/b",
+          headSha: orgBRecord.headSha,
+          body: "",
+          state: "open",
+          merged: false
+        },
+        receivedAt: "2026-05-22T00:00:00.000Z"
+      }
+    });
+
+    const unauthenticatedDashboard = await app.inject({
+      method: "GET",
+      url: "/api/dashboard/records"
+    });
+    expect(unauthenticatedDashboard.statusCode).toBe(401);
+    expect(unauthenticatedDashboard.json()).toMatchObject({
+      code: "api_actor_required",
+      error: "Authenticated actor headers are required for this governance action.",
+      requestId: expect.any(String)
+    });
+    expect(unauthenticatedDashboard.body).not.toContain("x-agentforge");
+
+    const orgARecords = await app.inject({
+      method: "GET",
+      url: "/api/dashboard/records",
+      headers: actorHeaders("auditor-a", "auditor", "org-a")
+    });
+    expect(orgARecords.statusCode).toBe(200);
+    expect(orgARecords.json().records).toHaveLength(1);
+    expect(orgARecords.body).toContain(orgARecord.id);
+    expect(orgARecords.body).not.toContain(orgBRecord.id);
+
+    const crossTenantRecordRead = await app.inject({
+      method: "GET",
+      url: `/api/pull-requests/${orgBRecord.id}/change-control-record`,
+      headers: actorHeaders("auditor-a", "auditor", "org-a")
+    });
+    expect(crossTenantRecordRead.statusCode).toBe(403);
+
+    const orgBCheckOutput = await app.inject({
+      method: "GET",
+      url: `/api/check-output/${orgBRecord.id}`,
+      headers: actorHeaders("auditor-b", "auditor", "org-b")
+    });
+    expect(orgBCheckOutput.statusCode).toBe(200);
+
+    const crossTenantReplay = await app.inject({
+      method: "POST",
+      url: "/api/admin/queue/replay",
+      payload: JSON.stringify({ deliveryId: "delivery-org-b" }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("ops-a", "platform_admin", "org-a")
+      }
+    });
+    expect(crossTenantReplay.statusCode).toBe(404);
+
+    await app.close();
+  });
+
   it("requires authorized actors for policy, settings, exports, and audit access", async () => {
     const { app, state } = await createPreviewRecord();
     const repositoryId = state.records[0]!.repositoryId;
@@ -890,6 +1011,38 @@ describe("security and audit hardening", () => {
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
     });
     expect(replayWrongRole.statusCode).toBe(403);
+
+    await app.close();
+  });
+
+  it("rejects oversized policy YAML at direct API boundaries", async () => {
+    const { app, state } = await createPreviewRecord();
+    const repositoryId = state.records[0]!.repositoryId;
+    const oversizedPolicy = `${policyYaml}\n# ${"x".repeat(200_001)}`;
+
+    const validation = await app.inject({
+      method: "POST",
+      url: "/api/policies/validate",
+      payload: JSON.stringify({ contentYaml: oversizedPolicy }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(validation.statusCode).toBe(400);
+
+    const update = await app.inject({
+      method: "PUT",
+      url: `/api/repositories/${repositoryId}/policy`,
+      payload: JSON.stringify({ contentYaml: oversizedPolicy }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(update.statusCode).toBe(400);
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: oversizedPolicy, pr: sensitivePr() }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(preview.statusCode).toBe(400);
 
     await app.close();
   });

@@ -4,6 +4,8 @@ import type {
   ReviewerRequirement,
   VerifiedFact
 } from "@agentforge/core";
+import { apiActorHeaders } from "./settings/api-actor-headers";
+import { resolveDashboardActor } from "./settings/actor";
 
 export type DashboardRecord = {
   record: ChangeControlRecord;
@@ -697,10 +699,12 @@ export function formatDate(value: string): string {
 }
 
 async function fetchApiJson<T>(path: string): Promise<T> {
+  const actor = await resolveDashboardActor();
   const response = await fetch(`${apiBaseUrl}${path}`, {
     cache: "no-store",
     headers: {
-      accept: "application/json"
+      accept: "application/json",
+      ...apiActorHeaders(actor)
     },
     signal: AbortSignal.timeout(API_FETCH_TIMEOUT_MS)
   });

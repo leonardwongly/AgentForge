@@ -4,10 +4,13 @@ import { Redis } from "ioredis";
 import { loadConfig } from "@agentforge/config";
 import {
   MERGE_GUARD_EVALUATION_ATTEMPTS,
+  MERGE_GUARD_EVALUATION_BACKOFF_MS,
   MERGE_GUARD_EVALUATION_QUEUE,
+  RedisCacheManager,
   type ChangeControlRecord,
   type PolicyResult,
-  type PullRequestInput
+  type PullRequestInput,
+  type VerifiedFact
 } from "@agentforge/core";
 import { PrismaClient } from "@agentforge/db";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/detectors";
@@ -37,7 +40,8 @@ import {
 import {
   sanitizeForMetadataStorage,
   summarizeSafeSnippet,
-  type MetadataStoragePolicy
+  type MetadataStoragePolicy,
+  generateAiDraftForEvidence
 } from "@agentforge/security";
 
 type CheckPublisher = (input: {
@@ -65,6 +69,20 @@ export class RepositoryNotConfiguredError extends Error {
       `Repository ${repositoryFullName} is not configured for Merge Guard evaluation. Configure a repository policy or provide an explicit policy for this job.`
     );
     this.name = "RepositoryNotConfiguredError";
+  }
+}
+
+export class StaleCheckRunError extends Error {
+  constructor(
+    readonly repositoryFullName: string,
+    readonly pullRequestNumber: number,
+    readonly checkRunHeadSha: string,
+    readonly currentHeadSha: string
+  ) {
+    super(
+      `Ignoring stale check_run webhook for ${repositoryFullName}#${pullRequestNumber}: check_run head_sha ${checkRunHeadSha} does not match current pull request head_sha ${currentHeadSha}.`
+    );
+    this.name = "StaleCheckRunError";
   }
 }
 
@@ -106,7 +124,15 @@ export async function processMergeGuardEvaluationJob(
   const config = loadConfig();
   const prisma = getWorkerPrisma(config);
 
-  const githubContext = await resolvePullRequestForJob(data, config);
+  let githubContext: Awaited<ReturnType<typeof resolvePullRequestForJob>>;
+  try {
+    githubContext = await resolvePullRequestForJob(data, config);
+  } catch (error) {
+    if (error instanceof StaleCheckRunError) {
+      return staleCheckRunResult(data, error);
+    }
+    throw error;
+  }
   let pr = githubContext.pr;
   let runtime: Awaited<ReturnType<typeof resolveRuntimeEvaluationContext>>;
   try {
@@ -158,6 +184,29 @@ export async function processMergeGuardEvaluationJob(
     ),
     data.envelope
   );
+
+  if (runtime.llmFeatures && record.requiredEvidence) {
+    for (const requirement of record.requiredEvidence) {
+      if (requirement.status === "missing") {
+        const finding = (record.verifiedFindings.find(
+          (f) => f.id === requirement.requiredByFindingId
+        ) ||
+          facts.find((f) => f.id === requirement.requiredByFindingId) || {
+            id: requirement.requiredByFindingId,
+            type: "sensitive_path_changed",
+            source: "github_metadata",
+            evidence: "unknown",
+            confidence: "verified"
+          }) as VerifiedFact;
+        requirement.aiDraft = generateAiDraftForEvidence({
+          kind: requirement.kind,
+          finding,
+          pr
+        });
+      }
+    }
+  }
+
   const persistedRecord = prisma
     ? await ensureWorkerRecord({
         prisma,
@@ -227,7 +276,7 @@ async function publishNotConfiguredEvaluation(input: {
     repositoryFullName: input.pr.repositoryFullName,
     pullRequestNumber: input.pr.pullRequestNumber,
     status: result.status,
-    lifecycle: "evaluated",
+    lifecycle: "blocked",
     checkConclusion: checkRun.conclusion,
     checkPublished: published.published,
     publishedCheckRunId: published.id
@@ -236,19 +285,32 @@ async function publishNotConfiguredEvaluation(input: {
 
 function notConfiguredPolicyResult(reason: string): PolicyResult {
   return {
-    mode: "warn",
-    status: "warn",
+    mode: "enforce",
+    status: "block",
     policyVersion: "not_configured",
     policyPackId: "not_configured",
     policyPackVersion: "not_configured",
     findings: [],
     requiredEvidence: [],
     requiredReviewers: [],
-    explanation: [
-      reason,
-      "Merge Guard skipped deterministic policy evaluation because no repository policy was selected."
-    ],
+    explanation: [reason, "Merge Guard failed closed because no repository policy was selected."],
     evaluatedAt: new Date().toISOString()
+  };
+}
+
+function staleCheckRunResult(
+  data: MergeGuardEvaluationJobData,
+  error: StaleCheckRunError
+): MergeGuardEvaluationJobResult {
+  return {
+    processedAt: new Date().toISOString(),
+    recordId: `stale_check_run:${data.deliveryId}`,
+    repositoryFullName: error.repositoryFullName,
+    pullRequestNumber: error.pullRequestNumber,
+    status: "pass",
+    lifecycle: "closed",
+    checkConclusion: "neutral",
+    checkPublished: false
   };
 }
 
@@ -260,6 +322,8 @@ function getWorkerPrisma(config: ReturnType<typeof loadConfig>): PrismaClient | 
   return workerPrisma;
 }
 
+let workerCache: RedisCacheManager | undefined;
+
 function startWorker(): void {
   const config = loadConfig();
 
@@ -267,6 +331,8 @@ function startWorker(): void {
     console.log("AgentForge worker started without REDIS_URL; queue processing is disabled.");
     return;
   }
+
+  workerCache = new RedisCacheManager(config.redisUrl);
 
   const connection = new Redis(config.redisUrl, {
     maxRetriesPerRequest: null
@@ -282,7 +348,24 @@ function startWorker(): void {
       });
       return processMergeGuardEvaluationJob(job.data);
     },
-    { connection }
+    {
+      connection,
+      settings: {
+        backoffStrategy: (attemptsMade: number, type: string | undefined, err: any, job: any) => {
+          if (type === "exponentialWithJitter") {
+            const baseDelay = job.opts.backoff?.delay ?? MERGE_GUARD_EVALUATION_BACKOFF_MS;
+            const delay = baseDelay * Math.pow(2, attemptsMade - 1);
+            const min = delay * 0.5;
+            const max = delay * 1.5;
+            const jittered = Math.floor(min + Math.random() * (max - min));
+            return Math.max(1000, jittered);
+          }
+          // Fallback delay calculation
+          const baseDelay = job.opts.backoff?.delay ?? 30000;
+          return baseDelay * Math.pow(2, attemptsMade - 1);
+        }
+      }
+    }
   );
 
   worker.on("completed", (job, result) => {
@@ -411,6 +494,7 @@ async function resolvePullRequestForJob(
   if (data.pr) {
     const [owner = "unknown", repo = data.pr.repositoryFullName] =
       data.pr.repositoryFullName.split("/");
+    rejectStaleCheckRun(data.envelope, data.pr);
     return { pr: data.pr, owner, repo, githubClient: data.githubClient };
   }
 
@@ -434,8 +518,10 @@ async function resolvePullRequestForJob(
     client: configuredClient.client,
     owner: envelope.repository.owner,
     repo: envelope.repository.name,
-    pullNumber
+    pullNumber,
+    cache: workerCache
   });
+  rejectStaleCheckRun(envelope, pr);
 
   return {
     pr,
@@ -444,6 +530,24 @@ async function resolvePullRequestForJob(
     githubClient: configuredClient.client,
     checkPublisherClient: configuredClient.checkPublisherClient
   };
+}
+
+function rejectStaleCheckRun(
+  envelope: GithubWebhookEnvelope | undefined,
+  pr: PullRequestInput
+): void {
+  if (envelope?.event !== "check_run" || !envelope.checkRun?.headSha) {
+    return;
+  }
+  if (envelope.checkRun.headSha === pr.headSha) {
+    return;
+  }
+  throw new StaleCheckRunError(
+    pr.repositoryFullName,
+    pr.pullRequestNumber,
+    envelope.checkRun.headSha,
+    pr.headSha
+  );
 }
 
 async function githubClientForEnvelope(
@@ -486,6 +590,7 @@ export async function resolveRuntimeEvaluationContext(input: {
   policyYaml: string;
   modeOverride?: ChangeControlRecord["mode"] | undefined;
   storagePolicy: MetadataStoragePolicy;
+  llmFeatures: boolean;
   ownerMappings: OwnerMappingRuntime[];
 }> {
   if (!input.prisma) {
@@ -500,6 +605,7 @@ export async function resolveRuntimeEvaluationContext(input: {
       policyYaml: input.policyYaml ?? defaultPolicyYaml,
       modeOverride: input.policyYaml ? undefined : input.config.defaultPolicyMode,
       storagePolicy: storagePolicyFromConfig(input.config),
+      llmFeatures: input.config.llmFeatures,
       ownerMappings: []
     };
   }
@@ -531,6 +637,7 @@ export async function resolveRuntimeEvaluationContext(input: {
     storagePolicy: repository?.settings
       ? storagePolicyFromRepositorySetting(repository.settings)
       : storagePolicyFromConfig(input.config),
+    llmFeatures: repository?.settings?.llmFeatures ?? input.config.llmFeatures,
     ownerMappings:
       repository?.ownerMappings.map((mapping: { ownerKey: string; reviewer: string }) => ({
         ownerKey: mapping.ownerKey,
@@ -629,7 +736,8 @@ async function enrichReviewTeamMemberships(input: {
       client: input.client,
       org: input.owner,
       reviews: input.pr.reviews,
-      teamSlugs
+      teamSlugs,
+      cache: workerCache
     })
   };
 }

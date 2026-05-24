@@ -2,6 +2,7 @@ import Link from "next/link";
 import { CheckCircle2, Download, GitBranch, Send, ShieldCheck, XCircle } from "lucide-react";
 import { MetricCard, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../data-source-notice";
+import { AiDraftBlock } from "./ai-draft-block";
 import {
   formatDate,
   governanceDecisionLabel,
@@ -328,6 +329,9 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                           required
                           rows={3}
                         />
+                        {evidence.aiDraft ? (
+                          <AiDraftBlock evidenceId={evidence.id} draftText={evidence.aiDraft} />
+                        ) : null}
                         <button className="button button--primary" type="submit">
                           <Send size={16} aria-hidden="true" /> Submit evidence
                         </button>

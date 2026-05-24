@@ -193,6 +193,27 @@ describe("records", () => {
     }
   });
 
+  it("neutralizes spreadsheet formulas in CSV exports", () => {
+    const record = createChangeControlRecord({
+      organizationId: "org",
+      repositoryId: "repo",
+      pr: {
+        ...pr,
+        repositoryFullName: '=HYPERLINK("https://attacker.example","open")',
+        headSha: "  =cmd"
+      },
+      policyResult: {
+        ...result,
+        explanation: []
+      }
+    });
+
+    const csv = exportChangeControlRecordsCsv([record]);
+
+    expect(csv).toContain("'=HYPERLINK");
+    expect(csv).toContain("'  =cmd");
+  });
+
   it("creates compliance evidence packages with control mappings and redacted timeline", () => {
     const record = createChangeControlRecord({
       organizationId: "org",

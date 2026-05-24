@@ -57,6 +57,7 @@ export type EvidenceRequirement = {
   approvedBy?: string | undefined;
   approvedAt?: string | undefined;
   contentSummary?: string | undefined;
+  aiDraft?: string | undefined;
 };
 
 export type ReviewerRequirement = {

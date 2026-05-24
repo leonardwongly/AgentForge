@@ -11,7 +11,7 @@ import {
   verifyGithubSignature,
   type GithubAdapterClient
 } from "./index.js";
-import type { PolicyResult } from "@agentforge/core";
+import { type PolicyResult, RedisCacheManager } from "@agentforge/core";
 
 describe("github integration", () => {
   it("validates webhook signatures", () => {
@@ -192,6 +192,50 @@ describe("github integration", () => {
     expect(cloned).not.toBe(pr);
   });
 
+  it("redacts immutable manifest content before writing it to cache", async () => {
+    const cache = new RedisCacheManager();
+    const secret = `ghp_${"x".repeat(36)}`;
+    const currentPackage = Buffer.from(JSON.stringify({ token: secret })).toString("base64");
+    const headSha = "a".repeat(40);
+    const cacheKey = `agentforge:cache:file-content:acme:payments:${headSha}:package.json`;
+    const client: GithubAdapterClient = {
+      pulls: {
+        get: async () => ({
+          data: {
+            number: 5,
+            title: "Dependency change",
+            body: "",
+            user: { login: "sam" },
+            base: { ref: "main", sha: "b".repeat(40), repo: { full_name: "acme/payments" } },
+            head: { ref: "feature/deps", sha: headSha, repo: { full_name: "acme/payments" } }
+          }
+        }),
+        listFiles: async () => ({
+          data: [
+            { filename: "package.json", status: "added", additions: 1, deletions: 0, changes: 1 }
+          ]
+        }),
+        listReviews: async () => ({ data: [] }),
+        listCommits: async () => ({ data: [] })
+      },
+      repos: {
+        getContent: async () => ({ data: { encoding: "base64", content: currentPackage } })
+      }
+    };
+
+    const pr = await fetchPullRequestInputFromGithub({
+      client,
+      owner: "acme",
+      repo: "payments",
+      pullNumber: 5,
+      cache
+    });
+
+    expect(pr.changedFiles[0]?.currentContent).toContain(secret);
+    expect(await cache.get(cacheKey)).not.toContain(secret);
+    expect(await cache.get(cacheKey)).toContain("[REDACTED]");
+  });
+
   it("enriches approved user reviews with verified GitHub team memberships", async () => {
     const membershipChecks: Array<{ org: unknown; teamSlug: unknown; username: unknown }> = [];
     const client: GithubAdapterClient = {
@@ -353,6 +397,82 @@ describe("github integration", () => {
 
     expect(checks).toBe(2);
     expect(reviews.every((review) => review.teamSlugs?.includes("security-team"))).toBe(true);
+  });
+
+  it("uses RedisCacheManager if passed to verify team memberships", async () => {
+    let clientCalls = 0;
+    const cache = new RedisCacheManager();
+    const key = "agentforge:cache:membership:acme:security-team:alice";
+    await cache.set(key, "active", 3600);
+
+    const reviews = await enrichPullRequestReviewsWithTeamMemberships({
+      client: {
+        pulls: {
+          get: async () => ({ data: {} }),
+          listFiles: async () => ({ data: [] }),
+          listReviews: async () => ({ data: [] }),
+          listCommits: async () => ({ data: [] })
+        },
+        teams: {
+          getMembershipForUserInOrg: async () => {
+            clientCalls += 1;
+            return { data: { state: "active" } };
+          }
+        }
+      },
+      org: "acme",
+      teamSlugs: ["security-team"],
+      reviews: [
+        {
+          reviewer: "alice",
+          reviewerType: "user",
+          state: "APPROVED",
+          submittedAt: "2026-05-14T00:00:00.000Z"
+        }
+      ],
+      cache
+    });
+
+    expect(clientCalls).toBe(0);
+    expect(reviews[0]?.teamSlugs).toContain("security-team");
+  });
+
+  it("uses RedisCacheManager and respects inactive cached team memberships", async () => {
+    let clientCalls = 0;
+    const cache = new RedisCacheManager();
+    const key = "agentforge:cache:membership:acme:security-team:bob";
+    await cache.set(key, "inactive", 3600);
+
+    const reviews = await enrichPullRequestReviewsWithTeamMemberships({
+      client: {
+        pulls: {
+          get: async () => ({ data: {} }),
+          listFiles: async () => ({ data: [] }),
+          listReviews: async () => ({ data: [] }),
+          listCommits: async () => ({ data: [] })
+        },
+        teams: {
+          getMembershipForUserInOrg: async () => {
+            clientCalls += 1;
+            return { data: { state: "active" } };
+          }
+        }
+      },
+      org: "acme",
+      teamSlugs: ["security-team"],
+      reviews: [
+        {
+          reviewer: "bob",
+          reviewerType: "user",
+          state: "APPROVED",
+          submittedAt: "2026-05-14T00:00:00.000Z"
+        }
+      ],
+      cache
+    });
+
+    expect(clientCalls).toBe(0);
+    expect(reviews[0]?.teamSlugs ?? []).not.toContain("security-team");
   });
 
   it("treats GitHub team membership 404 responses as verified non-membership", async () => {

@@ -172,7 +172,11 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
 
-  packages/core: {}
+  packages/core:
+    dependencies:
+      ioredis:
+        specifier: 5.10.1
+        version: 5.10.1
 
   packages/db:
     dependencies:

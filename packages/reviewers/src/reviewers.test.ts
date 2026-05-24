@@ -193,6 +193,30 @@ describe("reviewer router", () => {
     expect(reviewers.slice(1).every((reviewer) => reviewer.tier === "conditional")).toBe(true);
     expect(reviewers.slice(1).every((reviewer) => reviewer.reason.includes("capped"))).toBe(true);
   });
+
+  it("keeps every configured reviewer required by default", () => {
+    const hits: PolicyHit[] = [
+      "billing-owner",
+      "security-team",
+      "database-owner",
+      "sre-owner",
+      "privacy-owner"
+    ].map((reviewer, index) => ({
+      id: `hit_default_${index}`,
+      ruleId: `rule_default_${index}`,
+      finding: { ...fact, id: `fact_default_${index}` },
+      action: "require_review",
+      severity: "high",
+      requiredEvidence: [],
+      requiredReviewers: [reviewer],
+      explanation: `${reviewer} approval required.`
+    }));
+
+    const reviewers = routeReviewers(hits, {});
+
+    expect(reviewers).toHaveLength(5);
+    expect(reviewers.every((reviewer) => reviewer.tier === "required")).toBe(true);
+  });
 });
 
 describe("CODEOWNERS preview", () => {
