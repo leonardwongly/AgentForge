@@ -162,13 +162,21 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
           <MetricCard
             label="Missing evidence"
             value={String(missing.length)}
-            detail="Explicit evidence requirements still open."
+            detail={
+              missing.length > 0
+                ? "Explicit evidence requirements still open."
+                : "All required evidence is approved or accepted."
+            }
             tone={missing.length > 0 ? "block" : "pass"}
           />
           <MetricCard
             label="Required reviewers"
             value={String(pendingReviewers.length)}
-            detail="Required reviewer approvals still pending."
+            detail={
+              pendingReviewers.length > 0
+                ? "Required reviewer approvals still pending."
+                : "No required reviewer approvals are pending."
+            }
             tone={pendingReviewers.length > 0 ? "warn" : "pass"}
           />
         </div>

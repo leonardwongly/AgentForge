@@ -94,19 +94,31 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
           <MetricCard
             label="Blocked PRs"
             value={String(summary.blockedPrs)}
-            detail="Merge Guard blocked merge while required policy conditions remain open."
+            detail={
+              summary.blockedPrs > 0
+                ? "Merge Guard blocked merge while required policy conditions remain open."
+                : "No evaluated PRs are currently blocked."
+            }
             tone="block"
           />
           <MetricCard
             label="Missing evidence"
             value={String(summary.missingEvidence)}
-            detail="Required evidence missing across action-required pull requests."
+            detail={
+              summary.missingEvidence > 0
+                ? "Required evidence missing across action-required pull requests."
+                : "No required evidence is missing across evaluated PRs."
+            }
             tone="warn"
           />
           <MetricCard
             label="Required reviewers"
             value={String(summary.pendingRequiredReviewers)}
-            detail="Required reviewer approvals still pending."
+            detail={
+              summary.pendingRequiredReviewers > 0
+                ? "Required reviewer approvals still pending."
+                : "No required reviewer approvals are pending."
+            }
             tone="neutral"
           />
           <MetricCard

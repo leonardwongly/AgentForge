@@ -185,8 +185,18 @@ test("settings form persists repository mode, retention, and owner mappings", as
   ]);
   const pr = JSON.parse(rawPr) as PullRequestInput;
 
+  await page.setViewportSize({ width: 1200, height: 900 });
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  const ownerKeyWidth = await page
+    .getByLabel("Owner key 1")
+    .evaluate((element) => element.getBoundingClientRect().width);
+  const reviewerWidth = await page
+    .getByLabel("Reviewer 1")
+    .evaluate((element) => element.getBoundingClientRect().width);
+  expect(ownerKeyWidth).toBeGreaterThanOrEqual(120);
+  expect(reviewerWidth).toBeGreaterThanOrEqual(120);
+
   const selectedRepositoryFullName = await page
     .locator("#repositoryId option:checked")
     .textContent();
@@ -313,6 +323,8 @@ test("evidence workflow resolves requirements through record actions", async ({
   await page.getByRole("button", { name: "Approve reviewer" }).first().click();
   await expect(page.getByRole("heading", { name: "Reviewer approved" })).toBeVisible();
   await expect(page.getByText("pass").first()).toBeVisible();
+  await expect(page.getByText("All required evidence is approved or accepted.")).toBeVisible();
+  await expect(page.getByText("No required reviewer approvals are pending.")).toBeVisible();
 
   const updated = await request.get(
     `${apiBaseUrl}/api/pull-requests/${record.id}/change-control-record`,
@@ -328,4 +340,10 @@ test("evidence workflow resolves requirements through record actions", async ({
   await page.goto("/dashboard/evidence-completion");
   await expect(page.getByText("acme/evidence-workflow").first()).toBeVisible();
   await expect(page.getByText("complete").first()).toBeVisible();
+
+  await page.goto("/dashboard/blocked-prs");
+  await expect(page.getByText("No Change Control Records yet")).toHaveCount(0);
+
+  await page.goto("/dashboard/policy-insights");
+  await expect(page.getByText("No Change Control Records yet")).toHaveCount(0);
 });

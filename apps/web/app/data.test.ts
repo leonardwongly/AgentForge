@@ -5,6 +5,7 @@ import {
   hasOpenRequirements,
   isObservePassWithOpenRequirements,
   loadDashboardData,
+  loadPolicyTuningInsights,
   loadSettings,
   openRequirementCounts,
   summarizeEvidenceRequirements,
@@ -59,6 +60,35 @@ describe("dashboard API data loaders", () => {
       source: "unavailable"
     });
     expect(data.message).toContain("503 Unavailable");
+  });
+
+  it("keeps policy insights in API state when records exist without recommendations", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({
+          generatedAt: "2026-05-18T00:00:00.000Z",
+          recordCount: 1,
+          metrics: {
+            overrideRate: 0,
+            rejectedEvidenceRate: 0,
+            openEvidenceRate: 0,
+            pendingReviewerRate: 0,
+            observeOrWarnOpenRequirementCount: 0
+          },
+          insights: []
+        })
+      )
+    );
+
+    const data = await loadPolicyTuningInsights();
+
+    expect(data).toMatchObject({
+      recordCount: 1,
+      insights: [],
+      source: "api"
+    });
+    expect(data.message).toContain("no policy tuning recommendations");
   });
 
   it("returns unavailable settings without throwing when the API cannot be reached", async () => {

@@ -15,8 +15,16 @@ import {
 } from "../../data";
 
 export default async function BlockedPrsPage() {
-  const data = await loadDashboardData({ queue: "action_required", limit: 50 });
+  const [allData, data] = await Promise.all([
+    loadDashboardData({ limit: 1 }),
+    loadDashboardData({ queue: "action_required", limit: 50 })
+  ]);
   const actionRequired = actionRequiredRecords(data.records);
+  const shouldShowDataSourceNotice = allData.source !== "api" || data.source === "unavailable";
+  const emptyMessage =
+    allData.source === "api"
+      ? "No blocked or action-required PRs are currently open."
+      : "No blocked or action-required PRs are stored yet.";
 
   return (
     <>
@@ -31,7 +39,9 @@ export default async function BlockedPrsPage() {
       </header>
 
       <section className="page">
-        <DataSourceNotice {...data} />
+        {shouldShowDataSourceNotice ? (
+          <DataSourceNotice {...(data.source === "unavailable" ? data : allData)} />
+        ) : null}
 
         <section className="panel">
           <div className="panel-header">
@@ -57,7 +67,7 @@ export default async function BlockedPrsPage() {
               {actionRequired.length === 0 ? (
                 <tr>
                   <td className="empty-row" colSpan={7}>
-                    No blocked or action-required PRs are stored yet.
+                    {emptyMessage}
                   </td>
                 </tr>
               ) : null}

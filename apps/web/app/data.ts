@@ -297,12 +297,15 @@ export async function loadPolicyTuningInsights(): Promise<PolicyTuningData> {
     const payload = await fetchApiJson<
       Omit<PolicyTuningData, "source" | "message"> & { pageInfo?: PageInfo }
     >("/api/dashboard/policy-insights?limit=100&sort=updated_desc");
+    const hasRecords = payload.recordCount > 0;
     return {
       ...payload,
-      source: payload.insights.length === 0 ? "empty" : "api",
+      source: hasRecords ? "api" : "empty",
       message:
         payload.insights.length === 0
-          ? "No policy tuning opportunities are available yet. Evaluate more pull requests to build an operational history."
+          ? hasRecords
+            ? `Analyzed ${payload.recordCount} Change Control Record${payload.recordCount === 1 ? "" : "s"}; no policy tuning recommendations are available for this record window.`
+            : "No policy tuning opportunities are available yet. Evaluate more pull requests to build an operational history."
           : `Loaded ${payload.insights.length} advisory policy tuning insight${payload.insights.length === 1 ? "" : "s"} from ${payload.recordCount} records.`
     };
   } catch (error) {
