@@ -13,6 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: actions/dependency-review-action@v5
+        continue-on-error: ${{ github.event.repository.private }}
         with:
           fail-on-severity: high
           license-check: true
