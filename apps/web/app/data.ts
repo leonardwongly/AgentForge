@@ -152,9 +152,12 @@ export type OnboardingStep = {
 };
 
 export type SettingsData = {
+  runtimeStore?: "postgres" | "in_memory" | undefined;
   githubInstallation: {
     connected: boolean;
     credentialsConfigured?: boolean | undefined;
+    appCredentialsConfigured?: boolean | undefined;
+    webhookSecretConfigured?: boolean | undefined;
     accountLogin?: string | undefined;
     accountType?: string | undefined;
     githubInstallationId?: string | undefined;

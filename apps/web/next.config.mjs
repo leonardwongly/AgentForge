@@ -2,6 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const apiOrigin = originFromEnvUrl(process.env.API_BASE_URL);
 const cspReportOnly = [
   "default-src 'self'",
   "base-uri 'self'",
@@ -10,10 +11,21 @@ const cspReportOnly = [
   "form-action 'self'",
   "img-src 'self' data: https:",
   "font-src 'self' data:",
-  "connect-src 'self' http://localhost:4000 https:",
+  `connect-src 'self' http://localhost:4000 ${apiOrigin ?? ""} https:`.replace(/\s+/g, " "),
   "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
   "style-src 'self' 'unsafe-inline'"
 ].join("; ");
+
+function originFromEnvUrl(value) {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return new URL(value).origin;
+  } catch {
+    return undefined;
+  }
+}
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {

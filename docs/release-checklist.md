@@ -13,7 +13,7 @@ Use this checklist before making the repository public or cutting a tagged relea
 
 ## Secret And Data Hygiene
 
-- [ ] `git ls-files | grep -E '(^|/)\.DS_Store$|(^|/)\.env($|\.)|(^|/)playwright-report/|(^|/)test-results/'` returns no committed local artifacts.
+- [ ] `git ls-files | grep -E '(^|/)\.DS_Store$|(^|/)\.env($|\.)|(^|/)playwright-report/|(^|/)test-results/' | grep -v '^\.env\.example$'` returns no committed local artifacts.
 - [ ] Run the secret-grep command from `.github/workflows/security.yml` locally and confirm it returns no real secrets.
 - [ ] `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=false`, `SOURCE_CODE_STORAGE=false`, and `REDACT_SECRETS=true` are documented as production defaults.
 - [ ] Exports and dashboard views are verified to exclude raw source code and secrets under the default storage policy.

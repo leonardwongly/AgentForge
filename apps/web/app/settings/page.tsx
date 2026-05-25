@@ -31,6 +31,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
   const selectedHandling = selectedRepository?.dataHandling ?? settings?.dataHandling;
   const defaultMode = selectedRepository?.mode;
   const installation = installationDisplay(settings?.githubInstallation);
+  const canRecordGithubInstallation = settings?.runtimeStore === "postgres";
   const repositoryOwnerMappings =
     settings?.ownerMappings.filter((mapping) =>
       selectedRepository ? mapping.sources.includes(selectedRepository.id) : true
@@ -203,6 +204,64 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
               </li>
               <li>
                 <div className="list-row">
+                  <span>App credentials</span>
+                  <StatusBadge
+                    status={
+                      settings?.githubInstallation.appCredentialsConfigured ? "approved" : "low"
+                    }
+                    label={
+                      settings?.githubInstallation.appCredentialsConfigured
+                        ? "configured"
+                        : "missing"
+                    }
+                  />
+                </div>
+                <p>Required for installation tokens, repository sync, and GitHub check runs.</p>
+              </li>
+              <li>
+                <div className="list-row">
+                  <span>Webhook secret</span>
+                  <StatusBadge
+                    status={
+                      settings?.githubInstallation.webhookSecretConfigured ? "approved" : "low"
+                    }
+                    label={
+                      settings?.githubInstallation.webhookSecretConfigured
+                        ? "configured"
+                        : "missing"
+                    }
+                  />
+                </div>
+                <p>
+                  Required to verify GitHub webhook deliveries before they affect runtime state.
+                </p>
+              </li>
+              <li>
+                <div className="list-row">
+                  <span>Install link</span>
+                  <StatusBadge
+                    status={settings?.githubInstallation.installUrl ? "approved" : "low"}
+                    label={settings?.githubInstallation.installUrl ? "configured" : "missing slug"}
+                  />
+                </div>
+                <p>Set GITHUB_APP_SLUG to open GitHub App installation from the dashboard.</p>
+              </li>
+              <li>
+                <div className="list-row">
+                  <span>Runtime store</span>
+                  <StatusBadge
+                    status={canRecordGithubInstallation ? "approved" : "low"}
+                    label={settings?.runtimeStore === "postgres" ? "Postgres" : "in-memory"}
+                  />
+                </div>
+                <p>
+                  {canRecordGithubInstallation
+                    ? "GitHub installation approval state is durable."
+                    : "Manual installation approval requires the Postgres runtime store."}
+                </p>
+              </li>
+              <li>
+                <div className="list-row">
                   <span>Dashboard authentication</span>
                   <StatusBadge
                     status={
@@ -225,13 +284,24 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                   headers remain available for enterprise SSO deployments.
                 </p>
                 <div className="control-row">
-                  <a className="button" href="/auth/github/login">
-                    <ShieldCheck size={16} aria-hidden="true" /> Sign in with GitHub
-                  </a>
+                  {settings?.auth?.builtInGithubOAuthConfigured ? (
+                    <a className="button" href="/auth/github/login">
+                      <ShieldCheck size={16} aria-hidden="true" /> Sign in with GitHub
+                    </a>
+                  ) : (
+                    <button className="button" disabled type="button">
+                      <ShieldCheck size={16} aria-hidden="true" /> Sign in with GitHub
+                    </button>
+                  )}
                   <a className="button" href="/auth/logout">
                     Sign out
                   </a>
                 </div>
+                {!settings?.auth?.builtInGithubOAuthConfigured ? (
+                  <p className="muted">
+                    Configure GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to enable GitHub OAuth.
+                  </p>
+                ) : null}
               </li>
               <li>
                 <div className="list-row">
@@ -309,6 +379,12 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                 record an installation ID manually after completing GitHub setup.
               </p>
             ) : null}
+            {!canRecordGithubInstallation ? (
+              <p className="muted">
+                Manual installation recording is disabled for the in-memory runtime. Start Postgres,
+                run migrations, and use the Postgres-backed API before approving installations.
+              </p>
+            ) : null}
             {installations?.installations.map((item) => (
               <div className="toggle-row" key={item.id}>
                 <div>
@@ -346,6 +422,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                 <label htmlFor="githubInstallationId">Manual installation ID</label>
                 <input
                   className="input"
+                  disabled={!canRecordGithubInstallation}
                   id="githubInstallationId"
                   name="githubInstallationId"
                   placeholder="12345678"
@@ -353,12 +430,19 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
               </div>
               <div className="field">
                 <label htmlFor="accountLogin">Account login</label>
-                <input className="input" id="accountLogin" name="accountLogin" placeholder="acme" />
+                <input
+                  className="input"
+                  disabled={!canRecordGithubInstallation}
+                  id="accountLogin"
+                  name="accountLogin"
+                  placeholder="acme"
+                />
               </div>
               <div className="field">
                 <label htmlFor="accountType">Account type</label>
                 <select
                   className="select"
+                  disabled={!canRecordGithubInstallation}
                   id="accountType"
                   name="accountType"
                   defaultValue="Organization"
@@ -367,7 +451,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                   <option value="User">User</option>
                 </select>
               </div>
-              <button className="button" type="submit">
+              <button className="button" disabled={!canRecordGithubInstallation} type="submit">
                 Record installation
               </button>
             </form>
@@ -706,8 +790,9 @@ function installationDisplay(installation: SettingsData["githubInstallation"] | 
     return {
       status: "warn",
       label: "credentials only",
-      detail: "GitHub App credentials are configured, but no installation account is verified.",
-      help: "Complete the GitHub App installation flow or receive a signed webhook before enabling governed repositories."
+      detail:
+        "GitHub App authentication and webhook settings are present, but no approved installation account is linked.",
+      help: "Complete the GitHub App installation flow, receive a signed webhook, or record a Postgres-backed manual installation before enabling governed repositories."
     };
   }
   return {

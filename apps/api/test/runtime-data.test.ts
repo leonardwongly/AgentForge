@@ -71,6 +71,58 @@ describe("runtime data surfaces", () => {
     await app.close();
   });
 
+  it("exposes runtime store and GitHub setup readiness in settings", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+
+    const settings = await app.inject({
+      method: "GET",
+      url: "/api/settings",
+      headers: actorHeaders()
+    });
+
+    expect(settings.statusCode).toBe(200);
+    expect(settings.json()).toEqual(
+      expect.objectContaining({
+        runtimeStore: "in_memory",
+        githubInstallation: expect.objectContaining({
+          connected: false,
+          appCredentialsConfigured: expect.any(Boolean),
+          webhookSecretConfigured: expect.any(Boolean),
+          pendingApprovalCount: 0
+        })
+      })
+    );
+
+    await app.close();
+  });
+
+  it("returns actionable setup guidance for manual installation verification without Postgres", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/github/installations/verify",
+      headers: {
+        ...actorHeaders(),
+        "content-type": "application/json"
+      },
+      payload: JSON.stringify({
+        githubInstallationId: "12345678",
+        accountLogin: "acme",
+        accountType: "Organization"
+      })
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      error: expect.stringContaining("requires the Postgres runtime store")
+    });
+
+    await app.close();
+  });
+
   it("previews CODEOWNERS owner mapping suggestions", async () => {
     const state = createInitialState();
     const app = createApp(state);

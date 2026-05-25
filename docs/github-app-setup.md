@@ -53,7 +53,7 @@ https://<dashboard-host>/github/installations/callback
 
 Set `GITHUB_APP_SLUG` so the Settings and Onboarding pages can open the GitHub App installation flow. After GitHub redirects back with `installation_id`, AgentForge records the installation as `pending_approval`. A platform admin must approve the installation in Settings before repositories from that installation can be governed.
 
-If the callback cannot be used, record the numeric installation ID manually in Settings, then approve it as a platform admin.
+If the callback cannot be used, run AgentForge with the Postgres runtime store, record the numeric installation ID manually in Settings with the installation account login, then approve it as a platform admin. Manual installation approval is disabled for the in-memory local sample runtime because installation trust state must be durable.
 
 Local development:
 

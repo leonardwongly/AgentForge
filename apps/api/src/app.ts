@@ -958,6 +958,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       actor.organizationId
     );
     return safe({
+      runtimeStore: prisma ? "postgres" : "in_memory",
       githubInstallation,
       auth: {
         builtInGithubOAuthConfigured: Boolean(config.github.clientId && config.github.clientSecret),
@@ -1039,6 +1040,12 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           path: issue.path.join("."),
           message: issue.message
         }))
+      });
+    }
+    if (!prisma) {
+      return reply.code(409).send({
+        error:
+          "Manual GitHub installation verification requires the Postgres runtime store. Start Postgres, run migrations, and use the Postgres-backed API before recording or approving installations."
       });
     }
     const installation = await upsertPendingGithubInstallation(prisma, {
@@ -4379,6 +4386,9 @@ async function githubInstallationSummary(
   organizationId: string
 ) {
   const credentialsConfigured = githubCredentialsConfigured(config);
+  const appCredentialsConfigured = Boolean(config.github.appId && config.github.privateKey);
+  const webhookSecretConfigured = Boolean(config.github.webhookSecret);
+  const installUrl = githubInstallUrl(config);
   if (prisma) {
     const installation = await prisma.gitHubInstallation.findFirst({
       where: {
@@ -4404,7 +4414,9 @@ async function githubInstallationSummary(
         githubInstallationId: installation.githubInstallationId.toString(),
         status: installation.status,
         pendingApprovalCount,
-        installUrl: githubInstallUrl(config)
+        installUrl,
+        appCredentialsConfigured,
+        webhookSecretConfigured
       };
     }
     return {
@@ -4415,7 +4427,9 @@ async function githubInstallationSummary(
       githubInstallationId: undefined,
       status: pendingApprovalCount > 0 ? "pending_approval" : "not_connected",
       pendingApprovalCount,
-      installUrl: githubInstallUrl(config)
+      installUrl,
+      appCredentialsConfigured,
+      webhookSecretConfigured
     };
   }
   return {
@@ -4426,7 +4440,9 @@ async function githubInstallationSummary(
     githubInstallationId: undefined,
     status: "not_connected",
     pendingApprovalCount: 0,
-    installUrl: githubInstallUrl(config)
+    installUrl,
+    appCredentialsConfigured,
+    webhookSecretConfigured
   };
 }
 

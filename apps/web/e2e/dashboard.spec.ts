@@ -62,6 +62,19 @@ test("fresh onboarding can create a local sample preview", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Save setup progress" })).toBeVisible();
 });
 
+test("settings explains unavailable GitHub setup actions in the sample runtime", async ({
+  page
+}) => {
+  await page.goto("/settings");
+
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(page.getByText("Manual installation recording is disabled")).toBeVisible();
+  await expect(page.getByLabel("Manual installation ID")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Record installation" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Sign in with GitHub" })).toBeDisabled();
+  await expect(page.getByText("Configure GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET")).toBeVisible();
+});
+
 test("dashboard shows action-required pull requests first", async ({ page, request }) => {
   await seedMergeGuardRecord(request);
   await page.goto("/dashboard");
