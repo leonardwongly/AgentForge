@@ -157,6 +157,12 @@ type RepositoryDataHandlingState = {
   auditRecordRetentionDays: number;
 };
 
+type GithubRepositoryRef = {
+  id: number;
+  fullName: string;
+  githubRepositoryId?: bigint | undefined;
+};
+
 type RepositorySummaryRow = {
   id: string;
   organizationId: string;
@@ -275,6 +281,7 @@ const COMPLIANCE_EXPORT_DEFAULT_RECORD_LIMIT = 250;
 const COMPLIANCE_EXPORT_MAX_RECORD_LIMIT = 500;
 const POLICY_YAML_MAX_BYTES = 200_000;
 const POSTGRES_SIGNED_BIGINT_MAX = "9223372036854775807";
+const GITHUB_API_TIMEOUT_MS = 10_000;
 const GITHUB_INSTALLATION_REPOSITORY_PAGE_SIZE = 100;
 const GITHUB_INSTALLATION_REPOSITORY_PAGE_LIMIT = 100;
 
@@ -3508,7 +3515,7 @@ async function fetchGithubInstallationAccount(
       appId: config.github.appId,
       privateKey: config.github.privateKey
     });
-    const response = await fetch(
+    const response = await fetchGithubApi(
       `https://api.github.com/app/installations/${encodeURIComponent(githubInstallationId)}`,
       {
         headers: {
@@ -3534,10 +3541,20 @@ async function fetchGithubInstallationAccount(
   }
 }
 
+async function fetchGithubApi(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchGithubInstallationRepositories(
   config: ReturnType<typeof loadConfig>,
   githubInstallationId: string
-): Promise<Array<{ id: number; fullName: string }> | undefined> {
+): Promise<GithubRepositoryRef[] | undefined> {
   if (!config.github.appId || !config.github.privateKey) {
     return undefined;
   }
@@ -3547,9 +3564,9 @@ async function fetchGithubInstallationRepositories(
       privateKey: config.github.privateKey,
       installationId: githubInstallationId
     });
-    const repositories: Array<{ id: number; fullName: string }> = [];
+    const repositories: GithubRepositoryRef[] = [];
     for (let page = 1; page <= GITHUB_INSTALLATION_REPOSITORY_PAGE_LIMIT; page += 1) {
-      const response = await fetch(
+      const response = await fetchGithubApi(
         `https://api.github.com/installation/repositories?per_page=${GITHUB_INSTALLATION_REPOSITORY_PAGE_SIZE}&page=${page}`,
         {
           headers: {
@@ -3633,16 +3650,29 @@ async function syncRepositoriesFromCurrentGithubInstallation(
   if (!repositories) {
     return false;
   }
+  const currentRepositoryIds = new Set(
+    repositories.map((repository) => githubRepositoryBigInt(repository).toString())
+  );
   const currentNames = new Set(repositories.map((repository) => repository.fullName));
   const staleRepositories = (
-    await listRepositorySummaries(state, prisma, config.defaultPolicyMode, input.organizationId)
+    await prisma.repository.findMany({
+      where: {
+        organizationId: input.organizationId,
+        fullName: { startsWith: `${input.accountLogin}/` }
+      },
+      select: { fullName: true, githubRepositoryId: true }
+    })
   )
     .filter(
       (repository) =>
-        repository.fullName.startsWith(`${input.accountLogin}/`) &&
+        !currentRepositoryIds.has(repository.githubRepositoryId.toString()) &&
         !currentNames.has(repository.fullName)
     )
-    .map((repository) => ({ id: 0, fullName: repository.fullName }));
+    .map((repository) => ({
+      id: 0,
+      fullName: repository.fullName,
+      githubRepositoryId: repository.githubRepositoryId
+    }));
 
   await syncRepositoriesFromInstallation(state, prisma, input.organizationId, {
     id: Number(input.githubInstallationId),
@@ -3785,14 +3815,14 @@ async function syncRepositoriesFromInstallation(
 async function archiveRemovedRepositories(
   prisma: PrismaClient,
   organizationId: string,
-  repositoriesRemoved: Array<{ id: number; fullName: string }>
+  repositoriesRemoved: GithubRepositoryRef[]
 ): Promise<void> {
   for (const repo of repositoriesRemoved) {
     await prisma.repository.updateMany({
       where: {
         organizationId,
         OR: [
-          { githubRepositoryId: githubRepositoryBigInt(repo) },
+          { githubRepositoryId: repo.githubRepositoryId ?? githubRepositoryBigInt(repo) },
           ...(repo.fullName ? [{ fullName: repo.fullName }] : [])
         ]
       },
@@ -3805,7 +3835,7 @@ async function archiveRemovedRepositories(
   }
 }
 
-function githubRepositoryBigInt(repo: { id: number; fullName: string }): bigint {
+function githubRepositoryBigInt(repo: GithubRepositoryRef): bigint {
   return repo.id > 0 ? BigInt(repo.id) : stableBigInt(repo.fullName);
 }
 
@@ -4420,20 +4450,19 @@ async function ensureRepository(
   options: { forceUnarchive?: boolean } = {}
 ) {
   const [owner = "unknown", name = input.fullName] = input.fullName.split("/");
-  const where = {
-    organizationId_fullName: {
-      organizationId: input.organizationId,
-      fullName: input.fullName
-    }
-  };
+  const githubRepositoryId = input.githubRepositoryId ?? stableBigInt(input.fullName);
   const existing = await prisma.repository.findUnique({
-    where,
+    where: { githubRepositoryId },
     select: { archivedAt: true }
   });
   const shouldReactivate = options.forceUnarchive && Boolean(existing?.archivedAt);
   return prisma.repository.upsert({
-    where,
+    where: { githubRepositoryId },
     update: {
+      organizationId: input.organizationId,
+      fullName: input.fullName,
+      owner,
+      name,
       defaultBranch: input.defaultBranch,
       ...(options.forceUnarchive
         ? {
@@ -4446,7 +4475,7 @@ async function ensureRepository(
     create: {
       id: input.repositoryId,
       organizationId: input.organizationId,
-      githubRepositoryId: input.githubRepositoryId ?? stableBigInt(input.fullName),
+      githubRepositoryId,
       fullName: input.fullName,
       owner,
       name,
@@ -4771,10 +4800,7 @@ function validReviewerForType(reviewer: string, reviewerType: "user" | "team"): 
     const [org, team, ...rest] = normalized.split("/");
     return rest.length === 0 && githubTeamSegment(org) && githubTeamSegment(team);
   }
-  return (
-    githubTeamSegment(normalized) &&
-    (normalized.toLowerCase().endsWith("-team") || normalized.toLowerCase().endsWith("-owner"))
-  );
+  return githubTeamSegment(normalized);
 }
 
 function normalizeReviewerForStorage(reviewer: string, reviewerType: "user" | "team"): string {

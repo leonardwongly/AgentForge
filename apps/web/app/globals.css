@@ -293,7 +293,6 @@ button {
   line-height: 1.12;
   margin-top: 13px;
   overflow-wrap: anywhere;
-  word-break: break-word;
 }
 
 .metric-card p {
