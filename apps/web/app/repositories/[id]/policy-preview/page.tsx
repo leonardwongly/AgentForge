@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ShieldCheck } from "lucide-react";
+import type { ChangeControlRecord } from "@agentforge/core";
 import { MetricCard, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../../data-source-notice";
 import {
@@ -16,20 +17,25 @@ type PageProps = {
   params: Promise<{ id: string }>;
 };
 
+type PreviewClassification = {
+  status: "pass" | "warn" | "block";
+  label: string;
+  bucket: "wouldPass" | "wouldWarn" | "wouldBlock";
+};
+
 export default async function PolicyPreviewPage({ params }: PageProps) {
   const { id } = await params;
-  const data = await loadDashboardData();
-  const wouldBlock = data.records.filter(
-    (item) =>
-      item.record.checkStatus === "block" ||
-      missingEvidence(item.record).length > 0 ||
-      pendingRequiredReviewers(item.record).length > 0
-  );
-  const wouldPass = data.records.filter(
-    (item) =>
-      item.record.checkStatus === "pass" &&
-      missingEvidence(item.record).length === 0 &&
-      pendingRequiredReviewers(item.record).length === 0
+  const data = await loadDashboardData({ repositoryId: id });
+  const previewRows = data.records.map((item) => ({
+    item,
+    preview: classifyPreviewRecord(item.record)
+  }));
+  const previewCounts = previewRows.reduce(
+    (counts, row) => {
+      counts[row.preview.bucket] += 1;
+      return counts;
+    },
+    { wouldBlock: 0, wouldWarn: 0, wouldPass: 0 }
   );
 
   return (
@@ -50,19 +56,19 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
         <div className="metrics-grid">
           <MetricCard
             label="Would block"
-            value={String(wouldBlock.length)}
+            value={String(previewCounts.wouldBlock)}
             detail="PRs that would block only in enforce or optimize mode."
             tone="block"
           />
           <MetricCard
             label="Would warn"
-            value={String(data.records.filter((item) => item.record.checkStatus === "warn").length)}
+            value={String(previewCounts.wouldWarn)}
             detail="Non-blocking warnings in the selected policy mode."
             tone="warn"
           />
           <MetricCard
             label="Would pass"
-            value={String(wouldPass.length)}
+            value={String(previewCounts.wouldPass)}
             detail="Configured policy requirements are satisfied with no open evidence or reviewer requirements."
             tone="pass"
           />
@@ -104,13 +110,8 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
                   </td>
                 </tr>
               ) : null}
-              {data.records.map((item) => {
+              {previewRows.map(({ item, preview }) => {
                 const record = item.record;
-                const blockers =
-                  missingEvidence(record).length + pendingRequiredReviewers(record).length;
-                const previewStatus = blockers > 0 ? "block" : record.checkStatus;
-                const previewLabel =
-                  blockers > 0 ? "would block in enforce" : `would ${previewStatus}`;
                 return (
                   <tr key={record.id}>
                     <td>
@@ -120,7 +121,7 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
                       <p className="muted">{item.title}</p>
                     </td>
                     <td>
-                      <StatusBadge status={previewStatus} label={previewLabel} />
+                      <StatusBadge status={preview.status} label={preview.label} />
                     </td>
                     <td>{summarizeFindings(record.verifiedFindings)}</td>
                     <td>{summarizeEvidenceRequirements(record.requiredEvidence)}</td>
@@ -154,4 +155,28 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
       </section>
     </>
   );
+}
+
+function classifyPreviewRecord(record: ChangeControlRecord): PreviewClassification {
+  const hasOpenRequirements =
+    missingEvidence(record).length > 0 || pendingRequiredReviewers(record).length > 0;
+  if (record.checkStatus === "block" || hasOpenRequirements) {
+    return {
+      status: "block",
+      label: "would block in enforce",
+      bucket: "wouldBlock"
+    };
+  }
+  if (record.checkStatus === "warn") {
+    return {
+      status: "warn",
+      label: "would warn",
+      bucket: "wouldWarn"
+    };
+  }
+  return {
+    status: "pass",
+    label: "would pass",
+    bucket: "wouldPass"
+  };
 }

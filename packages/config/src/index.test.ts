@@ -4,6 +4,12 @@ import { loadConfig } from "./index.js";
 const productionBaseEnv = {
   NODE_ENV: "production",
   GITHUB_WEBHOOK_SECRET: "production-secret",
+  GITHUB_APP_ID: "123456",
+  GITHUB_APP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+  GITHUB_APP_SLUG: "agentforge-test",
+  GITHUB_CLIENT_ID: "Iv1.test",
+  GITHUB_CLIENT_SECRET: "github-client-secret",
+  SESSION_SECRET: "session-secret-32-characters-long",
   SOURCE_CODE_STORAGE: "false",
   REDACT_SECRETS: "true",
   ALLOW_UNSIGNED_GITHUB_WEBHOOKS: "false",
@@ -23,6 +29,11 @@ describe("AgentForge runtime config", () => {
 
   it.each([
     ["missing webhook secret", { GITHUB_WEBHOOK_SECRET: "" }, "GITHUB_WEBHOOK_SECRET"],
+    ["missing GitHub App id", { GITHUB_APP_ID: "" }, "GITHUB_APP_ID"],
+    ["missing GitHub App private key", { GITHUB_APP_PRIVATE_KEY: "" }, "GITHUB_APP_PRIVATE_KEY"],
+    ["missing GitHub OAuth client id", { GITHUB_CLIENT_ID: "" }, "GITHUB_CLIENT_ID"],
+    ["missing GitHub OAuth client secret", { GITHUB_CLIENT_SECRET: "" }, "GITHUB_CLIENT_SECRET"],
+    ["missing session secret", { SESSION_SECRET: "" }, "SESSION_SECRET"],
     ["unsigned webhooks enabled", { ALLOW_UNSIGNED_GITHUB_WEBHOOKS: "true" }, "ALLOW_UNSIGNED"],
     ["source storage enabled", { SOURCE_CODE_STORAGE: "true" }, "SOURCE_CODE_STORAGE"],
     ["redaction disabled", { REDACT_SECRETS: "false" }, "REDACT_SECRETS"],
@@ -58,6 +69,21 @@ describe("AgentForge runtime config", () => {
     ]
   ])("fails closed in production when %s", (_name, override, message) => {
     expect(() => loadConfig({ ...productionBaseEnv, ...override })).toThrow(message);
+  });
+
+  it("allows trusted-proxy-only production deployments without optional dashboard OAuth", () => {
+    const config = loadConfig({
+      ...productionBaseEnv,
+      GITHUB_APP_SLUG: "",
+      GITHUB_CLIENT_ID: "",
+      GITHUB_CLIENT_SECRET: "",
+      SESSION_SECRET: ""
+    });
+
+    expect(config.github.appSlug).toBeUndefined();
+    expect(config.github.clientId).toBeUndefined();
+    expect(config.github.clientSecret).toBeUndefined();
+    expect(config.sessionSecret).toBeUndefined();
   });
 
   it("keeps local runtime defaults for development setup", () => {

@@ -1,8 +1,13 @@
 import { Download, GitBranch, Save, ShieldCheck } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
-import { loadSettings, type SettingsData } from "../data";
+import { loadGithubInstallations, loadSettings, type SettingsData } from "../data";
 import { createRecordExport } from "../records/actions";
-import { saveRepositorySettings } from "./actions";
+import {
+  approveGithubInstallation,
+  recordGithubInstallation,
+  rejectGithubInstallation,
+  saveRepositorySettings
+} from "./actions";
 
 type SettingsPageProps = {
   searchParams?: Promise<{
@@ -15,13 +20,18 @@ type SettingsPageProps = {
 
 export default async function SettingsPage({ searchParams }: SettingsPageProps) {
   const params = await searchParams;
-  const { settings, source, message } = await loadSettings();
+  const [{ settings, source, message }, installationsResult] = await Promise.all([
+    loadSettings(),
+    loadGithubInstallations()
+  ]);
+  const installations = installationsResult.data;
   const enabledRepositories =
     settings?.repositories.filter((repository) => repository.enabled) ?? [];
   const selectedRepository = enabledRepositories[0] ?? settings?.repositories[0];
   const selectedHandling = selectedRepository?.dataHandling ?? settings?.dataHandling;
   const defaultMode = selectedRepository?.mode;
   const installation = installationDisplay(settings?.githubInstallation);
+  const canRecordGithubInstallation = settings?.runtimeStore === "postgres";
   const repositoryOwnerMappings =
     settings?.ownerMappings.filter((mapping) =>
       selectedRepository ? mapping.sources.includes(selectedRepository.id) : true
@@ -79,6 +89,51 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
             </div>
           </section>
         ) : null}
+        {params?.updated === "github-installation-recorded" ? (
+          <section className="notice">
+            <GitBranch size={18} aria-hidden="true" />
+            <div>
+              <h2>GitHub installation recorded</h2>
+              <p>Review and approve the pending installation before it can govern repositories.</p>
+            </div>
+          </section>
+        ) : null}
+        {params?.updated === "github-installation-approved" ? (
+          <section className="notice">
+            <ShieldCheck size={18} aria-hidden="true" />
+            <div>
+              <h2>GitHub installation approved</h2>
+              <p>The installation is now linked to this AgentForge organization.</p>
+            </div>
+          </section>
+        ) : null}
+        {params?.updated === "github-installation-rejected" ? (
+          <section className="notice">
+            <GitBranch size={18} aria-hidden="true" />
+            <div>
+              <h2>GitHub installation rejected</h2>
+              <p>The installation remains untrusted and cannot govern repositories.</p>
+            </div>
+          </section>
+        ) : null}
+        {params?.updated === "github-login" ? (
+          <section className="notice">
+            <ShieldCheck size={18} aria-hidden="true" />
+            <div>
+              <h2>GitHub login connected</h2>
+              <p>Dashboard requests now use the signed GitHub session for actor context.</p>
+            </div>
+          </section>
+        ) : null}
+        {params?.updated === "github-logout" ? (
+          <section className="notice">
+            <GitBranch size={18} aria-hidden="true" />
+            <div>
+              <h2>Dashboard session cleared</h2>
+              <p>Sign in again or use trusted proxy headers to manage protected settings.</p>
+            </div>
+          </section>
+        ) : null}
         {params?.error ? (
           <section className="notice notice--unavailable">
             <GitBranch size={18} aria-hidden="true" />
@@ -128,6 +183,125 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                     : installation.detail}
                 </p>
                 {installation.help ? <p className="muted">{installation.help}</p> : null}
+              </li>
+              <li>
+                <div className="list-row">
+                  <span>Pending approvals</span>
+                  <strong>{settings?.githubInstallation.pendingApprovalCount ?? 0}</strong>
+                </div>
+                <p>
+                  {settings?.githubInstallation.installUrl
+                    ? "Use the install link below, then approve the returned installation."
+                    : "Configure GITHUB_APP_SLUG to enable the in-dashboard install link."}
+                </p>
+                <div className="control-row">
+                  {settings?.githubInstallation.installUrl ? (
+                    <a className="button" href={settings.githubInstallation.installUrl}>
+                      <GitBranch size={16} aria-hidden="true" /> Install GitHub App
+                    </a>
+                  ) : null}
+                </div>
+              </li>
+              <li>
+                <div className="list-row">
+                  <span>App credentials</span>
+                  <StatusBadge
+                    status={
+                      settings?.githubInstallation.appCredentialsConfigured ? "approved" : "low"
+                    }
+                    label={
+                      settings?.githubInstallation.appCredentialsConfigured
+                        ? "configured"
+                        : "missing"
+                    }
+                  />
+                </div>
+                <p>Required for installation tokens, repository sync, and GitHub check runs.</p>
+              </li>
+              <li>
+                <div className="list-row">
+                  <span>Webhook secret</span>
+                  <StatusBadge
+                    status={
+                      settings?.githubInstallation.webhookSecretConfigured ? "approved" : "low"
+                    }
+                    label={
+                      settings?.githubInstallation.webhookSecretConfigured
+                        ? "configured"
+                        : "missing"
+                    }
+                  />
+                </div>
+                <p>
+                  Required to verify GitHub webhook deliveries before they affect runtime state.
+                </p>
+              </li>
+              <li>
+                <div className="list-row">
+                  <span>Install link</span>
+                  <StatusBadge
+                    status={settings?.githubInstallation.installUrl ? "approved" : "low"}
+                    label={settings?.githubInstallation.installUrl ? "configured" : "missing slug"}
+                  />
+                </div>
+                <p>Set GITHUB_APP_SLUG to open GitHub App installation from the dashboard.</p>
+              </li>
+              <li>
+                <div className="list-row">
+                  <span>Runtime store</span>
+                  <StatusBadge
+                    status={canRecordGithubInstallation ? "approved" : "low"}
+                    label={settings?.runtimeStore === "postgres" ? "Postgres" : "in-memory"}
+                  />
+                </div>
+                <p>
+                  {canRecordGithubInstallation
+                    ? "GitHub installation approval state is durable."
+                    : "Manual installation approval requires the Postgres runtime store."}
+                </p>
+              </li>
+              <li>
+                <div className="list-row">
+                  <span>Dashboard authentication</span>
+                  <StatusBadge
+                    status={
+                      settings?.auth?.builtInGithubOAuthConfigured ||
+                      settings?.auth?.trustedProxyConfigured
+                        ? "approved"
+                        : "low"
+                    }
+                    label={
+                      settings?.auth?.builtInGithubOAuthConfigured
+                        ? "GitHub OAuth"
+                        : settings?.auth?.trustedProxyConfigured
+                          ? "trusted proxy"
+                          : "not configured"
+                    }
+                  />
+                </div>
+                <p>
+                  Built-in GitHub OAuth can be used for self-hosted admins, while trusted proxy
+                  headers remain available for enterprise SSO deployments.
+                </p>
+                <div className="control-row">
+                  {settings?.auth?.builtInGithubOAuthConfigured ? (
+                    <a className="button" href="/auth/github/login">
+                      <ShieldCheck size={16} aria-hidden="true" /> Sign in with GitHub
+                    </a>
+                  ) : (
+                    <button className="button" disabled type="button">
+                      <ShieldCheck size={16} aria-hidden="true" /> Sign in with GitHub
+                    </button>
+                  )}
+                  <a className="button" href="/auth/logout">
+                    Sign out
+                  </a>
+                </div>
+                {!settings?.auth?.builtInGithubOAuthConfigured ? (
+                  <p className="muted">
+                    Configure GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to enable GitHub OAuth.
+                  </p>
+                ) : null}
               </li>
               <li>
                 <div className="list-row">
@@ -186,6 +360,103 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
             </div>
           </section>
         </div>
+
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <h2>GitHub installation approvals</h2>
+              <p>Installations must be approved by an admin before they can govern repositories.</p>
+            </div>
+            <GitBranch size={18} aria-hidden="true" />
+          </div>
+          <div className="panel-body">
+            {installationsResult.source !== "api" ? (
+              <p className="muted">{installationsResult.message}</p>
+            ) : null}
+            {installations?.installations.length === 0 ? (
+              <p className="muted">
+                No pending or linked GitHub installations are stored yet. Install the GitHub App or
+                record an installation ID manually after completing GitHub setup.
+              </p>
+            ) : null}
+            {!canRecordGithubInstallation ? (
+              <p className="muted">
+                Manual installation recording is disabled for the in-memory runtime. Start Postgres,
+                run migrations, and use the Postgres-backed API before approving installations.
+              </p>
+            ) : null}
+            {installations?.installations.map((item) => (
+              <div className="toggle-row" key={item.id}>
+                <div>
+                  <strong>{item.accountLogin}</strong>
+                  <p className="muted">
+                    installation {item.githubInstallationId} · {item.accountType} · {item.status}
+                  </p>
+                  {item.approvedBy ? <p className="muted">Approved by {item.approvedBy}</p> : null}
+                </div>
+                {item.status === "pending_approval" ? (
+                  <div className="control-row">
+                    <form action={approveGithubInstallation}>
+                      <input name="returnTo" type="hidden" value="/settings" />
+                      <input name="installationRecordId" type="hidden" value={item.id} />
+                      <button className="button button--primary" type="submit">
+                        Approve
+                      </button>
+                    </form>
+                    <form action={rejectGithubInstallation}>
+                      <input name="returnTo" type="hidden" value="/settings" />
+                      <input name="installationRecordId" type="hidden" value={item.id} />
+                      <button className="button" type="submit">
+                        Reject
+                      </button>
+                    </form>
+                  </div>
+                ) : (
+                  <StatusBadge status={item.status === "approved" ? "approved" : "low"} />
+                )}
+              </div>
+            ))}
+            <form action={recordGithubInstallation} className="form-grid">
+              <input name="returnTo" type="hidden" value="/settings" />
+              <div className="field">
+                <label htmlFor="githubInstallationId">Manual installation ID</label>
+                <input
+                  className="input"
+                  disabled={!canRecordGithubInstallation}
+                  id="githubInstallationId"
+                  name="githubInstallationId"
+                  placeholder="12345678"
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="accountLogin">Account login</label>
+                <input
+                  className="input"
+                  disabled={!canRecordGithubInstallation}
+                  id="accountLogin"
+                  name="accountLogin"
+                  placeholder="acme"
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="accountType">Account type</label>
+                <select
+                  className="select"
+                  disabled={!canRecordGithubInstallation}
+                  id="accountType"
+                  name="accountType"
+                  defaultValue="Organization"
+                >
+                  <option value="Organization">Organization</option>
+                  <option value="User">User</option>
+                </select>
+              </div>
+              <button className="button" disabled={!canRecordGithubInstallation} type="submit">
+                Record installation
+              </button>
+            </form>
+          </div>
+        </section>
 
         <form action={saveRepositorySettings} className="two-column" id="repository-settings-form">
           <input name="returnTo" type="hidden" value="/settings" />
@@ -507,12 +778,21 @@ function installationDisplay(installation: SettingsData["githubInstallation"] | 
       detail: "GitHub App installation account is verified."
     };
   }
+  if (installation?.status === "pending_approval") {
+    return {
+      status: "warn",
+      label: "pending approval",
+      detail: "A GitHub App installation was recorded but needs platform admin approval.",
+      help: "Approve the pending installation below before governed repositories are enabled."
+    };
+  }
   if (installation?.credentialsConfigured) {
     return {
       status: "warn",
       label: "credentials only",
-      detail: "GitHub App credentials are configured, but no installation account is verified.",
-      help: "Complete the GitHub App installation flow or receive a signed webhook before enabling governed repositories."
+      detail:
+        "GitHub App authentication and webhook settings are present, but no approved installation account is linked.",
+      help: "Complete the GitHub App installation flow, receive a signed webhook, or record a Postgres-backed manual installation before enabling governed repositories."
     };
   }
   return {

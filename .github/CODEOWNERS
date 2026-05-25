@@ -1,0 +1,8 @@
+* @leonardwongly
+
+/packages/config/ @leonardwongly
+/packages/security/ @leonardwongly
+/apps/api/src/auth.ts @leonardwongly
+/apps/api/src/app.ts @leonardwongly
+/packages/db/prisma/ @leonardwongly
+/.github/ @leonardwongly

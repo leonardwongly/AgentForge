@@ -13,6 +13,7 @@ import {
   summarizeReviewerRequirements,
   type SettingsData
 } from "../data";
+import { runSamplePolicyPreview } from "./actions";
 import { saveRepositorySettings } from "../settings/actions";
 
 type OnboardingPageProps = {
@@ -42,6 +43,8 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
     onboarding.steps.length === 0
       ? 0
       : Math.round((completedSteps / onboarding.steps.length) * 100);
+  const canFinishSetup = onboarding.steps.length > 0 && completedSteps === onboarding.steps.length;
+  const githubInstallation = settings.settings?.githubInstallation;
   const selectedMode =
     enabledRepositories[0]?.mode ?? repositories.repositories[0]?.mode ?? "observe";
   const selectedRepository = enabledRepositories[0] ?? repositories.repositories[0];
@@ -55,6 +58,9 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
     ) ?? [];
   const ownerMappingRows = ownerRows(repositoryOwnerMappings);
   const routingDiagnostics = settings.settings?.routingDiagnostics;
+  const canRunSamplePreview =
+    process.env.NODE_ENV !== "production" ||
+    process.env.AGENTFORGE_ENABLE_SAMPLE_PREVIEW === "true";
 
   return (
     <>
@@ -65,8 +71,19 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
         </div>
         {selectedRepository ? (
           <button className="button button--primary" form="onboarding-settings-form" type="submit">
-            <CheckCircle2 size={16} aria-hidden="true" /> Finish setup
+            <CheckCircle2 size={16} aria-hidden="true" />{" "}
+            {canFinishSetup ? "Finish setup" : "Save setup progress"}
           </button>
+        ) : githubInstallation?.installUrl ? (
+          <Link className="button button--primary" href={githubInstallation.installUrl}>
+            <GitBranch size={16} aria-hidden="true" /> Install GitHub App
+          </Link>
+        ) : canRunSamplePreview ? (
+          <form action={runSamplePolicyPreview}>
+            <button className="button button--primary" type="submit">
+              <Play size={16} aria-hidden="true" /> Run sample preview
+            </button>
+          </form>
         ) : (
           <Link className="button button--primary" href="/settings">
             <GitBranch size={16} aria-hidden="true" /> Review setup state
@@ -81,14 +98,38 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
             <div>
               <h2>No repositories are connected yet</h2>
               <p>
-                Install and verify the GitHub App, then send a webhook or run a persisted policy
-                preview so AgentForge can discover repositories before setup can be finished.
+                Install and verify the GitHub App, send a webhook, or run the local sample preview
+                so AgentForge can discover repositories before setup can be finished.
               </p>
             </div>
             <div className="control-row">
+              {githubInstallation?.installUrl ? (
+                <Link className="button" href={githubInstallation.installUrl}>
+                  Install GitHub App
+                </Link>
+              ) : null}
+              {canRunSamplePreview ? (
+                <form action={runSamplePolicyPreview}>
+                  <button className="button" type="submit">
+                    <Play size={16} aria-hidden="true" /> Run sample preview
+                  </button>
+                </form>
+              ) : null}
               <Link className="button" href="/settings">
                 Review settings
               </Link>
+            </div>
+          </section>
+        ) : null}
+        {params?.updated === "sample-preview" ? (
+          <section className="notice">
+            <ShieldCheck size={18} aria-hidden="true" />
+            <div>
+              <h2>Sample preview created</h2>
+              <p>
+                AgentForge created a local Change Control Record from the bundled billing fixture.
+                Continue setup by selecting the discovered repository and reviewer routing.
+              </p>
             </div>
           </section>
         ) : null}
@@ -106,12 +147,27 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
             </div>
           </section>
         ) : null}
+        {githubInstallation?.status === "pending_approval" ? (
+          <section className="notice">
+            <GitBranch size={18} aria-hidden="true" />
+            <div>
+              <h2>GitHub installation is waiting for approval</h2>
+              <p>
+                A platform admin must approve the installation in Settings before AgentForge can
+                publish governed repository checks.
+              </p>
+            </div>
+            <Link className="button" href="/settings">
+              Review installation
+            </Link>
+          </section>
+        ) : null}
         {params?.error ? (
           <section className="notice notice--unavailable">
             <GitBranch size={18} aria-hidden="true" />
             <div>
               <h2>Setup was not saved</h2>
-              <p>{params.error}</p>
+              <p>{onboardingErrorMessage(params.error)}</p>
             </div>
           </section>
         ) : null}
@@ -487,7 +543,7 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
                       </div>
                       <p>
                         {missing.length > 0
-                          ? `Missing evidence: ${summarizeEvidenceRequirements(missing)}`
+                          ? `Open evidence: ${summarizeEvidenceRequirements(missing)}`
                           : reviewers.length > 0
                             ? `Pending reviewers: ${summarizeReviewerRequirements(reviewers)}`
                             : "Configured policy requirements are satisfied."}
@@ -539,4 +595,14 @@ function ownerRows(mappings: NonNullable<SettingsData["ownerMappings"]>): Array<
       reviewerType: configured.reviewerType
     };
   });
+}
+
+function onboardingErrorMessage(error: string): string {
+  const messages: Record<string, string> = {
+    "sample-preview-disabled":
+      "The bundled sample preview is available only in local development and test environments.",
+    "sample-preview-failed":
+      "The bundled sample preview could not be created. Verify the API is running and local actor fallback is enabled."
+  };
+  return messages[error] ?? error;
 }

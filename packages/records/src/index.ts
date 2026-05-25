@@ -691,6 +691,9 @@ export function requiredAuditMetadataFields(action: AuditEventAction): string[] 
     check_published: ["conclusion", "status", "mode", "policyVersion", "recordId"],
     record_exported: ["format", "recordCount"],
     webhook_replayed: ["deliveryId", "replayJobId"],
+    github_installation_verification_recorded: ["githubInstallationId", "accountLogin", "status"],
+    github_installation_approved: ["githubInstallationId", "accountLogin"],
+    github_installation_rejected: ["githubInstallationId", "accountLogin"],
     retention_changed: ["dataHandling"],
     repository_settings_changed: ["enabled", "mode"],
     owner_mapping_changed: ["ownerMappings"]

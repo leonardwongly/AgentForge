@@ -134,6 +134,73 @@ export async function saveRepositorySettings(formData: FormData): Promise<void> 
   redirect(`${returnTo}?updated=repository-settings`);
 }
 
+export async function recordGithubInstallation(formData: FormData): Promise<void> {
+  const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/settings");
+  const githubInstallationId = readString(formData, "githubInstallationId");
+  if (!githubInstallationId || !/^\d{1,20}$/u.test(githubInstallationId)) {
+    redirectWithError(returnTo, "Enter a numeric GitHub installation ID.");
+  }
+  const accountLogin = readString(formData, "accountLogin");
+  const accountType = readString(formData, "accountType") === "User" ? "User" : "Organization";
+
+  try {
+    const actor = await resolveDashboardActor();
+    await requestJson(actor, "/api/github/installations/verify", {
+      method: "POST",
+      body: JSON.stringify({ githubInstallationId, accountLogin, accountType })
+    });
+  } catch (error) {
+    redirectWithError(
+      returnTo,
+      error instanceof Error ? error.message : "GitHub installation could not be recorded."
+    );
+  }
+
+  revalidatePath("/settings");
+  revalidatePath("/onboarding");
+  redirect(`${returnTo}?updated=github-installation-recorded`);
+}
+
+export async function approveGithubInstallation(formData: FormData): Promise<void> {
+  await decideGithubInstallation(formData, "approve", "github-installation-approved");
+}
+
+export async function rejectGithubInstallation(formData: FormData): Promise<void> {
+  await decideGithubInstallation(formData, "reject", "github-installation-rejected");
+}
+
+async function decideGithubInstallation(
+  formData: FormData,
+  action: "approve" | "reject",
+  updated: string
+): Promise<void> {
+  const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/settings");
+  const installationRecordId = readString(formData, "installationRecordId");
+  if (!installationRecordId) {
+    redirectWithError(returnTo, "Select a GitHub installation before continuing.");
+  }
+  try {
+    const actor = await resolveDashboardActor();
+    await requestJson(
+      actor,
+      `/api/github/installations/${encodeURIComponent(installationRecordId)}/${action}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reason: readString(formData, "reason") })
+      }
+    );
+  } catch (error) {
+    redirectWithError(
+      returnTo,
+      error instanceof Error ? error.message : "GitHub installation decision could not be saved."
+    );
+  }
+
+  revalidatePath("/settings");
+  revalidatePath("/onboarding");
+  redirect(`${returnTo}?updated=${updated}`);
+}
+
 async function requestJson<T = unknown>(
   actor: DashboardActorContext,
   path: string,

@@ -63,16 +63,24 @@ model Organization {
 }
 
 model GitHubInstallation {
-  id                   String       @id @default(uuid())
-  organizationId       String
-  githubInstallationId BigInt       @unique
+  id                   String        @id @default(uuid())
+  organizationId       String?
+  githubInstallationId BigInt        @unique
   accountLogin         String
   accountType          String
-  createdAt            DateTime     @default(now())
-  updatedAt            DateTime     @updatedAt
-  organization         Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  status               String        @default("pending_approval")
+  approvedBy           String?
+  approvedAt           DateTime?
+  rejectedBy           String?
+  rejectedAt           DateTime?
+  archivedAt           DateTime?
+  lastWebhookAt        DateTime      @default(now())
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+  organization         Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
+  @@index([status, updatedAt])
 }
 
 model Repository {
@@ -85,6 +93,8 @@ model Repository {
   defaultBranch          String
   protected              Boolean            @default(false)
   enabled                Boolean            @default(true)
+  archivedAt             DateTime?
+  archiveReason          String?
   currentPolicyVersionId String?
   mode                   PolicyMode?
   createdAt              DateTime           @default(now())

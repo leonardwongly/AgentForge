@@ -16,8 +16,10 @@ export default async function PolicyViolationsPage() {
     loadPolicyPacks()
   ]);
   const groups = findingGroups(data.records);
-  const deterministicFindings = data.records.flatMap((item) =>
-    item.record.verifiedFindings.filter((finding) => finding.type !== "agent_signal_detected")
+  const deterministicFindingRows = data.records.flatMap((item) =>
+    item.record.verifiedFindings
+      .filter((finding) => finding.type !== "agent_signal_detected")
+      .map((finding) => ({ recordId: item.record.id, finding }))
   );
   const agentSignals = data.records.flatMap((item) =>
     item.record.verifiedFindings.filter((finding) => finding.type === "agent_signal_detected")
@@ -41,15 +43,15 @@ export default async function PolicyViolationsPage() {
         <div className="metrics-grid">
           <MetricCard
             label="Policy findings"
-            value={String(deterministicFindings.length)}
+            value={String(deterministicFindingRows.length)}
             detail="Verified or observed findings from paths, manifests, workflows, and migrations."
             tone="block"
           />
           <MetricCard
             label="Critical or high"
             value={String(
-              deterministicFindings.filter(
-                (item) => item.severity === "critical" || item.severity === "high"
+              deterministicFindingRows.filter(
+                ({ finding }) => finding.severity === "critical" || finding.severity === "high"
               ).length
             )}
             detail="Findings prioritized for evidence and reviewer routing."
@@ -156,15 +158,15 @@ export default async function PolicyViolationsPage() {
               </tr>
             </thead>
             <tbody>
-              {deterministicFindings.length === 0 ? (
+              {deterministicFindingRows.length === 0 ? (
                 <tr>
                   <td className="empty-row" colSpan={5}>
                     No deterministic policy findings are stored yet.
                   </td>
                 </tr>
               ) : null}
-              {deterministicFindings.map((finding) => (
-                <tr key={finding.id}>
+              {deterministicFindingRows.map(({ recordId, finding }) => (
+                <tr key={`${recordId}:${finding.id}`}>
                   <td>{humanize(finding.type)}</td>
                   <td>{humanize(finding.source)}</td>
                   <td>{finding.confidence}</td>

@@ -1,8 +1,10 @@
+import { readDashboardSessionFromCookieHeader } from "../auth/session";
+
 export type DashboardActorContext = {
   login: string;
   role: string;
   organizationId: string;
-  source: "trusted_headers" | "local_environment";
+  source: "trusted_headers" | "session" | "local_environment";
 };
 
 type HeaderReader = {
@@ -38,6 +40,13 @@ export function resolveDashboardActorContext(
     }
   }
 
+  const fromSession = input.headers
+    ? dashboardActorFromSession(input.headers, env.SESSION_SECRET)
+    : undefined;
+  if (fromSession) {
+    return fromSession;
+  }
+
   if (input.nodeEnv !== "production" || env.AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR === "true") {
     return dashboardActorFromLocalEnvironment(env);
   }
@@ -62,6 +71,19 @@ function dashboardActorFromTrustedHeaders(
   );
   return login && role && organizationId
     ? { login, role, organizationId, source: "trusted_headers" }
+    : undefined;
+}
+
+function dashboardActorFromSession(
+  headers: HeaderReader,
+  secret: string | undefined
+): DashboardActorContext | undefined {
+  const session = readDashboardSessionFromCookieHeader(headers.get("cookie"), secret);
+  const login = safeActorValue(session?.login);
+  const role = safeRoleValue(session?.role);
+  const organizationId = safeOrganizationValue(session?.organizationId);
+  return login && role && organizationId
+    ? { login, role, organizationId, source: "session" }
     : undefined;
 }
 

@@ -49,6 +49,32 @@ async function seedMergeGuardRecord(
   return payload.record;
 }
 
+test("fresh onboarding can create a local sample preview", async ({ page }) => {
+  await page.goto("/onboarding");
+  await expect(
+    page.getByRole("heading", { name: "No repositories are connected yet" })
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Run sample preview" }).first().click();
+
+  await expect(page.getByRole("heading", { name: "Sample preview created" })).toBeVisible();
+  await expect(page.locator("select#repositoryId")).toContainText("acme/first-run-payments");
+  await expect(page.getByRole("button", { name: "Save setup progress" })).toBeVisible();
+});
+
+test("settings explains unavailable GitHub setup actions in the sample runtime", async ({
+  page
+}) => {
+  await page.goto("/settings");
+
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(page.getByText("Manual installation recording is disabled")).toBeVisible();
+  await expect(page.getByLabel("Manual installation ID")).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Record installation" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Sign in with GitHub" })).toBeDisabled();
+  await expect(page.getByText("Configure GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET")).toBeVisible();
+});
+
 test("dashboard shows action-required pull requests first", async ({ page, request }) => {
   await seedMergeGuardRecord(request);
   await page.goto("/dashboard");
@@ -57,8 +83,78 @@ test("dashboard shows action-required pull requests first", async ({ page, reque
     page.getByLabel("Primary navigation").getByRole("link", { name: "Blocked PRs" })
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "Priority queue" })).toBeVisible();
-  await expect(page.getByText("required evidence missing").first()).toBeVisible();
+  await expect(page.getByText("evidence requirement open").first()).toBeVisible();
   await expect(page.getByText("required reviewer pending").first()).toBeVisible();
+});
+
+test("policy preview scopes records and reports exclusive counters", async ({ page, request }) => {
+  const scopedRecord = await seedMergeGuardRecord(request, {
+    mode: "warn",
+    repositoryFullName: "acme/scoped-preview"
+  });
+  await seedMergeGuardRecord(request, {
+    mode: "warn",
+    repositoryFullName: "acme/other-preview"
+  });
+
+  await page.goto(`/repositories/${scopedRecord.repositoryId}/policy-preview`);
+
+  await expect(page.getByRole("heading", { name: "Policy Preview" })).toBeVisible();
+  await expect(page.getByText("acme/scoped-preview").first()).toBeVisible();
+  await expect(page.getByText("acme/other-preview")).toHaveCount(0);
+
+  const metrics = await page.locator(".metric-card").evaluateAll((cards) =>
+    cards.map((card) => ({
+      label: card.querySelector("span")?.textContent?.trim(),
+      value: card.querySelector("strong")?.textContent?.trim()
+    }))
+  );
+  expect(metrics).toEqual(
+    expect.arrayContaining([
+      { label: "Would block", value: "1" },
+      { label: "Would warn", value: "0" },
+      { label: "Would pass", value: "0" }
+    ])
+  );
+});
+
+test("policy findings render repeated findings without duplicate key errors", async ({
+  page,
+  request
+}) => {
+  await seedMergeGuardRecord(request, {
+    mode: "warn",
+    repositoryFullName: "acme/repeated-finding-a"
+  });
+  await seedMergeGuardRecord(request, {
+    mode: "warn",
+    repositoryFullName: "acme/repeated-finding-b"
+  });
+  const consoleErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      consoleErrors.push(message.text());
+    }
+  });
+
+  await page.goto("/dashboard/policy-violations");
+  await expect(page.getByRole("heading", { name: "Policy Violations" })).toBeVisible();
+  await expect(page.getByText("acme/repeated-finding-a").first()).toBeVisible();
+  await expect(page.getByText("acme/repeated-finding-b").first()).toBeVisible();
+  expect(consoleErrors.some((message) => message.includes("same key"))).toBe(false);
+});
+
+test("overrides page distinguishes no overrides from no records", async ({ page, request }) => {
+  await seedMergeGuardRecord(request, {
+    mode: "warn",
+    repositoryFullName: "acme/no-overrides"
+  });
+
+  await page.goto("/dashboard/overrides");
+
+  await expect(page.getByRole("heading", { name: "Overrides", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No authorized overrides yet" })).toBeVisible();
+  await expect(page.getByText("No Change Control Records yet")).toHaveCount(0);
 });
 
 test("governance drill-down routes render careful change-control language", async ({
@@ -82,7 +178,7 @@ test("governance drill-down routes render careful change-control language", asyn
 
   for (const [route, heading, expectedText] of routes) {
     await page.goto(route);
-    await expect(page.getByRole("heading", { name: heading })).toBeVisible();
+    await expect(page.getByRole("heading", { name: heading, exact: true })).toBeVisible();
     await expect(page.getByText(expectedText).first()).toBeVisible();
     await expect(page.getByText("unsafe PR")).toHaveCount(0);
     await expect(page.getByText("bad AI code")).toHaveCount(0);
@@ -95,14 +191,30 @@ test("settings form persists repository mode, retention, and owner mappings", as
   page,
   request
 }) => {
-  const [rawPr] = await Promise.all([
+  const [rawPr, contentYaml] = await Promise.all([
     readFile(path.resolve(process.cwd(), "fixtures", "repos", "billing-path.json"), "utf8"),
+    readFile(path.resolve(process.cwd(), "fixtures", "policies", "fintech.yaml"), "utf8"),
     seedMergeGuardRecord(request)
   ]);
   const pr = JSON.parse(rawPr) as PullRequestInput;
 
+  await page.setViewportSize({ width: 1200, height: 900 });
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  const ownerKeyWidth = await page
+    .getByLabel("Owner key 1")
+    .evaluate((element) => element.getBoundingClientRect().width);
+  const reviewerWidth = await page
+    .getByLabel("Reviewer 1")
+    .evaluate((element) => element.getBoundingClientRect().width);
+  expect(ownerKeyWidth).toBeGreaterThanOrEqual(120);
+  expect(reviewerWidth).toBeGreaterThanOrEqual(120);
+
+  const selectedRepositoryFullName = await page
+    .locator("#repositoryId option:checked")
+    .textContent();
+  expect(selectedRepositoryFullName).toBeTruthy();
+  pr.repositoryFullName = selectedRepositoryFullName!.trim();
 
   await page.getByLabel("Mode").selectOption("optimize");
   await page.getByLabel("Full diff retention").selectOption("7d");
@@ -118,7 +230,7 @@ test("settings form persists repository mode, retention, and owner mappings", as
   await expect(page.getByLabel("Reviewer 1")).toHaveValue("runtime-team");
 
   const activePolicyPreview = await request.post(`${apiBaseUrl}/api/policies/preview`, {
-    data: { pr }
+    data: { pr, contentYaml }
   });
   expect(activePolicyPreview.ok()).toBeTruthy();
   const previewPayload = (await activePolicyPreview.json()) as {
@@ -224,6 +336,8 @@ test("evidence workflow resolves requirements through record actions", async ({
   await page.getByRole("button", { name: "Approve reviewer" }).first().click();
   await expect(page.getByRole("heading", { name: "Reviewer approved" })).toBeVisible();
   await expect(page.getByText("pass").first()).toBeVisible();
+  await expect(page.getByText("All required evidence is approved or accepted.")).toBeVisible();
+  await expect(page.getByText("No required reviewer approvals are pending.")).toBeVisible();
 
   const updated = await request.get(
     `${apiBaseUrl}/api/pull-requests/${record.id}/change-control-record`,
@@ -239,4 +353,10 @@ test("evidence workflow resolves requirements through record actions", async ({
   await page.goto("/dashboard/evidence-completion");
   await expect(page.getByText("acme/evidence-workflow").first()).toBeVisible();
   await expect(page.getByText("complete").first()).toBeVisible();
+
+  await page.goto("/dashboard/blocked-prs");
+  await expect(page.getByText("No Change Control Records yet")).toHaveCount(0);
+
+  await page.goto("/dashboard/policy-insights");
+  await expect(page.getByText("No Change Control Records yet")).toHaveCount(0);
 });

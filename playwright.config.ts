@@ -32,6 +32,7 @@ export default defineConfig({
         "pnpm exec tsx scripts/e2e-preflight.ts --require-build --skip-port-check --skip-e2e-lock-check && " +
         `API_BASE_URL=${apiBaseUrl} AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR=true ` +
         "AGENTFORGE_DASHBOARD_ACTOR=playwright AGENTFORGE_DASHBOARD_ROLE=platform_admin " +
+        "AGENTFORGE_ENABLE_SAMPLE_PREVIEW=true AGENTFORGE_SAMPLE_FIXTURE_ROOT=$PWD " +
         "pnpm --filter @agentforge/web exec next start " +
         `--hostname 127.0.0.1 --port ${appPort}`,
       url: appBaseUrl,

@@ -152,12 +152,22 @@ export type OnboardingStep = {
 };
 
 export type SettingsData = {
+  runtimeStore?: "postgres" | "in_memory" | undefined;
   githubInstallation: {
     connected: boolean;
     credentialsConfigured?: boolean | undefined;
+    appCredentialsConfigured?: boolean | undefined;
+    webhookSecretConfigured?: boolean | undefined;
     accountLogin?: string | undefined;
     accountType?: string | undefined;
     githubInstallationId?: string | undefined;
+    status?: string | undefined;
+    pendingApprovalCount?: number | undefined;
+    installUrl?: string | undefined;
+  };
+  auth?: {
+    builtInGithubOAuthConfigured: boolean;
+    trustedProxyConfigured: boolean;
   };
   repositories: RepositoryOption[];
   dataHandling: {
@@ -191,6 +201,27 @@ export type SettingsData = {
   };
 };
 
+export type GithubInstallationAdminData = {
+  installations: Array<{
+    id: string;
+    organizationId?: string | undefined;
+    githubInstallationId: string;
+    accountLogin: string;
+    accountType: string;
+    status: string;
+    approvedBy?: string | undefined;
+    approvedAt?: string | undefined;
+    rejectedBy?: string | undefined;
+    rejectedAt?: string | undefined;
+    archivedAt?: string | undefined;
+    lastWebhookAt: string;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  installUrl?: string | undefined;
+  credentialsConfigured: boolean;
+};
+
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:4000";
 const API_FETCH_TIMEOUT_MS = 5_000;
 
@@ -207,8 +238,9 @@ export async function loadDashboardData(
         records: [],
         pageInfo: payload.pageInfo,
         source: "empty",
-        message:
-          "No evaluated PRs are stored yet. Send a GitHub webhook or run a policy preview to create Change Control Records."
+        message: request.repositoryId
+          ? "No evaluated PRs are stored for this repository yet. Send a GitHub webhook or run a persisted policy preview for this repository first."
+          : "No evaluated PRs are stored yet. Send a GitHub webhook or run a policy preview to create Change Control Records."
       };
     }
     return {
@@ -296,12 +328,15 @@ export async function loadPolicyTuningInsights(): Promise<PolicyTuningData> {
     const payload = await fetchApiJson<
       Omit<PolicyTuningData, "source" | "message"> & { pageInfo?: PageInfo }
     >("/api/dashboard/policy-insights?limit=100&sort=updated_desc");
+    const hasRecords = payload.recordCount > 0;
     return {
       ...payload,
-      source: payload.insights.length === 0 ? "empty" : "api",
+      source: hasRecords ? "api" : "empty",
       message:
         payload.insights.length === 0
-          ? "No policy tuning opportunities are available yet. Evaluate more pull requests to build an operational history."
+          ? hasRecords
+            ? `Analyzed ${payload.recordCount} Change Control Record${payload.recordCount === 1 ? "" : "s"}; no policy tuning recommendations are available for this record window.`
+            : "No policy tuning opportunities are available yet. Evaluate more pull requests to build an operational history."
           : `Loaded ${payload.insights.length} advisory policy tuning insight${payload.insights.length === 1 ? "" : "s"} from ${payload.recordCount} records.`
     };
   } catch (error) {
@@ -459,6 +494,30 @@ export async function loadSettings(): Promise<{
         error instanceof Error
           ? `Settings API unavailable: ${error.message}.`
           : "Settings API unavailable."
+    };
+  }
+}
+
+export async function loadGithubInstallations(): Promise<{
+  data: GithubInstallationAdminData | undefined;
+  source: DashboardDataSource;
+  message: string;
+}> {
+  try {
+    const data = await fetchApiJson<GithubInstallationAdminData>("/api/github/installations");
+    return {
+      data,
+      source: "api",
+      message: "Loaded GitHub installation administration state from the API."
+    };
+  } catch (error) {
+    return {
+      data: undefined,
+      source: "unavailable",
+      message:
+        error instanceof Error
+          ? `GitHub installation API unavailable: ${error.message}.`
+          : "GitHub installation API unavailable."
     };
   }
 }

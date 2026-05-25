@@ -45,6 +45,16 @@ Webhook URL:
 https://<api-host>/webhooks/github
 ```
 
+Dashboard setup URL:
+
+```text
+https://<dashboard-host>/github/installations/callback
+```
+
+Set `GITHUB_APP_SLUG` so the Settings and Onboarding pages can open the GitHub App installation flow. After GitHub redirects back with `installation_id`, AgentForge records the installation as `pending_approval`. A platform admin must approve the installation in Settings before repositories from that installation can be governed.
+
+If the callback cannot be used, run AgentForge with the Postgres runtime store, record the numeric installation ID manually in Settings with the installation account login, then approve it as a platform admin. Manual installation approval is disabled for the in-memory local sample runtime because installation trust state must be durable.
+
 Local development:
 
 ```bash
@@ -71,3 +81,5 @@ Private key setup:
 3. For local development, place the escaped PEM in `GITHUB_APP_PRIVATE_KEY`.
 
 Do not commit GitHub private keys, webhook secrets, OAuth secrets, tokens, or installation tokens.
+
+See [auth.md](auth.md) for trusted proxy auth, built-in GitHub OAuth, and installation approval details.

@@ -36,6 +36,7 @@ const envSchema = z.object({
   GITHUB_APP_PRIVATE_KEY: optionalStringFromEnv,
   GITHUB_INSTALLATION_ID: optionalStringFromEnv,
   GITHUB_WEBHOOK_SECRET: optionalStringFromEnv,
+  GITHUB_APP_SLUG: optionalStringFromEnv,
   ALLOW_UNSIGNED_GITHUB_WEBHOOKS: booleanFromEnv.default(false),
   GITHUB_CLIENT_ID: optionalStringFromEnv,
   GITHUB_CLIENT_SECRET: optionalStringFromEnv,
@@ -67,6 +68,7 @@ export type AgentForgeConfig = {
     privateKey: string | undefined;
     installationId: string | undefined;
     webhookSecret: string | undefined;
+    appSlug: string | undefined;
     allowUnsignedWebhooks: boolean;
     clientId: string | undefined;
     clientSecret: string | undefined;
@@ -104,6 +106,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConf
       privateKey: parsed.GITHUB_APP_PRIVATE_KEY,
       installationId: parsed.GITHUB_INSTALLATION_ID,
       webhookSecret: parsed.GITHUB_WEBHOOK_SECRET,
+      appSlug: parsed.GITHUB_APP_SLUG,
       allowUnsignedWebhooks: parsed.ALLOW_UNSIGNED_GITHUB_WEBHOOKS ?? false,
       clientId: parsed.GITHUB_CLIENT_ID,
       clientSecret: parsed.GITHUB_CLIENT_SECRET
@@ -137,8 +140,34 @@ function validateProductionConfig(config: AgentForgeConfig): void {
     return;
   }
   const errors: string[] = [];
+  const builtInGithubOAuthConfigured = Boolean(
+    config.github.clientId || config.github.clientSecret
+  );
   if (!config.github.webhookSecret) {
     errors.push("GITHUB_WEBHOOK_SECRET is required in production.");
+  }
+  if (!config.github.appId) {
+    errors.push(
+      "GITHUB_APP_ID is required in production so AgentForge can mint installation tokens and publish checks."
+    );
+  }
+  if (!config.github.privateKey) {
+    errors.push(
+      "GITHUB_APP_PRIVATE_KEY is required in production so AgentForge can authenticate as the GitHub App."
+    );
+  }
+  if (builtInGithubOAuthConfigured && !config.github.clientId) {
+    errors.push(
+      "GITHUB_CLIENT_ID is required in production for built-in GitHub OAuth and installation callback setup."
+    );
+  }
+  if (builtInGithubOAuthConfigured && !config.github.clientSecret) {
+    errors.push("GITHUB_CLIENT_SECRET is required in production for built-in GitHub OAuth.");
+  }
+  if (builtInGithubOAuthConfigured && !config.sessionSecret) {
+    errors.push(
+      "SESSION_SECRET is required in production for signed dashboard sessions and OAuth state."
+    );
   }
   if (config.github.allowUnsignedWebhooks) {
     errors.push("ALLOW_UNSIGNED_GITHUB_WEBHOOKS must be false in production.");

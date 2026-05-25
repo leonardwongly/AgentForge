@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DASHBOARD_SESSION_COOKIE, createDashboardSessionCookie } from "../auth/session";
 import { dashboardActorErrorMessage, resolveDashboardActorContext } from "./actor-context";
 
 function headers(values: Record<string, string | undefined>) {
@@ -49,6 +50,55 @@ describe("dashboard actor context", () => {
         headers: headers({
           "x-agentforge-authenticated-actor": "alex",
           "x-agentforge-authenticated-role": "platform_admin"
+        }),
+        nodeEnv: "production"
+      })
+    ).toBeUndefined();
+  });
+
+  it("uses a signed GitHub OAuth session when trusted proxy headers are absent", () => {
+    const session = createDashboardSessionCookie(
+      {
+        login: "octocat",
+        role: "platform_admin",
+        organizationId: "org-a",
+        provider: "github"
+      },
+      "test-session-secret"
+    );
+
+    expect(
+      resolveDashboardActorContext({
+        env: { SESSION_SECRET: "test-session-secret" },
+        headers: headers({
+          cookie: `${DASHBOARD_SESSION_COOKIE}=${session}`
+        }),
+        nodeEnv: "production"
+      })
+    ).toEqual({
+      login: "octocat",
+      role: "platform_admin",
+      organizationId: "org-a",
+      source: "session"
+    });
+  });
+
+  it("rejects tampered GitHub OAuth session cookies", () => {
+    const session = createDashboardSessionCookie(
+      {
+        login: "octocat",
+        role: "platform_admin",
+        organizationId: "org-a",
+        provider: "github"
+      },
+      "test-session-secret"
+    );
+
+    expect(
+      resolveDashboardActorContext({
+        env: { SESSION_SECRET: "test-session-secret" },
+        headers: headers({
+          cookie: `${DASHBOARD_SESSION_COOKIE}=${session}x`
         }),
         nodeEnv: "production"
       })
