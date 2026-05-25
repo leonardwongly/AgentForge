@@ -523,6 +523,33 @@ describe("GitHub installation webhook transitions", () => {
 });
 
 describe("GitHub installation repository replay", () => {
+  it("continues live repository pagination beyond the first ten pages", () => {
+    expect(
+      testInternals.githubInstallationRepositoryPageState({
+        body: { total_count: 1_250 },
+        pageRepositoryCount: 100,
+        repositoriesSeen: 1_000
+      })
+    ).toEqual({ complete: false, exceedsSafetyLimit: false });
+    expect(
+      testInternals.githubInstallationRepositoryPageState({
+        body: { total_count: 1_250 },
+        pageRepositoryCount: 50,
+        repositoriesSeen: 1_250
+      })
+    ).toEqual({ complete: true, exceedsSafetyLimit: false });
+  });
+
+  it("fails closed before archiving stale repositories when live repository scope exceeds the safety limit", () => {
+    expect(
+      testInternals.githubInstallationRepositoryPageState({
+        body: { total_count: 10_001 },
+        pageRepositoryCount: 100,
+        repositoriesSeen: 10_000
+      })
+    ).toEqual({ complete: false, exceedsSafetyLimit: true });
+  });
+
   it("replays all stored installation events chronologically across pages", async () => {
     const deliveries = Array.from({ length: 251 }, (_value, index) =>
       webhookDelivery(index, 12345, [

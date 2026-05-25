@@ -275,6 +275,8 @@ const COMPLIANCE_EXPORT_DEFAULT_RECORD_LIMIT = 250;
 const COMPLIANCE_EXPORT_MAX_RECORD_LIMIT = 500;
 const POLICY_YAML_MAX_BYTES = 200_000;
 const POSTGRES_SIGNED_BIGINT_MAX = "9223372036854775807";
+const GITHUB_INSTALLATION_REPOSITORY_PAGE_SIZE = 100;
+const GITHUB_INSTALLATION_REPOSITORY_PAGE_LIMIT = 100;
 
 const optionalQueryString = z.string().trim().min(1).max(240).optional();
 const policyModeSchema = z.enum(["observe", "warn", "enforce", "optimize"]);
@@ -3546,9 +3548,9 @@ async function fetchGithubInstallationRepositories(
       installationId: githubInstallationId
     });
     const repositories: Array<{ id: number; fullName: string }> = [];
-    for (let page = 1; page <= 10; page += 1) {
+    for (let page = 1; page <= GITHUB_INSTALLATION_REPOSITORY_PAGE_LIMIT; page += 1) {
       const response = await fetch(
-        `https://api.github.com/installation/repositories?per_page=100&page=${page}`,
+        `https://api.github.com/installation/repositories?per_page=${GITHUB_INSTALLATION_REPOSITORY_PAGE_SIZE}&page=${page}`,
         {
           headers: {
             accept: "application/vnd.github+json",
@@ -3572,14 +3574,42 @@ async function fetchGithubInstallationRepositories(
             .filter((repo): repo is { id: number; fullName: string } => Boolean(repo))
         : [];
       repositories.push(...pageRepositories);
-      if (pageRepositories.length < 100) {
-        break;
+      const pageState = githubInstallationRepositoryPageState({
+        body,
+        pageRepositoryCount: pageRepositories.length,
+        repositoriesSeen: repositories.length
+      });
+      if (pageState.exceedsSafetyLimit) {
+        return undefined;
+      }
+      if (pageState.complete) {
+        return repositories;
       }
     }
-    return repositories;
+    return undefined;
   } catch {
     return undefined;
   }
+}
+
+function githubInstallationRepositoryPageState(input: {
+  body: Record<string, unknown> | undefined;
+  pageRepositoryCount: number;
+  repositoriesSeen: number;
+}): { complete: boolean; exceedsSafetyLimit: boolean } {
+  const totalCount = numberFromUnknown(input.body?.total_count);
+  const safetyLimit =
+    GITHUB_INSTALLATION_REPOSITORY_PAGE_SIZE * GITHUB_INSTALLATION_REPOSITORY_PAGE_LIMIT;
+  if (totalCount !== undefined) {
+    return {
+      complete: input.repositoriesSeen >= totalCount,
+      exceedsSafetyLimit: totalCount > safetyLimit
+    };
+  }
+  return {
+    complete: input.pageRepositoryCount < GITHUB_INSTALLATION_REPOSITORY_PAGE_SIZE,
+    exceedsSafetyLimit: false
+  };
 }
 
 async function syncRepositoriesFromCurrentGithubInstallation(
@@ -4326,6 +4356,7 @@ export const testInternals = {
   ensureRepository,
   fetchGithubInstallationAccount,
   fetchGithubInstallationRepositories,
+  githubInstallationRepositoryPageState,
   listGithubInstallations,
   processGithubInstallationWebhook,
   rejectGithubInstallation,
