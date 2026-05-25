@@ -48,7 +48,9 @@ export async function runSamplePolicyPreview(): Promise<void> {
     );
     recordId = payload.record.id;
   } catch (error) {
-    void error;
+    console.error("Sample policy preview failed", {
+      message: error instanceof Error ? error.message : "unknown error"
+    });
     redirect("/onboarding?error=sample-preview-failed");
   }
 
@@ -69,15 +71,27 @@ async function requestJson<T>(
   route: string,
   init: RequestInit
 ): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  const onAbort = () => controller.abort(init.signal?.reason);
+  if (init.signal?.aborted) {
+    onAbort();
+  } else {
+    init.signal?.addEventListener("abort", onAbort, { once: true });
+  }
   const response = await fetch(`${apiBaseUrl}${route}`, {
     ...init,
     cache: "no-store",
+    signal: controller.signal,
     headers: {
       accept: "application/json",
       "content-type": "application/json",
       ...apiActorHeaders(actor),
       ...(init.headers ?? {})
     }
+  }).finally(() => {
+    clearTimeout(timeout);
+    init.signal?.removeEventListener("abort", onAbort);
   });
   if (!response.ok) {
     throw new Error(await responseError(response));

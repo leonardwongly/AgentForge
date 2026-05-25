@@ -33,14 +33,20 @@ export async function GET(request: Request): Promise<never> {
     redirect("/settings?error=GitHub%20OAuth%20is%20not%20configured");
   }
 
+  let login: string | undefined;
   try {
     const token = await exchangeCodeForToken({ clientId, clientSecret, code });
     const user = await loadGitHubUser(token);
-    const login = user.login;
-    if (!login) {
-      redirect("/settings?error=GitHub%20OAuth%20did%20not%20return%20a%20login");
-    }
+    login = user.login;
+  } catch {
+    redirect("/settings?error=GitHub%20OAuth%20login%20failed");
+  }
 
+  if (!login) {
+    redirect("/settings?error=GitHub%20OAuth%20did%20not%20return%20a%20login");
+  }
+
+  try {
     const cookieStore = await cookies();
     cookieStore.delete(GITHUB_OAUTH_STATE_COOKIE);
     cookieStore.set(

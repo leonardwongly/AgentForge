@@ -10,7 +10,7 @@ Security fixes are accepted against the `main` branch until a versioned release 
 
 Do not open a public GitHub issue for a suspected vulnerability.
 
-Report privately by using GitHub private vulnerability reporting if it is enabled on the repository. If it is not enabled, contact the maintainers through the private channel listed in the repository profile or project documentation.
+Report privately by using GitHub private vulnerability reporting if it is enabled on the repository. If it is not enabled, email me@leonardwong.tech with the subject prefix `[AgentForge Security]`.
 
 Include:
 

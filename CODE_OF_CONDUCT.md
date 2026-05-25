@@ -22,4 +22,4 @@ We pledge to make participation in the AgentForge community respectful, construc
 
 Maintainers may remove comments, close issues, block participants, or restrict repository access when behavior undermines a safe and productive project environment.
 
-Report conduct concerns through the private maintainer contact path listed for the repository.
+Report conduct concerns privately to me@leonardwong.tech with the subject prefix `[AgentForge Conduct]`.

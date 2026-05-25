@@ -18,6 +18,8 @@ export default async function GitHubInstallationCallback({
 }: GitHubInstallationCallbackProps) {
   const params = await searchParams;
   const installationId = params?.installation_id;
+  let verificationFailure =
+    "Sign in as a platform admin, then record and approve the installation.";
   if (!installationId) {
     return (
       <section className="page">
@@ -37,9 +39,12 @@ export default async function GitHubInstallationCallback({
 
   try {
     const actor = await resolveDashboardActor();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
     const response = await fetch(`${apiBaseUrl}/api/github/installations/verify`, {
       method: "POST",
       cache: "no-store",
+      signal: controller.signal,
       headers: {
         accept: "application/json",
         "content-type": "application/json",
@@ -49,11 +54,15 @@ export default async function GitHubInstallationCallback({
         githubInstallationId: installationId,
         accountType: "Organization"
       })
-    });
+    }).finally(() => clearTimeout(timeout));
     if (!response.ok) {
       throw new Error("GitHub installation verification failed");
     }
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) {
+      verificationFailure =
+        "Installation verification timed out. Open Settings and record the installation manually.";
+    }
     return (
       <section className="page">
         <section className="notice notice--unavailable">
@@ -61,7 +70,7 @@ export default async function GitHubInstallationCallback({
           <div>
             <h1>Admin approval is required</h1>
             <p>
-              Sign in as a platform admin, then record and approve installation {installationId}.
+              {verificationFailure} Installation ID: {installationId}.
             </p>
             <Link className="button button--primary" href="/settings">
               Open settings
@@ -73,4 +82,8 @@ export default async function GitHubInstallationCallback({
   }
 
   redirect("/settings?updated=github-installation-recorded");
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }

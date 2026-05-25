@@ -40,6 +40,7 @@ GITHUB_CLIENT_ID=<github-app-oauth-client-id>
 GITHUB_CLIENT_SECRET=<github-app-oauth-client-secret>
 SESSION_SECRET=<dashboard-session-secret>
 AGENTFORGE_API_TRUST_PROXY_HEADERS=true
+AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS=true
 AGENTFORGE_API_PROXY_SECRET=<shared-hmac-secret>
 AGENTFORGE_GITHUB_ADMIN_LOGINS=<comma-separated-admin-logins>
 AGENTFORGE_DASHBOARD_ORGANIZATION=<agentforge-organization-id>
