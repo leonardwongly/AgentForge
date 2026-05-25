@@ -207,6 +207,9 @@ function withDotEnvDefaults(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   if (env !== process.env) {
     return env;
   }
+  if (env.NODE_ENV === "test" || env.VITEST) {
+    return env;
+  }
   const dotEnvPath = findDotEnv(cwd());
   if (!dotEnvPath) {
     return env;

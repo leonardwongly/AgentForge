@@ -23,6 +23,8 @@ import {
 } from "@agentforge/core";
 import { PrismaClient } from "@agentforge/db";
 import {
+  createGithubAppToken,
+  createGithubInstallationToken,
   formatMergeGuardCheck,
   normalizeGithubWebhook,
   shouldEnqueueEvaluation,
@@ -821,7 +823,7 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     });
     const enqueued = shouldEnqueueEvaluation(envelope);
     await recordWebhookDelivery(state, prisma, envelope, enqueued);
-    await processGithubInstallationWebhook(state, prisma, envelope);
+    await processGithubInstallationWebhook(state, prisma, envelope, config);
     if (enqueued) {
       await enqueueMergeGuardEvaluation({
         state,
@@ -1059,8 +1061,13 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           "Manual GitHub installation verification requires the Postgres runtime store. Start Postgres, run migrations, and use the Postgres-backed API before recording or approving installations."
       });
     }
+    const githubAccount = parsed.data.accountLogin
+      ? undefined
+      : await fetchGithubInstallationAccount(config, parsed.data.githubInstallationId);
     const installation = await upsertPendingGithubInstallation(prisma, {
       ...parsed.data,
+      accountLogin: parsed.data.accountLogin ?? githubAccount?.accountLogin,
+      accountType: githubAccount?.accountType ?? parsed.data.accountType,
       organizationId: actor.organizationId
     });
     if (!installation) {
@@ -1110,6 +1117,12 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       return reply.code(404).send({ error: "GitHub installation was not found." });
     }
     await syncRepositoriesFromStoredInstallationEvents(state, prisma, installation);
+    await syncRepositoriesFromCurrentGithubInstallation(state, prisma, config, {
+      organizationId: installation.organizationId,
+      githubInstallationId: installation.githubInstallationId,
+      accountLogin: installation.accountLogin,
+      accountType: installation.accountType
+    });
     await audit({
       organizationId: actor.organizationId,
       actor: actor.login,
@@ -3363,7 +3376,8 @@ async function recordWebhookDelivery(
 async function processGithubInstallationWebhook(
   state: AppState,
   prisma: PrismaClient | undefined,
-  envelope: GithubWebhookEnvelope
+  envelope: GithubWebhookEnvelope,
+  config?: ReturnType<typeof loadConfig>
 ): Promise<void> {
   const installation = envelope.installation;
   if (!installation || !prisma) {
@@ -3410,6 +3424,20 @@ async function processGithubInstallationWebhook(
       lastWebhookAt: now
     }
   });
+  if (
+    row.organizationId &&
+    !archiveAction &&
+    row.status === "approved" &&
+    config &&
+    (await syncRepositoriesFromCurrentGithubInstallation(state, prisma, config, {
+      organizationId: row.organizationId,
+      githubInstallationId: row.githubInstallationId.toString(),
+      accountLogin: row.accountLogin,
+      accountType: row.accountType
+    }))
+  ) {
+    return;
+  }
   if (row.organizationId && !archiveAction) {
     await syncRepositoriesFromInstallation(state, prisma, row.organizationId, installation);
   }
@@ -3464,6 +3492,139 @@ async function upsertPendingGithubInstallation(
         }
       });
   return githubInstallationForApi(row);
+}
+
+async function fetchGithubInstallationAccount(
+  config: ReturnType<typeof loadConfig>,
+  githubInstallationId: string
+): Promise<{ accountLogin: string; accountType: "Organization" | "User" } | undefined> {
+  if (!config.github.appId || !config.github.privateKey) {
+    return undefined;
+  }
+  try {
+    const token = await createGithubAppToken({
+      appId: config.github.appId,
+      privateKey: config.github.privateKey
+    });
+    const response = await fetch(
+      `https://api.github.com/app/installations/${encodeURIComponent(githubInstallationId)}`,
+      {
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: `Bearer ${token}`,
+          "user-agent": "AgentForge"
+        }
+      }
+    );
+    if (!response.ok) {
+      return undefined;
+    }
+    const body = objectRecord(await response.json());
+    const account = objectRecord(body?.account);
+    const login = stringFromUnknown(account?.login);
+    const type = stringFromUnknown(account?.type);
+    if (!login || (type !== "Organization" && type !== "User")) {
+      return undefined;
+    }
+    return { accountLogin: login, accountType: type };
+  } catch {
+    return undefined;
+  }
+}
+
+async function fetchGithubInstallationRepositories(
+  config: ReturnType<typeof loadConfig>,
+  githubInstallationId: string
+): Promise<Array<{ id: number; fullName: string }> | undefined> {
+  if (!config.github.appId || !config.github.privateKey) {
+    return undefined;
+  }
+  try {
+    const token = await createGithubInstallationToken({
+      appId: config.github.appId,
+      privateKey: config.github.privateKey,
+      installationId: githubInstallationId
+    });
+    const repositories: Array<{ id: number; fullName: string }> = [];
+    for (let page = 1; page <= 10; page += 1) {
+      const response = await fetch(
+        `https://api.github.com/installation/repositories?per_page=100&page=${page}`,
+        {
+          headers: {
+            accept: "application/vnd.github+json",
+            authorization: `Bearer ${token}`,
+            "user-agent": "AgentForge"
+          }
+        }
+      );
+      if (!response.ok) {
+        return undefined;
+      }
+      const body = objectRecord(await response.json());
+      const pageRepositories = Array.isArray(body?.repositories)
+        ? body.repositories
+            .map((repo) => {
+              const record = objectRecord(repo);
+              const id = numberFromUnknown(record?.id);
+              const fullName = stringFromUnknown(record?.full_name);
+              return id && fullName ? { id, fullName } : undefined;
+            })
+            .filter((repo): repo is { id: number; fullName: string } => Boolean(repo))
+        : [];
+      repositories.push(...pageRepositories);
+      if (pageRepositories.length < 100) {
+        break;
+      }
+    }
+    return repositories;
+  } catch {
+    return undefined;
+  }
+}
+
+async function syncRepositoriesFromCurrentGithubInstallation(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  config: ReturnType<typeof loadConfig>,
+  input: {
+    organizationId?: string | undefined;
+    githubInstallationId: string;
+    accountLogin: string;
+    accountType?: string | undefined;
+  }
+): Promise<boolean> {
+  if (!prisma || !input.organizationId || !input.accountLogin) {
+    return false;
+  }
+  const repositories = await fetchGithubInstallationRepositories(
+    config,
+    input.githubInstallationId
+  );
+  if (!repositories) {
+    return false;
+  }
+  const currentNames = new Set(repositories.map((repository) => repository.fullName));
+  const staleRepositories = (
+    await listRepositorySummaries(state, prisma, config.defaultPolicyMode, input.organizationId)
+  )
+    .filter(
+      (repository) =>
+        repository.fullName.startsWith(`${input.accountLogin}/`) &&
+        !currentNames.has(repository.fullName)
+    )
+    .map((repository) => ({ id: 0, fullName: repository.fullName }));
+
+  await syncRepositoriesFromInstallation(state, prisma, input.organizationId, {
+    id: Number(input.githubInstallationId),
+    accountLogin: input.accountLogin,
+    accountType: input.accountType === "User" ? "User" : "Organization",
+    repositoriesAdded: repositories,
+    repositoriesRemoved: staleRepositories
+  });
+  if (staleRepositories.length > 0) {
+    await archiveRemovedRepositories(prisma, input.organizationId, staleRepositories);
+  }
+  return true;
 }
 
 async function approveGithubInstallation(
@@ -4163,6 +4324,8 @@ function auditEventSource(value: string): AuditEventRecord["source"] {
 export const testInternals = {
   approveGithubInstallation,
   ensureRepository,
+  fetchGithubInstallationAccount,
+  fetchGithubInstallationRepositories,
   listGithubInstallations,
   processGithubInstallationWebhook,
   rejectGithubInstallation,

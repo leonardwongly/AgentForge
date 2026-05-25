@@ -76,9 +76,13 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
             {canFinishSetup ? "Finish setup" : "Save setup progress"}
           </button>
         ) : githubInstallation?.installUrl ? (
-          <Link className="button button--primary" href={githubInstallation.installUrl}>
+          <a
+            className="button button--primary"
+            href={githubInstallation.installUrl}
+            rel="noreferrer"
+          >
             <GitBranch size={16} aria-hidden="true" /> Install GitHub App
-          </Link>
+          </a>
         ) : canRunSamplePreview ? (
           <form action={runSamplePolicyPreview}>
             <button className="button button--primary" type="submit">
@@ -105,9 +109,9 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
             </div>
             <div className="control-row">
               {githubInstallation?.installUrl ? (
-                <Link className="button" href={githubInstallation.installUrl}>
+                <a className="button" href={githubInstallation.installUrl} rel="noreferrer">
                   Install GitHub App
-                </Link>
+                </a>
               ) : null}
               {canRunSamplePreview ? (
                 <form action={runSamplePolicyPreview}>

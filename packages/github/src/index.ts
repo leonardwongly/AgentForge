@@ -457,6 +457,18 @@ export async function createGithubInstallationToken(input: {
   return installationAuth.token;
 }
 
+export async function createGithubAppToken(input: {
+  appId: string | number;
+  privateKey: string;
+}): Promise<string> {
+  const auth = createAppAuth({
+    appId: input.appId,
+    privateKey: normalizePrivateKey(input.privateKey)
+  });
+  const appAuth = await auth({ type: "app" });
+  return appAuth.token;
+}
+
 export async function publishMergeGuardCheck(input: {
   token: string;
   owner: string;
