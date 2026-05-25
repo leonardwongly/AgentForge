@@ -360,7 +360,7 @@ describe("runtime data surfaces", () => {
         ownerMappings: [
           {
             ownerKey: "billing_owner",
-            reviewer: "billing-owner",
+            reviewer: "billing",
             reviewerType: "team"
           },
           {
@@ -390,7 +390,7 @@ describe("runtime data surfaces", () => {
         ownerMappings: expect.arrayContaining([
           expect.objectContaining({
             ownerKey: "billing_owner",
-            reviewer: "billing-owner",
+            reviewer: "billing",
             reviewerType: "team"
           })
         ])
@@ -482,7 +482,7 @@ describe("runtime data surfaces", () => {
     await app.close();
   });
 
-  it("rejects ambiguous reviewer mapping formats without mutating runtime state", async () => {
+  it("rejects invalid reviewer mapping formats without mutating runtime state", async () => {
     const state = createInitialState();
     const app = createApp(state);
     const preview = await app.inject({
@@ -499,8 +499,6 @@ describe("runtime data surfaces", () => {
 
     for (const ownerMapping of [
       { ownerKey: "security_team", reviewer: "acme/security-team", reviewerType: "user" },
-      { ownerKey: "platform_team", reviewer: "platform", reviewerType: "team" },
-      { ownerKey: "security_team", reviewer: "security_team", reviewerType: "team" },
       { ownerKey: "security_team", reviewer: "acme/platform/security", reviewerType: "team" }
     ]) {
       const invalid = await app.inject({

@@ -15,6 +15,7 @@ import {
 } from "../data";
 import { runSamplePolicyPreview } from "./actions";
 import { saveRepositorySettings } from "../settings/actions";
+import { OwnerMappingFields, type OwnerMappingRow } from "../settings/owner-mapping-fields";
 
 type OnboardingPageProps = {
   searchParams?: Promise<{ updated?: string; error?: string }>;
@@ -75,9 +76,13 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
             {canFinishSetup ? "Finish setup" : "Save setup progress"}
           </button>
         ) : githubInstallation?.installUrl ? (
-          <Link className="button button--primary" href={githubInstallation.installUrl}>
+          <a
+            className="button button--primary"
+            href={githubInstallation.installUrl}
+            rel="noreferrer"
+          >
             <GitBranch size={16} aria-hidden="true" /> Install GitHub App
-          </Link>
+          </a>
         ) : canRunSamplePreview ? (
           <form action={runSamplePolicyPreview}>
             <button className="button button--primary" type="submit">
@@ -104,9 +109,9 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
             </div>
             <div className="control-row">
               {githubInstallation?.installUrl ? (
-                <Link className="button" href={githubInstallation.installUrl}>
+                <a className="button" href={githubInstallation.installUrl} rel="noreferrer">
                   Install GitHub App
-                </Link>
+                </a>
               ) : null}
               {canRunSamplePreview ? (
                 <form action={runSamplePolicyPreview}>
@@ -341,50 +346,12 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
                 <ShieldCheck size={18} aria-hidden="true" />
               </div>
               <div className="panel-body owner-mapping-grid">
-                {ownerMappingRows.map((mapping, index) => (
-                  <div className="owner-mapping-row" key={mapping.key}>
-                    <div className="field">
-                      <label htmlFor={`ownerKey_${index}`}>{mapping.label}</label>
-                      <input
-                        className="input"
-                        disabled={!selectedRepository}
-                        id={`ownerKey_${index}`}
-                        name={`ownerKey_${index}`}
-                        placeholder={mapping.ownerKeyPlaceholder}
-                        defaultValue={mapping.ownerKey}
-                      />
-                    </div>
-                    <div className="field">
-                      <label htmlFor={`reviewer_${index}`}>Reviewer {index + 1}</label>
-                      <input
-                        className="input"
-                        disabled={!selectedRepository}
-                        id={`reviewer_${index}`}
-                        name={`reviewer_${index}`}
-                        defaultValue={mapping.reviewer}
-                      />
-                    </div>
-                    <div className="field">
-                      <label htmlFor={`reviewerType_${index}`}>Reviewer type {index + 1}</label>
-                      <select
-                        className="select"
-                        disabled={!selectedRepository}
-                        id={`reviewerType_${index}`}
-                        name={`reviewerType_${index}`}
-                        defaultValue={mapping.reviewerType}
-                      >
-                        <option value="team">team</option>
-                        <option value="user">user</option>
-                      </select>
-                    </div>
-                  </div>
-                ))}
-                {repositoryOwnerMappings.length === 0 ? (
-                  <p className="muted">
-                    Fill in at least one owner key and reviewer before moving high-risk rules to
-                    enforce mode.
-                  </p>
-                ) : null}
+                <OwnerMappingFields
+                  disabled={!selectedRepository}
+                  emptyMessage="Fill in at least one owner key and reviewer before moving high-risk rules to enforce mode."
+                  rows={ownerMappingRows}
+                  savedCount={repositoryOwnerMappings.length}
+                />
                 <ul className="compact-list">
                   <li>
                     <div className="list-row">
@@ -560,14 +527,7 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
   );
 }
 
-function ownerRows(mappings: NonNullable<SettingsData["ownerMappings"]>): Array<{
-  key: string;
-  label: string;
-  ownerKey: string;
-  ownerKeyPlaceholder: string;
-  reviewer: string;
-  reviewerType: string;
-}> {
+function ownerRows(mappings: NonNullable<SettingsData["ownerMappings"]>): OwnerMappingRow[] {
   const defaults = [
     { ownerKey: "security_team", label: "Security team", reviewer: "", reviewerType: "team" },
     { ownerKey: "platform_team", label: "Platform team", reviewer: "", reviewerType: "team" },

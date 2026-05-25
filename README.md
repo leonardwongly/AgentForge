@@ -94,6 +94,18 @@ Create local configuration:
 cp .env.example .env
 ```
 
+For the local dashboard walkthrough, enable the explicit development-only actor
+fallbacks in `.env`:
+
+```env
+AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR=true
+AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=true
+AGENTFORGE_ENABLE_SAMPLE_PREVIEW=true
+```
+
+These flags are only for local development. Keep them `false` in deployed
+environments and use trusted proxy auth or built-in GitHub OAuth instead.
+
 Start the local backing services:
 
 ```bash
@@ -113,6 +125,9 @@ Start the full local stack:
 ```bash
 pnpm dev
 ```
+
+Then open `http://localhost:3000/onboarding`, run the sample preview, and save
+setup progress to create the first local repository and Change Control Record.
 
 Default local endpoints:
 
@@ -332,7 +347,10 @@ curl -fsS http://localhost:4000/api/policies/validate \
 Inspect dashboard records:
 
 ```bash
-curl -fsS "http://localhost:4000/api/dashboard/records?limit=25&offset=0"
+curl -fsS "http://localhost:4000/api/dashboard/records?limit=25&offset=0" \
+  -H "x-agentforge-actor: local-admin" \
+  -H "x-agentforge-role: platform_admin" \
+  -H "x-agentforge-organization: org_local"
 ```
 
 Read queue status with a local operator actor:

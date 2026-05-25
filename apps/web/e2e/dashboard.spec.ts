@@ -72,7 +72,36 @@ test("settings explains unavailable GitHub setup actions in the sample runtime",
   await expect(page.getByLabel("Manual installation ID")).toBeDisabled();
   await expect(page.getByRole("button", { name: "Record installation" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Sign in with GitHub" })).toBeDisabled();
+  await expect(page.getByRole("link", { name: "Sign out" })).toHaveCount(0);
   await expect(page.getByText("Configure GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET")).toBeVisible();
+});
+
+test("settings owner-mapping validation preserves entered values", async ({ page, request }) => {
+  await seedMergeGuardRecord(request, {
+    repositoryFullName: "acme/owner-validation"
+  });
+
+  await page.goto("/settings");
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+
+  await page.getByLabel("Owner key 1").fill("runtime_owner");
+  await page.getByLabel("Reviewer 1").fill("bad/team/path");
+  await page.getByLabel("Reviewer type 1").selectOption("team");
+  await page.getByRole("button", { name: "Save settings" }).click();
+
+  await expect(page.locator(".form-error")).toContainText(
+    "Team reviewers must be a GitHub team slug or org/team value."
+  );
+  await expect(page.getByLabel("Owner key 1")).toHaveValue("runtime_owner");
+  await expect(page.getByLabel("Reviewer 1")).toHaveValue("bad/team/path");
+  await expect(page.getByRole("heading", { name: "Repository settings saved" })).toHaveCount(0);
+
+  await page.getByLabel("Reviewer 1").fill("org/runtime-team");
+  await page.getByRole("button", { name: "Save settings" }).click();
+
+  await expect(page.getByText("Repository settings saved")).toBeVisible();
+  await expect(page.getByLabel("Owner key 1")).toHaveValue("runtime_owner");
+  await expect(page.getByLabel("Reviewer 1")).toHaveValue("org/runtime-team");
 });
 
 test("dashboard shows action-required pull requests first", async ({ page, request }) => {

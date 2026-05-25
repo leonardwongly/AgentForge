@@ -80,9 +80,9 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
           </p>
         </div>
         <div className="control-row">
-          <Link className="button" href={item.githubUrl}>
+          <a className="button" href={item.githubUrl} rel="noreferrer">
             <GitBranch size={16} aria-hidden="true" /> GitHub PR
-          </Link>
+          </a>
           <form action={createRecordExport}>
             <input name="returnTo" type="hidden" value={`/records/${id}`} />
             <input name="format" type="hidden" value="json" />

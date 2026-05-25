@@ -119,9 +119,9 @@ export default async function BlockedPrsPage() {
                         <Link className="button" href={`/records/${record.id}`}>
                           <ExternalLink size={15} aria-hidden="true" /> Record
                         </Link>
-                        <Link className="button" href={item.githubUrl}>
+                        <a className="button" href={item.githubUrl} rel="noreferrer">
                           <GitBranch size={15} aria-hidden="true" /> GitHub
-                        </Link>
+                        </a>
                       </div>
                     </td>
                   </tr>

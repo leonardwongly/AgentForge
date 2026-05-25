@@ -30,6 +30,7 @@ type WebhookDeliveryRow = {
 type RepositoryRow = {
   id: string;
   organizationId: string;
+  githubRepositoryId?: bigint;
   fullName: string;
   enabled: boolean;
   archivedAt: Date | null;
@@ -191,13 +192,27 @@ function createPrismaMock(
         async ({
           where
         }: {
-          where: { organizationId_fullName: { organizationId: string; fullName: string } };
+          where: {
+            githubRepositoryId?: bigint;
+            organizationId_fullName?: { organizationId: string; fullName: string };
+          };
         }) => {
+          if (where.githubRepositoryId !== undefined) {
+            return (
+              repositories.find(
+                (repository) => repository.githubRepositoryId === where.githubRepositoryId
+              ) ?? null
+            );
+          }
+          if (!where.organizationId_fullName) {
+            return null;
+          }
+          const scopedName = where.organizationId_fullName;
           return (
             repositories.find(
               (repository) =>
-                repository.organizationId === where.organizationId_fullName.organizationId &&
-                repository.fullName === where.organizationId_fullName.fullName
+                repository.organizationId === scopedName.organizationId &&
+                repository.fullName === scopedName.fullName
             ) ?? null
           );
         }
@@ -205,15 +220,23 @@ function createPrismaMock(
       upsert: vi.fn(async (input: unknown) => {
         repositoryUpserts.push(input);
         const upsert = input as {
-          where: { organizationId_fullName: { organizationId: string; fullName: string } };
+          where: {
+            githubRepositoryId?: bigint;
+            organizationId_fullName?: { organizationId: string; fullName: string };
+          };
           update: Partial<RepositoryRow>;
-          create: RepositoryRow;
+          create: RepositoryRow & { githubRepositoryId: bigint };
         };
-        const existing = repositories.find(
-          (repository) =>
+        const existing = repositories.find((repository) => {
+          if (upsert.where.githubRepositoryId !== undefined) {
+            return repository.githubRepositoryId === upsert.where.githubRepositoryId;
+          }
+          return (
+            upsert.where.organizationId_fullName !== undefined &&
             repository.organizationId === upsert.where.organizationId_fullName.organizationId &&
             repository.fullName === upsert.where.organizationId_fullName.fullName
-        );
+          );
+        });
         if (existing) {
           Object.assign(existing, upsert.update);
           return existing;
@@ -523,6 +546,33 @@ describe("GitHub installation webhook transitions", () => {
 });
 
 describe("GitHub installation repository replay", () => {
+  it("continues live repository pagination beyond the first ten pages", () => {
+    expect(
+      testInternals.githubInstallationRepositoryPageState({
+        body: { total_count: 1_250 },
+        pageRepositoryCount: 100,
+        repositoriesSeen: 1_000
+      })
+    ).toEqual({ complete: false, exceedsSafetyLimit: false });
+    expect(
+      testInternals.githubInstallationRepositoryPageState({
+        body: { total_count: 1_250 },
+        pageRepositoryCount: 50,
+        repositoriesSeen: 1_250
+      })
+    ).toEqual({ complete: true, exceedsSafetyLimit: false });
+  });
+
+  it("fails closed before archiving stale repositories when live repository scope exceeds the safety limit", () => {
+    expect(
+      testInternals.githubInstallationRepositoryPageState({
+        body: { total_count: 10_001 },
+        pageRepositoryCount: 100,
+        repositoriesSeen: 10_000
+      })
+    ).toEqual({ complete: false, exceedsSafetyLimit: true });
+  });
+
   it("replays all stored installation events chronologically across pages", async () => {
     const deliveries = Array.from({ length: 251 }, (_value, index) =>
       webhookDelivery(index, 12345, [
@@ -575,6 +625,7 @@ describe("GitHub installation repository replay", () => {
         {
           id: "repo_disabled",
           organizationId: "org-a",
+          githubRepositoryId: 1n,
           fullName: "acme/disabled",
           enabled: false,
           archivedAt: null,
@@ -610,7 +661,7 @@ describe("repository archive preservation", () => {
     await testInternals.ensureRepository(prisma as never, input, { forceUnarchive: true });
 
     expect(repositoryUpserts[0]).toMatchObject({
-      update: { defaultBranch: "main" }
+      update: { fullName: "acme/payments", defaultBranch: "main" }
     });
     expect(repositoryUpserts[0]).not.toMatchObject({
       update: expect.objectContaining({ archivedAt: null })
@@ -632,6 +683,7 @@ describe("repository archive preservation", () => {
       {
         id: "repo_disabled",
         organizationId: "org-a",
+        githubRepositoryId: 101n,
         fullName: "acme/disabled",
         enabled: false,
         archivedAt: null,
@@ -640,6 +692,7 @@ describe("repository archive preservation", () => {
       {
         id: "repo_archived",
         organizationId: "org-a",
+        githubRepositoryId: 102n,
         fullName: "acme/archived",
         enabled: false,
         archivedAt: new Date("2026-05-24T00:00:00.000Z"),
@@ -654,7 +707,8 @@ describe("repository archive preservation", () => {
         organizationId: "org-a",
         repositoryId: "repo_disabled",
         fullName: "acme/disabled",
-        defaultBranch: "main"
+        defaultBranch: "main",
+        githubRepositoryId: 101n
       },
       { forceUnarchive: true }
     );
@@ -664,7 +718,8 @@ describe("repository archive preservation", () => {
         organizationId: "org-a",
         repositoryId: "repo_archived",
         fullName: "acme/archived",
-        defaultBranch: "main"
+        defaultBranch: "main",
+        githubRepositoryId: 102n
       },
       { forceUnarchive: true }
     );
@@ -674,6 +729,41 @@ describe("repository archive preservation", () => {
       archivedAt: null
     });
     expect(repositories[1]).toMatchObject({
+      enabled: true,
+      archivedAt: null
+    });
+  });
+
+  it("keeps repository history when GitHub reports a rename for the same immutable id", async () => {
+    const repositories: RepositoryRow[] = [
+      {
+        id: "repo_renamed",
+        organizationId: "org-a",
+        githubRepositoryId: 201n,
+        fullName: "acme/old-name",
+        enabled: true,
+        archivedAt: null,
+        mode: null
+      }
+    ];
+    const { prisma } = createPrismaMock([], [], repositories);
+
+    await testInternals.ensureRepository(
+      prisma as never,
+      {
+        organizationId: "org-a",
+        repositoryId: "repo_acme_new_name",
+        fullName: "acme/new-name",
+        defaultBranch: "main",
+        githubRepositoryId: 201n
+      },
+      { forceUnarchive: true }
+    );
+
+    expect(repositories).toHaveLength(1);
+    expect(repositories[0]).toMatchObject({
+      id: "repo_renamed",
+      fullName: "acme/new-name",
       enabled: true,
       archivedAt: null
     });

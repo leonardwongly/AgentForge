@@ -26,6 +26,11 @@ Use this checklist before making the repository public or cutting a tagged relea
 - [ ] Installations remain `pending_approval` until a platform admin approves them.
 - [ ] Installation removal archives/disables repository records instead of deleting history.
 - [ ] Team reviewer approval behavior documents the `Members: read` permission requirement.
+- [ ] A disposable repository is created under an owned GitHub organization for live GitHub App validation.
+- [ ] Cloudflare Tunnel exposes the local API webhook endpoint at `https://<host>/webhooks/github`.
+- [ ] OAuth sign-in, GitHub App installation, callback recording, admin approval, repository sync, and signed webhook delivery are validated against the disposable repository.
+- [ ] `pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-id <id>` completes without printing source, patches, tokens, or credentials.
+- [ ] The same smoke command with `--publish-check` publishes the `AgentForge Merge Guard` check run on the disposable pull request.
 
 ## Validation
 
@@ -61,5 +66,7 @@ Manual browser QA:
 - [ ] Sample preview creates a repository, a Change Control Record, and a matching active policy pack.
 - [ ] Settings can save repository mode, policy pack, owner mappings, and retention controls.
 - [ ] GitHub installation can be recorded manually, approved, and shown as verified.
+- [ ] Built-in GitHub OAuth does not show a sign-out action unless the current actor came from a session.
+- [ ] Owner-mapping validation preserves typed values and shows inline guidance for malformed team/user routes before submitting.
 - [ ] Dashboard action queues distinguish open evidence from approved evidence.
 - [ ] Record detail, evidence, reviewer, override, export, policy preview, and policy settings pages load without framework or console errors.

@@ -289,8 +289,8 @@ button {
 
 .metric-card strong {
   display: block;
-  font-size: 32px;
-  line-height: 1.05;
+  font-size: clamp(22px, 2vw, 32px);
+  line-height: 1.12;
   margin-top: 13px;
   overflow-wrap: anywhere;
 }
@@ -604,10 +604,26 @@ button {
   gap: 14px;
 }
 
+.owner-mapping-fields {
+  display: grid;
+  gap: 14px;
+}
+
 .owner-mapping-row {
   display: grid;
   grid-template-columns: minmax(140px, 1fr) minmax(160px, 1.1fr) minmax(130px, 0.45fr);
   gap: 14px;
+}
+
+.form-error {
+  border: 1px solid rgba(196, 73, 73, 0.32);
+  border-radius: 8px;
+  background: rgba(196, 73, 73, 0.1);
+  color: #8a2424;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+  padding: 10px 12px;
 }
 
 .evidence-action-form,
