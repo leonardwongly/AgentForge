@@ -2,12 +2,14 @@ import { Download, GitBranch, Save, ShieldCheck } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
 import { loadGithubInstallations, loadSettings, type SettingsData } from "../data";
 import { createRecordExport } from "../records/actions";
+import { resolveDashboardActor } from "./actor";
 import {
   approveGithubInstallation,
   recordGithubInstallation,
   rejectGithubInstallation,
   saveRepositorySettings
 } from "./actions";
+import { OwnerMappingFields, type OwnerMappingRow } from "./owner-mapping-fields";
 
 type SettingsPageProps = {
   searchParams?: Promise<{
@@ -20,9 +22,10 @@ type SettingsPageProps = {
 
 export default async function SettingsPage({ searchParams }: SettingsPageProps) {
   const params = await searchParams;
-  const [{ settings, source, message }, installationsResult] = await Promise.all([
+  const [{ settings, source, message }, installationsResult, currentActor] = await Promise.all([
     loadSettings(),
-    loadGithubInstallations()
+    loadGithubInstallations(),
+    resolveDashboardActor().catch(() => undefined)
   ]);
   const installations = installationsResult.data;
   const enabledRepositories =
@@ -284,7 +287,8 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                   headers remain available for enterprise SSO deployments.
                 </p>
                 <div className="control-row">
-                  {settings?.auth?.builtInGithubOAuthConfigured ? (
+                  {settings?.auth?.builtInGithubOAuthConfigured &&
+                  currentActor?.source !== "session" ? (
                     <a className="button" href="/auth/github/login">
                       <ShieldCheck size={16} aria-hidden="true" /> Sign in with GitHub
                     </a>
@@ -293,10 +297,18 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                       <ShieldCheck size={16} aria-hidden="true" /> Sign in with GitHub
                     </button>
                   )}
-                  <a className="button" href="/auth/logout">
-                    Sign out
-                  </a>
+                  {currentActor?.source === "session" ? (
+                    <a className="button" href="/auth/logout">
+                      Sign out
+                    </a>
+                  ) : null}
                 </div>
+                {currentActor?.source === "local_environment" ? (
+                  <p className="muted">Using the local development actor fallback.</p>
+                ) : null}
+                {currentActor?.source === "trusted_headers" ? (
+                  <p className="muted">Using trusted proxy identity headers.</p>
+                ) : null}
                 {!settings?.auth?.builtInGithubOAuthConfigured ? (
                   <p className="muted">
                     Configure GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET to enable GitHub OAuth.
@@ -595,51 +607,12 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
               </div>
             </div>
             <div className="panel-body owner-mapping-grid">
-              {ownerMappingRows.map((mapping, index) => (
-                <div className="owner-mapping-row" key={mapping.key}>
-                  <div className="field">
-                    <label htmlFor={`ownerKey_${index}`}>Owner key {index + 1}</label>
-                    <input
-                      className="input"
-                      disabled={!selectedRepository}
-                      id={`ownerKey_${index}`}
-                      name={`ownerKey_${index}`}
-                      placeholder="billing_owner"
-                      defaultValue={mapping.ownerKey}
-                    />
-                  </div>
-                  <div className="field">
-                    <label htmlFor={`reviewer_${index}`}>Reviewer {index + 1}</label>
-                    <input
-                      className="input"
-                      disabled={!selectedRepository}
-                      id={`reviewer_${index}`}
-                      name={`reviewer_${index}`}
-                      placeholder="billing-owner"
-                      defaultValue={mapping.reviewer}
-                    />
-                  </div>
-                  <div className="field">
-                    <label htmlFor={`reviewerType_${index}`}>Reviewer type {index + 1}</label>
-                    <select
-                      className="select"
-                      disabled={!selectedRepository}
-                      id={`reviewerType_${index}`}
-                      name={`reviewerType_${index}`}
-                      defaultValue={mapping.reviewerType}
-                    >
-                      <option value="team">team</option>
-                      <option value="user">user</option>
-                    </select>
-                  </div>
-                </div>
-              ))}
-              {repositoryOwnerMappings.length === 0 ? (
-                <p className="muted">
-                  Use the blank rows above to create owner mappings. Setup is not enforce-ready
-                  until at least one reviewer route is saved.
-                </p>
-              ) : null}
+              <OwnerMappingFields
+                disabled={!selectedRepository}
+                emptyMessage="Use the blank rows above to create owner mappings. Setup is not enforce-ready until at least one reviewer route is saved."
+                rows={ownerMappingRows}
+                savedCount={repositoryOwnerMappings.length}
+              />
             </div>
           </section>
 
@@ -802,12 +775,12 @@ function installationDisplay(installation: SettingsData["githubInstallation"] | 
   };
 }
 
-function ownerRows(
-  mappings: NonNullable<SettingsData["ownerMappings"]>
-): Array<{ key: string; ownerKey: string; reviewer: string; reviewerType: string }> {
+function ownerRows(mappings: NonNullable<SettingsData["ownerMappings"]>): OwnerMappingRow[] {
   const existingRows = mappings.map((mapping, index) => ({
     key: `${mapping.ownerKey ?? mapping.reviewer}-${index}`,
+    label: `Owner key ${index + 1}`,
     ownerKey: mapping.ownerKey ?? "",
+    ownerKeyPlaceholder: "billing_owner",
     reviewer: mapping.reviewer,
     reviewerType: mapping.reviewerType
   }));
@@ -816,7 +789,9 @@ function ownerRows(
     ...existingRows,
     ...Array.from({ length: Math.max(0, minimumRows - existingRows.length) }, (_, index) => ({
       key: `new-${index}`,
+      label: `Owner key ${existingRows.length + index + 1}`,
       ownerKey: "",
+      ownerKeyPlaceholder: "billing_owner",
       reviewer: "",
       reviewerType: "team"
     }))

@@ -30,6 +30,7 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
     item,
     preview: classifyPreviewRecord(item.record)
   }));
+  const repositoryLabel = data.records[0]?.record.repositoryFullName ?? id;
   const previewCounts = previewRows.reduce(
     (counts, row) => {
       counts[row.preview.bucket] += 1;
@@ -74,7 +75,7 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
           />
           <MetricCard
             label="Repository"
-            value={id}
+            value={repositoryLabel}
             detail="Preview target for the active policy version."
             tone="neutral"
           />

@@ -55,14 +55,41 @@ Set `GITHUB_APP_SLUG` so the Settings and Onboarding pages can open the GitHub A
 
 If the callback cannot be used, run AgentForge with the Postgres runtime store, record the numeric installation ID manually in Settings with the installation account login, then approve it as a platform admin. Manual installation approval is disabled for the in-memory local sample runtime because installation trust state must be durable.
 
-Local development:
+Local development with Cloudflare Tunnel:
 
 ```bash
 pnpm dev:api
-ngrok http 4000
+cloudflared tunnel --url http://localhost:4000
 ```
 
-Set the webhook URL to the tunnel URL plus `/webhooks/github`. Generate a webhook secret, save it in GitHub, and set `GITHUB_WEBHOOK_SECRET` in `.env`.
+Set the webhook URL to the tunnel URL plus `/webhooks/github`, for example
+`https://<random>.trycloudflare.com/webhooks/github`. Keep the dashboard callback
+local unless the dashboard is also tunneled:
+
+```text
+http://localhost:3000/github/installations/callback
+```
+
+Generate a webhook secret, save it in GitHub, and set `GITHUB_WEBHOOK_SECRET` in
+`.env`. For a complete local installation smoke run, also set:
+
+```env
+APP_BASE_URL=http://localhost:3000
+API_BASE_URL=http://localhost:4000
+GITHUB_APP_ID=<numeric-app-id>
+GITHUB_APP_PRIVATE_KEY=<escaped-or-multiline-pem>
+GITHUB_APP_SLUG=<github-app-slug>
+GITHUB_CLIENT_ID=<oauth-client-id>
+GITHUB_CLIENT_SECRET=<oauth-client-secret>
+GITHUB_INSTALLATION_ID=<numeric-installation-id-for-smoke>
+SESSION_SECRET=<random-session-secret>
+AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=true
+AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR=true
+```
+
+Install the app on a disposable repository first. The callback records the
+installation as `pending_approval`; approve it in Settings as a platform admin
+before treating the installation as trusted.
 
 Webhook signature verification fails closed by default. If `GITHUB_WEBHOOK_SECRET` is missing, AgentForge rejects webhook deliveries unless `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=true` is explicitly set for local fixture replay. Do not enable unsigned webhook mode on shared or deployed endpoints.
 
@@ -73,6 +100,16 @@ pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-i
 ```
 
 The smoke command creates an installation token, fetches the PR through GitHub App credentials, evaluates the built-in fintech policy, and prints only metadata counts. It does not publish a check run unless `--publish-check` is passed. Use `--publish-check` only against a test PR after confirming the app has `Checks: read/write`.
+
+Disposable public-path validation should pass all of these gates before release:
+
+1. GitHub OAuth sign-in returns to Settings without exposing credentials.
+2. GitHub App install link opens the expected app installation page.
+3. Installation callback records the returned installation as `pending_approval`.
+4. Platform-admin approval marks the installation trusted and syncs repositories.
+5. A signed webhook delivery reaches `/webhooks/github` through Cloudflare Tunnel.
+6. `pnpm github:smoke ...` fetches the disposable pull request without printing source or tokens.
+7. `pnpm github:smoke ... --publish-check` publishes an `AgentForge Merge Guard` check run on the disposable pull request.
 
 Private key setup:
 
