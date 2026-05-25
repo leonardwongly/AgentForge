@@ -123,6 +123,38 @@ describe("runtime data surfaces", () => {
     await app.close();
   });
 
+  it("rejects GitHub installation ids outside the signed bigint range", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/github/installations/verify",
+      headers: {
+        ...actorHeaders(),
+        "content-type": "application/json"
+      },
+      payload: JSON.stringify({
+        githubInstallationId: "9223372036854775808",
+        accountLogin: "acme",
+        accountType: "Organization"
+      })
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: "Invalid GitHub installation verification request",
+      details: [
+        {
+          path: "githubInstallationId",
+          message: "GitHub installation id must be numeric and fit in a signed 64-bit integer"
+        }
+      ]
+    });
+
+    await app.close();
+  });
+
   it("previews CODEOWNERS owner mapping suggestions", async () => {
     const state = createInitialState();
     const app = createApp(state);

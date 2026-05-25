@@ -272,6 +272,7 @@ const EXPORT_MAX_RECORD_LIMIT = 1_000;
 const COMPLIANCE_EXPORT_DEFAULT_RECORD_LIMIT = 250;
 const COMPLIANCE_EXPORT_MAX_RECORD_LIMIT = 500;
 const POLICY_YAML_MAX_BYTES = 200_000;
+const POSTGRES_SIGNED_BIGINT_MAX = "9223372036854775807";
 
 const optionalQueryString = z.string().trim().min(1).max(240).optional();
 const policyModeSchema = z.enum(["observe", "warn", "enforce", "optimize"]);
@@ -321,7 +322,17 @@ const githubInstallationStatusSchema = z.enum([
 const githubInstallationIdSchema = z
   .union([z.string(), z.number(), z.bigint()])
   .transform((value) => String(value).trim())
-  .refine((value) => /^\d{1,20}$/u.test(value), "GitHub installation id must be numeric");
+  .refine((value) => {
+    if (!/^\d{1,20}$/u.test(value)) {
+      return false;
+    }
+    const normalized = value.replace(/^0+/u, "") || "0";
+    return (
+      normalized.length < POSTGRES_SIGNED_BIGINT_MAX.length ||
+      (normalized.length === POSTGRES_SIGNED_BIGINT_MAX.length &&
+        normalized <= POSTGRES_SIGNED_BIGINT_MAX)
+    );
+  }, "GitHub installation id must be numeric and fit in a signed 64-bit integer");
 const githubInstallationVerifySchema = z
   .object({
     githubInstallationId: githubInstallationIdSchema,
