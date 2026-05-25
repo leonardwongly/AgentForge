@@ -3565,7 +3565,7 @@ async function syncRepositoriesFromInstallation(
     state.repositorySettings.set(repository.id, {
       repositoryId: repository.id,
       organizationId,
-      enabled: true,
+      enabled: repository.enabled,
       mode: repository.mode ?? undefined,
       updatedAt: new Date().toISOString()
     });
@@ -4208,18 +4208,24 @@ async function ensureRepository(
   options: { forceUnarchive?: boolean } = {}
 ) {
   const [owner = "unknown", name = input.fullName] = input.fullName.split("/");
+  const where = {
+    organizationId_fullName: {
+      organizationId: input.organizationId,
+      fullName: input.fullName
+    }
+  };
+  const existing = await prisma.repository.findUnique({
+    where,
+    select: { archivedAt: true }
+  });
+  const shouldReactivate = options.forceUnarchive && Boolean(existing?.archivedAt);
   return prisma.repository.upsert({
-    where: {
-      organizationId_fullName: {
-        organizationId: input.organizationId,
-        fullName: input.fullName
-      }
-    },
+    where,
     update: {
       defaultBranch: input.defaultBranch,
       ...(options.forceUnarchive
         ? {
-            enabled: true,
+            ...(shouldReactivate ? { enabled: true } : {}),
             archivedAt: null,
             archiveReason: null
           }

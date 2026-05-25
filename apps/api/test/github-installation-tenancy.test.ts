@@ -27,6 +27,15 @@ type WebhookDeliveryRow = {
   createdAt: Date;
 };
 
+type RepositoryRow = {
+  id: string;
+  organizationId: string;
+  fullName: string;
+  enabled: boolean;
+  archivedAt: Date | null;
+  mode: string | null;
+};
+
 function installationRow(
   overrides: Partial<InstallationRow> & Pick<InstallationRow, "id" | "githubInstallationId">
 ): InstallationRow {
@@ -80,7 +89,11 @@ function webhookDelivery(
   };
 }
 
-function createPrismaMock(rows: InstallationRow[] = [], deliveries: WebhookDeliveryRow[] = []) {
+function createPrismaMock(
+  rows: InstallationRow[] = [],
+  deliveries: WebhookDeliveryRow[] = [],
+  repositories: RepositoryRow[] = []
+) {
   const repositoryUpserts: unknown[] = [];
   const repositoryArchiveCalls: unknown[] = [];
   const prisma = {
@@ -174,9 +187,45 @@ function createPrismaMock(rows: InstallationRow[] = [], deliveries: WebhookDeliv
       )
     },
     repository: {
+      findUnique: vi.fn(
+        async ({
+          where
+        }: {
+          where: { organizationId_fullName: { organizationId: string; fullName: string } };
+        }) => {
+          return (
+            repositories.find(
+              (repository) =>
+                repository.organizationId === where.organizationId_fullName.organizationId &&
+                repository.fullName === where.organizationId_fullName.fullName
+            ) ?? null
+          );
+        }
+      ),
       upsert: vi.fn(async (input: unknown) => {
         repositoryUpserts.push(input);
-        return { id: "repo_acme_payments", mode: null };
+        const upsert = input as {
+          where: { organizationId_fullName: { organizationId: string; fullName: string } };
+          update: Partial<RepositoryRow>;
+          create: RepositoryRow;
+        };
+        const existing = repositories.find(
+          (repository) =>
+            repository.organizationId === upsert.where.organizationId_fullName.organizationId &&
+            repository.fullName === upsert.where.organizationId_fullName.fullName
+        );
+        if (existing) {
+          Object.assign(existing, upsert.update);
+          return existing;
+        }
+        const created = {
+          ...upsert.create,
+          enabled: upsert.create.enabled ?? true,
+          archivedAt: upsert.create.archivedAt ?? null,
+          mode: upsert.create.mode ?? null
+        };
+        repositories.push(created);
+        return created;
       }),
       updateMany: vi.fn(async (input: unknown) => {
         repositoryArchiveCalls.push(input);
@@ -509,6 +558,42 @@ describe("GitHub installation repository replay", () => {
       create: { fullName: "acme/repo-250" }
     });
   });
+
+  it("keeps existing admin-disabled repositories disabled in runtime sync state", async () => {
+    const deliveries = [webhookDelivery(0, 12345, [{ id: 1, fullName: "acme/disabled" }])];
+    const { prisma } = createPrismaMock(
+      [
+        installationRow({
+          id: "installation-a",
+          organizationId: "org-a",
+          githubInstallationId: 12345n,
+          status: "approved"
+        })
+      ],
+      deliveries,
+      [
+        {
+          id: "repo_disabled",
+          organizationId: "org-a",
+          fullName: "acme/disabled",
+          enabled: false,
+          archivedAt: null,
+          mode: null
+        }
+      ]
+    );
+    const state = { repositorySettings: new Map() };
+
+    await testInternals.syncRepositoriesFromStoredInstallationEvents(
+      state as never,
+      prisma as never,
+      { organizationId: "org-a", githubInstallationId: "12345" }
+    );
+
+    expect(state.repositorySettings.get("repo_disabled")).toMatchObject({
+      enabled: false
+    });
+  });
 });
 
 describe("repository archive preservation", () => {
@@ -533,10 +618,64 @@ describe("repository archive preservation", () => {
     expect(repositoryUpserts[1]).toMatchObject({
       update: {
         defaultBranch: "main",
-        enabled: true,
         archivedAt: null,
         archiveReason: null
       }
+    });
+    expect(repositoryUpserts[1]).not.toMatchObject({
+      update: expect.objectContaining({ enabled: true })
+    });
+  });
+
+  it("preserves disabled repositories during installation sync unless they were archived", async () => {
+    const repositories: RepositoryRow[] = [
+      {
+        id: "repo_disabled",
+        organizationId: "org-a",
+        fullName: "acme/disabled",
+        enabled: false,
+        archivedAt: null,
+        mode: null
+      },
+      {
+        id: "repo_archived",
+        organizationId: "org-a",
+        fullName: "acme/archived",
+        enabled: false,
+        archivedAt: new Date("2026-05-24T00:00:00.000Z"),
+        mode: null
+      }
+    ];
+    const { prisma } = createPrismaMock([], [], repositories);
+
+    await testInternals.ensureRepository(
+      prisma as never,
+      {
+        organizationId: "org-a",
+        repositoryId: "repo_disabled",
+        fullName: "acme/disabled",
+        defaultBranch: "main"
+      },
+      { forceUnarchive: true }
+    );
+    await testInternals.ensureRepository(
+      prisma as never,
+      {
+        organizationId: "org-a",
+        repositoryId: "repo_archived",
+        fullName: "acme/archived",
+        defaultBranch: "main"
+      },
+      { forceUnarchive: true }
+    );
+
+    expect(repositories[0]).toMatchObject({
+      enabled: false,
+      archivedAt: null
+    });
+    expect(repositories[1]).toMatchObject({
+      enabled: true,
+      archivedAt: null
     });
   });
 });

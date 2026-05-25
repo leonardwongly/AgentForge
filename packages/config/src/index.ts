@@ -140,6 +140,9 @@ function validateProductionConfig(config: AgentForgeConfig): void {
     return;
   }
   const errors: string[] = [];
+  const builtInGithubOAuthConfigured = Boolean(
+    config.github.clientId || config.github.clientSecret
+  );
   if (!config.github.webhookSecret) {
     errors.push("GITHUB_WEBHOOK_SECRET is required in production.");
   }
@@ -153,20 +156,15 @@ function validateProductionConfig(config: AgentForgeConfig): void {
       "GITHUB_APP_PRIVATE_KEY is required in production so AgentForge can authenticate as the GitHub App."
     );
   }
-  if (!config.github.appSlug) {
-    errors.push(
-      "GITHUB_APP_SLUG is required in production so the dashboard can start the GitHub App installation flow."
-    );
-  }
-  if (!config.github.clientId) {
+  if (builtInGithubOAuthConfigured && !config.github.clientId) {
     errors.push(
       "GITHUB_CLIENT_ID is required in production for built-in GitHub OAuth and installation callback setup."
     );
   }
-  if (!config.github.clientSecret) {
+  if (builtInGithubOAuthConfigured && !config.github.clientSecret) {
     errors.push("GITHUB_CLIENT_SECRET is required in production for built-in GitHub OAuth.");
   }
-  if (!config.sessionSecret) {
+  if (builtInGithubOAuthConfigured && !config.sessionSecret) {
     errors.push(
       "SESSION_SECRET is required in production for signed dashboard sessions and OAuth state."
     );

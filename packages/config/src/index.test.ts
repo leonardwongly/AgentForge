@@ -31,7 +31,6 @@ describe("AgentForge runtime config", () => {
     ["missing webhook secret", { GITHUB_WEBHOOK_SECRET: "" }, "GITHUB_WEBHOOK_SECRET"],
     ["missing GitHub App id", { GITHUB_APP_ID: "" }, "GITHUB_APP_ID"],
     ["missing GitHub App private key", { GITHUB_APP_PRIVATE_KEY: "" }, "GITHUB_APP_PRIVATE_KEY"],
-    ["missing GitHub App slug", { GITHUB_APP_SLUG: "" }, "GITHUB_APP_SLUG"],
     ["missing GitHub OAuth client id", { GITHUB_CLIENT_ID: "" }, "GITHUB_CLIENT_ID"],
     ["missing GitHub OAuth client secret", { GITHUB_CLIENT_SECRET: "" }, "GITHUB_CLIENT_SECRET"],
     ["missing session secret", { SESSION_SECRET: "" }, "SESSION_SECRET"],
@@ -70,6 +69,21 @@ describe("AgentForge runtime config", () => {
     ]
   ])("fails closed in production when %s", (_name, override, message) => {
     expect(() => loadConfig({ ...productionBaseEnv, ...override })).toThrow(message);
+  });
+
+  it("allows trusted-proxy-only production deployments without optional dashboard OAuth", () => {
+    const config = loadConfig({
+      ...productionBaseEnv,
+      GITHUB_APP_SLUG: "",
+      GITHUB_CLIENT_ID: "",
+      GITHUB_CLIENT_SECRET: "",
+      SESSION_SECRET: ""
+    });
+
+    expect(config.github.appSlug).toBeUndefined();
+    expect(config.github.clientId).toBeUndefined();
+    expect(config.github.clientSecret).toBeUndefined();
+    expect(config.sessionSecret).toBeUndefined();
   });
 
   it("keeps local runtime defaults for development setup", () => {

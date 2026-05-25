@@ -61,8 +61,12 @@ export async function runSamplePolicyPreview(): Promise<void> {
 }
 
 function samplePreviewEnabled(): boolean {
+  if (process.env.NODE_ENV !== "production") {
+    return true;
+  }
   return (
-    process.env.NODE_ENV !== "production" || process.env.AGENTFORGE_ENABLE_SAMPLE_PREVIEW === "true"
+    process.env.AGENTFORGE_ENABLE_SAMPLE_PREVIEW === "true" &&
+    Boolean(process.env.AGENTFORGE_SAMPLE_FIXTURE_ROOT?.trim())
   );
 }
 
@@ -118,6 +122,11 @@ async function readFixtureText(relativePath: string): Promise<string> {
 }
 
 async function findRepositoryRoot(): Promise<string> {
+  const configuredRoot = process.env.AGENTFORGE_SAMPLE_FIXTURE_ROOT?.trim();
+  if (configuredRoot) {
+    await access(path.join(configuredRoot, "fixtures"));
+    return configuredRoot;
+  }
   const candidates = [
     process.cwd(),
     path.resolve(process.cwd(), "../.."),

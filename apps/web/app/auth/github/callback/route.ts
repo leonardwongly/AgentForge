@@ -6,6 +6,7 @@ import {
   createDashboardSessionCookie,
   readOauthStateCookie
 } from "../../session";
+import { dashboardRoleForGitHubLogin } from "../access";
 
 type GitHubTokenResponse = {
   access_token?: string;
@@ -45,6 +46,10 @@ export async function GET(request: Request): Promise<never> {
   if (!login) {
     redirect("/settings?error=GitHub%20OAuth%20did%20not%20return%20a%20login");
   }
+  const role = dashboardRoleForGitHubLogin(login);
+  if (!role) {
+    redirect("/settings?error=GitHub%20login%20is%20not%20authorized");
+  }
 
   try {
     const cookieStore = await cookies();
@@ -54,7 +59,7 @@ export async function GET(request: Request): Promise<never> {
       createDashboardSessionCookie(
         {
           login,
-          role: dashboardRoleForGitHubLogin(login),
+          role,
           organizationId: process.env.AGENTFORGE_DASHBOARD_ORGANIZATION ?? "org_local",
           provider: "github"
         },
@@ -113,14 +118,4 @@ async function loadGitHubUser(token: string): Promise<GitHubUserResponse> {
     throw new Error("GitHub user lookup failed");
   }
   return (await response.json()) as GitHubUserResponse;
-}
-
-function dashboardRoleForGitHubLogin(login: string): string {
-  const admins = new Set(
-    (process.env.AGENTFORGE_GITHUB_ADMIN_LOGINS ?? "")
-      .split(",")
-      .map((value) => value.trim().toLowerCase())
-      .filter(Boolean)
-  );
-  return admins.has(login.toLowerCase()) ? "platform_admin" : "developer";
 }
