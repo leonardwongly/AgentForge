@@ -18,6 +18,15 @@ type InstallationRow = {
   updatedAt: Date;
 };
 
+type WebhookDeliveryRow = {
+  id: string;
+  deliveryId: string;
+  event: string;
+  action: string | null;
+  payloadJson: unknown;
+  createdAt: Date;
+};
+
 function installationRow(
   overrides: Partial<InstallationRow> & Pick<InstallationRow, "id" | "githubInstallationId">
 ): InstallationRow {
@@ -39,8 +48,41 @@ function installationRow(
   };
 }
 
-function createPrismaMock(rows: InstallationRow[] = []) {
+function installationPayload(
+  id: number,
+  repositoriesAdded: Array<{ id: number; fullName: string }> = [],
+  repositoriesRemoved: Array<{ id: number; fullName: string }> = []
+) {
+  return {
+    id,
+    accountLogin: "acme",
+    accountType: "Organization",
+    repositoriesAdded,
+    repositoriesRemoved
+  };
+}
+
+function webhookDelivery(
+  index: number,
+  installationId: number,
+  repositoriesAdded: Array<{ id: number; fullName: string }> = []
+): WebhookDeliveryRow {
+  return {
+    id: `delivery-row-${String(index).padStart(3, "0")}`,
+    deliveryId: `delivery-${String(index).padStart(3, "0")}`,
+    event: "installation",
+    action: "created",
+    payloadJson: {
+      installation: installationPayload(installationId, repositoriesAdded),
+      receivedAt: new Date(Date.UTC(2026, 4, 25, 0, 0, index)).toISOString()
+    },
+    createdAt: new Date(Date.UTC(2026, 4, 25, 0, 0, index))
+  };
+}
+
+function createPrismaMock(rows: InstallationRow[] = [], deliveries: WebhookDeliveryRow[] = []) {
   const repositoryUpserts: unknown[] = [];
+  const repositoryArchiveCalls: unknown[] = [];
   const prisma = {
     organization: {
       upsert: vi.fn(async (input: unknown) => input)
@@ -70,6 +112,10 @@ function createPrismaMock(rows: InstallationRow[] = []) {
           accountLogin: data.accountLogin ?? "installation",
           accountType: data.accountType ?? "Organization",
           status: data.status ?? "pending_approval",
+          approvedBy: data.approvedBy ?? null,
+          approvedAt: data.approvedAt ?? null,
+          rejectedBy: data.rejectedBy ?? null,
+          rejectedAt: data.rejectedAt ?? null,
           archivedAt: data.archivedAt ?? null,
           lastWebhookAt: data.lastWebhookAt ?? now,
           createdAt: now,
@@ -87,20 +133,113 @@ function createPrismaMock(rows: InstallationRow[] = []) {
           Object.assign(row, data, { updatedAt: new Date("2026-05-25T00:00:00.000Z") });
           return row;
         }
+      ),
+      upsert: vi.fn(
+        async ({
+          where,
+          update,
+          create
+        }: {
+          where: { githubInstallationId: bigint };
+          update: Partial<InstallationRow>;
+          create: Partial<InstallationRow> & { githubInstallationId: bigint };
+        }) => {
+          const row = rows.find(
+            (candidate) => candidate.githubInstallationId === where.githubInstallationId
+          );
+          if (row) {
+            Object.assign(row, update, { updatedAt: new Date("2026-05-25T00:00:00.000Z") });
+            return row;
+          }
+          const now = new Date("2026-05-25T00:00:00.000Z");
+          const created = installationRow({
+            id: `installation-${rows.length + 1}`,
+            githubInstallationId: create.githubInstallationId,
+            organizationId: create.organizationId ?? null,
+            accountLogin: create.accountLogin ?? "installation",
+            accountType: create.accountType ?? "Organization",
+            status: create.status ?? "pending_approval",
+            approvedBy: create.approvedBy ?? null,
+            approvedAt: create.approvedAt ?? null,
+            rejectedBy: create.rejectedBy ?? null,
+            rejectedAt: create.rejectedAt ?? null,
+            archivedAt: create.archivedAt ?? null,
+            lastWebhookAt: create.lastWebhookAt ?? now,
+            createdAt: now,
+            updatedAt: now
+          });
+          rows.push(created);
+          return created;
+        }
       )
     },
     repository: {
       upsert: vi.fn(async (input: unknown) => {
         repositoryUpserts.push(input);
         return { id: "repo_acme_payments", mode: null };
+      }),
+      updateMany: vi.fn(async (input: unknown) => {
+        repositoryArchiveCalls.push(input);
+        return { count: 0 };
       })
+    },
+    webhookDelivery: {
+      findMany: vi.fn(
+        async ({ take, cursor }: { take: number; cursor?: { id: string } | undefined }) => {
+          const sorted = [...deliveries].sort((left, right) => {
+            const createdDelta = left.createdAt.getTime() - right.createdAt.getTime();
+            return createdDelta === 0 ? left.id.localeCompare(right.id) : createdDelta;
+          });
+          const start = cursor
+            ? Math.max(sorted.findIndex((delivery) => delivery.id === cursor.id) + 1, 0)
+            : 0;
+          return sorted.slice(start, start + take);
+        }
+      )
     }
   };
-  return { prisma, repositoryUpserts, rows };
+  return { prisma, repositoryArchiveCalls, repositoryUpserts, rows };
 }
 
 describe("GitHub installation tenancy", () => {
-  it("claims pending installation verification for the actor organization", async () => {
+  it("requires webhook-confirmed or manually described installation details before verification", async () => {
+    const { prisma, rows } = createPrismaMock();
+
+    await expect(
+      testInternals.upsertPendingGithubInstallation(prisma as never, {
+        githubInstallationId: "12345",
+        accountType: "Organization",
+        organizationId: "org-a"
+      })
+    ).resolves.toBeUndefined();
+    expect(rows).toHaveLength(0);
+  });
+
+  it("claims webhook-confirmed callback verification for the actor organization", async () => {
+    const { prisma, rows } = createPrismaMock([
+      installationRow({
+        id: "installation-a",
+        organizationId: null,
+        githubInstallationId: 12345n,
+        accountLogin: "acme-webhook"
+      })
+    ]);
+
+    const installation = await testInternals.upsertPendingGithubInstallation(prisma as never, {
+      githubInstallationId: "12345",
+      accountType: "Organization",
+      organizationId: "org-a"
+    });
+
+    expect(installation).toMatchObject({
+      organizationId: "org-a",
+      accountLogin: "acme-webhook",
+      status: "pending_approval"
+    });
+    expect(rows[0]?.organizationId).toBe("org-a");
+  });
+
+  it("claims manually described installation verification for the actor organization", async () => {
     const { prisma, rows } = createPrismaMock();
 
     const installation = await testInternals.upsertPendingGithubInstallation(prisma as never, {
@@ -116,6 +255,78 @@ describe("GitHub installation tenancy", () => {
       status: "pending_approval"
     });
     expect(rows[0]?.organizationId).toBe("org-a");
+  });
+
+  it("clears stale rejected state when verification reopens an installation", async () => {
+    const { prisma, rows } = createPrismaMock([
+      installationRow({
+        id: "installation-a",
+        organizationId: "org-a",
+        githubInstallationId: 12345n,
+        status: "rejected",
+        rejectedBy: "admin-a",
+        rejectedAt: new Date("2026-05-24T00:00:00.000Z"),
+        archivedAt: new Date("2026-05-24T00:00:00.000Z")
+      })
+    ]);
+
+    const installation = await testInternals.upsertPendingGithubInstallation(prisma as never, {
+      githubInstallationId: "12345",
+      accountLogin: "acme",
+      accountType: "Organization",
+      organizationId: "org-a"
+    });
+
+    expect(installation).toMatchObject({
+      status: "pending_approval"
+    });
+    expect(installation).not.toHaveProperty("rejectedBy");
+    expect(installation).not.toHaveProperty("rejectedAt");
+    expect(installation).not.toHaveProperty("archivedAt");
+    expect(rows[0]).toMatchObject({
+      status: "pending_approval",
+      rejectedBy: null,
+      rejectedAt: null,
+      archivedAt: null
+    });
+  });
+
+  it("preserves approved state while clearing stale rejection fields during verification", async () => {
+    const approvedAt = new Date("2026-05-23T00:00:00.000Z");
+    const { prisma, rows } = createPrismaMock([
+      installationRow({
+        id: "installation-a",
+        organizationId: "org-a",
+        githubInstallationId: 12345n,
+        status: "approved",
+        approvedBy: "admin-a",
+        approvedAt,
+        rejectedBy: "stale-admin",
+        rejectedAt: new Date("2026-05-24T00:00:00.000Z")
+      })
+    ]);
+
+    const installation = await testInternals.upsertPendingGithubInstallation(prisma as never, {
+      githubInstallationId: "12345",
+      accountLogin: "acme",
+      accountType: "Organization",
+      organizationId: "org-a"
+    });
+
+    expect(installation).toMatchObject({
+      status: "approved",
+      approvedBy: "admin-a",
+      approvedAt: approvedAt.toISOString()
+    });
+    expect(installation).not.toHaveProperty("rejectedBy");
+    expect(installation).not.toHaveProperty("rejectedAt");
+    expect(rows[0]).toMatchObject({
+      status: "approved",
+      approvedBy: "admin-a",
+      approvedAt,
+      rejectedBy: null,
+      rejectedAt: null
+    });
   });
 
   it("rejects attempts to claim or decide another tenant's installation", async () => {
@@ -168,6 +379,135 @@ describe("GitHub installation tenancy", () => {
     await expect(testInternals.listGithubInstallations(prisma as never, "org-b")).resolves.toEqual([
       expect.objectContaining({ id: "installation-b", organizationId: "org-b" })
     ]);
+  });
+
+  it("clears stale approval state when rejecting an installation", async () => {
+    const { prisma, rows } = createPrismaMock([
+      installationRow({
+        id: "installation-a",
+        organizationId: "org-a",
+        githubInstallationId: 12345n,
+        status: "approved",
+        approvedBy: "admin-a",
+        approvedAt: new Date("2026-05-24T00:00:00.000Z")
+      })
+    ]);
+
+    const installation = await testInternals.rejectGithubInstallation(prisma as never, {
+      id: "installation-a",
+      organizationId: "org-a",
+      actor: "admin-b"
+    });
+
+    expect(installation).toMatchObject({
+      status: "rejected",
+      rejectedBy: "admin-b"
+    });
+    expect(installation).not.toHaveProperty("approvedBy");
+    expect(installation).not.toHaveProperty("approvedAt");
+    expect(rows[0]).toMatchObject({
+      status: "rejected",
+      approvedBy: null,
+      approvedAt: null,
+      rejectedBy: "admin-b"
+    });
+  });
+});
+
+describe("GitHub installation webhook transitions", () => {
+  it("archives installations only for installation delete or suspend webhooks", async () => {
+    const { prisma, rows } = createPrismaMock([
+      installationRow({
+        id: "installation-a",
+        organizationId: "org-a",
+        githubInstallationId: 12345n,
+        status: "approved"
+      })
+    ]);
+
+    await testInternals.processGithubInstallationWebhook(
+      { repositorySettings: new Map() } as never,
+      prisma as never,
+      {
+        deliveryId: "delivery-1",
+        event: "installation_repositories",
+        action: "deleted",
+        installation: installationPayload(12345),
+        receivedAt: "2026-05-25T00:00:00.000Z"
+      } as never
+    );
+
+    expect(rows[0]).toMatchObject({
+      status: "approved",
+      archivedAt: null
+    });
+  });
+
+  it("clears archived state when an installation becomes active again", async () => {
+    const { prisma, rows } = createPrismaMock([
+      installationRow({
+        id: "installation-a",
+        organizationId: "org-a",
+        githubInstallationId: 12345n,
+        status: "archived",
+        archivedAt: new Date("2026-05-24T00:00:00.000Z")
+      })
+    ]);
+
+    await testInternals.processGithubInstallationWebhook(
+      { repositorySettings: new Map() } as never,
+      prisma as never,
+      {
+        deliveryId: "delivery-1",
+        event: "installation",
+        action: "created",
+        installation: installationPayload(12345),
+        receivedAt: "2026-05-25T00:00:00.000Z"
+      } as never
+    );
+
+    expect(rows[0]).toMatchObject({
+      status: "pending_approval",
+      archivedAt: null
+    });
+  });
+});
+
+describe("GitHub installation repository replay", () => {
+  it("replays all stored installation events chronologically across pages", async () => {
+    const deliveries = Array.from({ length: 251 }, (_value, index) =>
+      webhookDelivery(index, 12345, [
+        {
+          id: index + 1,
+          fullName: `acme/repo-${String(index).padStart(3, "0")}`
+        }
+      ])
+    ).reverse();
+    const { prisma, repositoryUpserts } = createPrismaMock(
+      [
+        installationRow({
+          id: "installation-a",
+          organizationId: "org-a",
+          githubInstallationId: 12345n,
+          status: "approved"
+        })
+      ],
+      deliveries
+    );
+
+    await testInternals.syncRepositoriesFromStoredInstallationEvents(
+      { repositorySettings: new Map() } as never,
+      prisma as never,
+      { organizationId: "org-a", githubInstallationId: "12345" }
+    );
+
+    expect(repositoryUpserts).toHaveLength(251);
+    expect(repositoryUpserts[0]).toMatchObject({
+      create: { fullName: "acme/repo-000" }
+    });
+    expect(repositoryUpserts.at(-1)).toMatchObject({
+      create: { fullName: "acme/repo-250" }
+    });
   });
 });
 

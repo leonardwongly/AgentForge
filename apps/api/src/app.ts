@@ -1046,9 +1046,10 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       organizationId: actor.organizationId
     });
     if (!installation) {
-      return reply
-        .code(409)
-        .send({ error: "GitHub installation belongs to another organization." });
+      return reply.code(409).send({
+        error:
+          "GitHub installation must be confirmed by webhook delivery or manual account details before approval."
+      });
     }
     await audit({
       organizationId: actor.organizationId,
@@ -3354,12 +3355,16 @@ async function processGithubInstallationWebhook(
     where: { githubInstallationId: BigInt(installation.id) }
   });
   const now = new Date();
-  const archiveAction = envelope.action === "deleted" || envelope.action === "suspend";
+  const archiveAction =
+    envelope.event === "installation" &&
+    (envelope.action === "deleted" || envelope.action === "suspend");
   const status = archiveAction
     ? "archived"
     : existing?.status === "approved"
       ? "approved"
       : "pending_approval";
+  const approvedBy = status === "approved" ? (existing?.approvedBy ?? null) : null;
+  const approvedAt = status === "approved" ? (existing?.approvedAt ?? null) : null;
   const row = await prisma.gitHubInstallation.upsert({
     where: { githubInstallationId: BigInt(installation.id) },
     update: {
@@ -3367,7 +3372,11 @@ async function processGithubInstallationWebhook(
         installation.accountLogin || existing?.accountLogin || `installation-${installation.id}`,
       accountType: installation.accountType || existing?.accountType || "Organization",
       status,
-      archivedAt: archiveAction ? now : (existing?.archivedAt ?? null),
+      approvedBy,
+      approvedAt,
+      rejectedBy: null,
+      rejectedAt: null,
+      archivedAt: archiveAction ? now : null,
       lastWebhookAt: now
     },
     create: {
@@ -3375,6 +3384,10 @@ async function processGithubInstallationWebhook(
       accountLogin: installation.accountLogin || `installation-${installation.id}`,
       accountType: installation.accountType || "Organization",
       status,
+      approvedBy,
+      approvedAt,
+      rejectedBy: null,
+      rejectedAt: null,
       archivedAt: archiveAction ? now : null,
       lastWebhookAt: now
     }
@@ -3402,11 +3415,20 @@ async function upsertPendingGithubInstallation(
   if (existing?.organizationId && existing.organizationId !== input.organizationId) {
     return undefined;
   }
+  if (!existing && !input.accountLogin) {
+    return undefined;
+  }
+  const status = existing?.status === "approved" ? "approved" : "pending_approval";
   const data = {
     organizationId: input.organizationId,
-    accountLogin: input.accountLogin ?? `installation-${input.githubInstallationId}`,
-    accountType: input.accountType,
-    status: existing?.status === "approved" ? "approved" : "pending_approval",
+    accountLogin:
+      input.accountLogin ?? existing?.accountLogin ?? `installation-${input.githubInstallationId}`,
+    accountType: input.accountType ?? existing?.accountType ?? "Organization",
+    status,
+    approvedBy: status === "approved" ? (existing?.approvedBy ?? null) : null,
+    approvedAt: status === "approved" ? (existing?.approvedAt ?? null) : null,
+    rejectedBy: null,
+    rejectedAt: null,
     archivedAt: null,
     lastWebhookAt: new Date()
   };
@@ -3472,6 +3494,8 @@ async function rejectGithubInstallation(
     where: { id: existing.id },
     data: {
       status: "rejected",
+      approvedBy: null,
+      approvedAt: null,
       rejectedBy: input.actor,
       rejectedAt: new Date(),
       archivedAt: new Date()
@@ -3488,19 +3512,31 @@ async function syncRepositoriesFromStoredInstallationEvents(
   if (!prisma || !installation.organizationId) {
     return;
   }
-  const deliveries = await prisma.webhookDelivery.findMany({
-    where: { event: { in: ["installation", "installation_repositories"] } },
-    orderBy: { createdAt: "desc" },
-    take: 100
-  });
-  for (const delivery of deliveries) {
-    const payload = delivery.payloadJson as {
-      installation?: GithubWebhookEnvelope["installation"];
-    } | null;
-    const stored = payload?.installation;
-    if (stored?.id && String(stored.id) === installation.githubInstallationId) {
-      await syncRepositoriesFromInstallation(state, prisma, installation.organizationId, stored);
+  const pageSize = 250;
+  let cursor: string | undefined;
+  for (;;) {
+    const deliveries = await prisma.webhookDelivery.findMany({
+      where: { event: { in: ["installation", "installation_repositories"] } },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: pageSize,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
+    });
+    if (deliveries.length === 0) {
+      return;
     }
+    for (const delivery of deliveries) {
+      const payload = delivery.payloadJson as {
+        installation?: GithubWebhookEnvelope["installation"];
+      } | null;
+      const stored = payload?.installation;
+      if (stored?.id && String(stored.id) === installation.githubInstallationId) {
+        await syncRepositoriesFromInstallation(state, prisma, installation.organizationId, stored);
+      }
+    }
+    if (deliveries.length < pageSize) {
+      return;
+    }
+    cursor = deliveries.at(-1)?.id;
   }
 }
 
@@ -4110,7 +4146,9 @@ export const testInternals = {
   approveGithubInstallation,
   ensureRepository,
   listGithubInstallations,
+  processGithubInstallationWebhook,
   rejectGithubInstallation,
+  syncRepositoriesFromStoredInstallationEvents,
   upsertPendingGithubInstallation
 };
 
