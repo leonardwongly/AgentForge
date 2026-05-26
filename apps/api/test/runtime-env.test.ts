@@ -56,7 +56,9 @@ function configWithAuth(auth: Partial<AgentForgeConfig["auth"]> = {}): AgentForg
       appSlug: undefined,
       allowUnsignedWebhooks: false,
       clientId: undefined,
-      clientSecret: undefined
+      clientSecret: undefined,
+      adminLogins: undefined,
+      allowedLogins: undefined
     },
     appBaseUrl: "http://localhost:3000",
     apiBaseUrl: "http://localhost:4000",
@@ -77,6 +79,9 @@ function configWithAuth(auth: Partial<AgentForgeConfig["auth"]> = {}): AgentForg
       proxyStripsIdentityHeaders: false,
       apiProxySecret: "proxy-secret",
       ...auth
+    },
+    dashboard: {
+      organizationId: undefined
     }
   };
 }

@@ -30,7 +30,7 @@ function originFromEnvUrl(value) {
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   poweredByHeader: false,
-  transpilePackages: ["@agentforge/core", "@agentforge/ui"],
+  transpilePackages: ["@agentforge/config", "@agentforge/core", "@agentforge/ui"],
   turbopack: {
     root: repoRoot
   },

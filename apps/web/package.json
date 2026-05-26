@@ -11,6 +11,7 @@
     "test": "cd ../.. && vitest run apps/web/app"
   },
   "dependencies": {
+    "@agentforge/config": "workspace:*",
     "@agentforge/core": "workspace:*",
     "@agentforge/ui": "workspace:*",
     "lucide-react": "1.14.0",

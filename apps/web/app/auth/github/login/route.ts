@@ -1,10 +1,10 @@
 import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
 import { GITHUB_OAUTH_STATE_COOKIE, createOauthStateCookie } from "../../session";
+import { githubOAuthRuntime } from "../runtime";
 
 export async function GET(): Promise<never> {
-  const clientId = process.env.GITHUB_CLIENT_ID;
-  const sessionSecret = process.env.SESSION_SECRET;
+  const { clientId, sessionSecret, secureCookies } = githubOAuthRuntime();
   if (!clientId || !sessionSecret) {
     redirect("/settings?error=GitHub%20OAuth%20is%20not%20configured");
   }
@@ -14,7 +14,7 @@ export async function GET(): Promise<never> {
   cookieStore.set(GITHUB_OAUTH_STATE_COOKIE, value, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: secureCookies,
     path: "/",
     maxAge: 10 * 60
   });
