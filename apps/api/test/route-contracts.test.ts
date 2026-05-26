@@ -38,113 +38,136 @@ describe("API route plugin contracts", () => {
     ["POST", "/api/exports/change-control-records"]
   ] as const)("keeps %s %s protected after route extraction", async (method, url) => {
     const app = createApp(createInitialState());
-    const request =
-      method === "POST"
-        ? {
-            method,
-            url,
-            payload: JSON.stringify({}),
-            headers: { "content-type": "application/json" }
-          }
-        : { method, url };
+    try {
+      const request =
+        method === "POST"
+          ? {
+              method,
+              url,
+              payload: JSON.stringify({}),
+              headers: { "content-type": "application/json" }
+            }
+          : { method, url };
 
-    const response = await app.inject(request);
+      const response = await app.inject(request);
 
-    expect(response.statusCode).toBe(401);
-    await app.close();
+      expect(response.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
   });
 
   it("keeps public health, webhook validation, and policy utility routes reachable", async () => {
     const app = createApp(createInitialState());
+    try {
+      const health = await app.inject({ method: "GET", url: "/health" });
+      expect(health.statusCode).toBe(200);
+      expect(health.json()).toMatchObject({ status: "ok", version: expect.any(String) });
 
-    const health = await app.inject({ method: "GET", url: "/health" });
-    expect(health.statusCode).toBe(200);
-    expect(health.json()).toMatchObject({ status: "ok", version: "0.1.0" });
+      const webhook = await app.inject({
+        method: "POST",
+        url: "/webhooks/github",
+        payload: JSON.stringify({ action: "opened" }),
+        headers: { "content-type": "application/json" }
+      });
+      expect(webhook.statusCode).toBe(400);
+      expect(webhook.json()).toMatchObject({ error: "Missing GitHub webhook headers" });
 
-    const webhook = await app.inject({
-      method: "POST",
-      url: "/webhooks/github",
-      payload: JSON.stringify({ action: "opened" }),
-      headers: { "content-type": "application/json" }
-    });
-    expect(webhook.statusCode).toBe(400);
-    expect(webhook.json()).toMatchObject({ error: "Missing GitHub webhook headers" });
+      const policyValidation = await app.inject({
+        method: "POST",
+        url: "/api/policies/validate",
+        payload: JSON.stringify({ contentYaml: policyYaml }),
+        headers: { "content-type": "application/json" }
+      });
+      expect(policyValidation.statusCode).toBe(200);
+      expect(policyValidation.json()).toMatchObject({ valid: true });
 
-    const policyValidation = await app.inject({
-      method: "POST",
-      url: "/api/policies/validate",
-      payload: JSON.stringify({ contentYaml: policyYaml }),
-      headers: { "content-type": "application/json" }
-    });
-    expect(policyValidation.statusCode).toBe(200);
-    expect(policyValidation.json()).toMatchObject({ valid: true });
+      const malformedPolicyPreview = await app.inject({
+        method: "POST",
+        url: "/api/policies/preview",
+        payload: JSON.stringify({ contentYaml: policyYaml, pr: {} }),
+        headers: { "content-type": "application/json" }
+      });
+      expect(malformedPolicyPreview.statusCode).toBe(400);
+      expect(malformedPolicyPreview.json()).toMatchObject({
+        error: "pr.repositoryFullName is required"
+      });
 
-    const codeowners = await app.inject({
-      method: "POST",
-      url: "/api/codeowners/preview",
-      payload: JSON.stringify({
-        content: "*.ts @platform\n/docs/ @docs-team",
-        changedPaths: ["src/app.ts", "docs/readme.md"]
-      }),
-      headers: { "content-type": "application/json" }
-    });
-    expect(codeowners.statusCode).toBe(200);
-    expect(codeowners.json()).toMatchObject({ suggestions: expect.any(Array) });
-
-    await app.close();
+      const codeowners = await app.inject({
+        method: "POST",
+        url: "/api/codeowners/preview",
+        payload: JSON.stringify({
+          content: "*.ts @platform\n/docs/ @docs-team",
+          changedPaths: ["src/app.ts", "docs/readme.md"]
+        }),
+        headers: { "content-type": "application/json" }
+      });
+      expect(codeowners.statusCode).toBe(200);
+      expect(codeowners.json()).toMatchObject({ suggestions: expect.any(Array) });
+    } finally {
+      await app.close();
+    }
   });
 
   it("keeps tenant-scoped read and export response contracts stable", async () => {
     const state = createInitialState();
     state.records = [record("record-local", "org_local"), record("record-other", "org_other")];
     const app = createApp(state);
+    try {
+      const repositories = await app.inject({
+        method: "GET",
+        url: "/api/repositories",
+        headers: actorHeaders("auditor", "org_local")
+      });
+      expect(repositories.statusCode).toBe(200);
+      expect(repositories.json().repositories).toHaveLength(1);
 
-    const repositories = await app.inject({
-      method: "GET",
-      url: "/api/repositories",
-      headers: actorHeaders("auditor", "org_local")
-    });
-    expect(repositories.statusCode).toBe(200);
-    expect(repositories.json().repositories).toHaveLength(1);
+      const dashboard = await app.inject({
+        method: "GET",
+        url: "/api/dashboard/summary",
+        headers: actorHeaders("auditor", "org_local")
+      });
+      expect(dashboard.statusCode).toBe(200);
+      expect(dashboard.json()).toMatchObject({
+        blockedPrCount: 1,
+        warningCount: 0
+      });
 
-    const dashboard = await app.inject({
-      method: "GET",
-      url: "/api/dashboard/summary",
-      headers: actorHeaders("auditor", "org_local")
-    });
-    expect(dashboard.statusCode).toBe(200);
-    expect(dashboard.json()).toMatchObject({
-      blockedPrCount: 1,
-      warningCount: 0
-    });
+      const queueAsAuditor = await app.inject({
+        method: "GET",
+        url: "/api/admin/queue",
+        headers: actorHeaders("auditor", "org_local")
+      });
+      expect(queueAsAuditor.statusCode).toBe(403);
 
-    const createdExport = await app.inject({
-      method: "POST",
-      url: "/api/exports/change-control-records",
-      payload: JSON.stringify({ format: "json" }),
-      headers: {
-        ...actorHeaders("auditor", "org_local"),
-        "content-type": "application/json"
-      }
-    });
-    expect(createdExport.statusCode).toBe(201);
-    expect(createdExport.json()).toMatchObject({
-      status: "completed",
-      recordCount: 1,
-      totalMatchingRecords: 1,
-      truncated: false
-    });
+      const createdExport = await app.inject({
+        method: "POST",
+        url: "/api/exports/change-control-records",
+        payload: JSON.stringify({ format: "json" }),
+        headers: {
+          ...actorHeaders("auditor", "org_local"),
+          "content-type": "application/json"
+        }
+      });
+      expect(createdExport.statusCode).toBe(201);
+      expect(createdExport.json()).toMatchObject({
+        status: "completed",
+        recordCount: 1,
+        totalMatchingRecords: 1,
+        truncated: false
+      });
 
-    const exportJob = await app.inject({
-      method: "GET",
-      url: `/api/exports/${createdExport.json().id}`,
-      headers: actorHeaders("auditor", "org_local")
-    });
-    expect(exportJob.statusCode).toBe(200);
-    expect(exportJob.body).toContain("record-local");
-    expect(exportJob.body).not.toContain("record-other");
-
-    await app.close();
+      const exportJob = await app.inject({
+        method: "GET",
+        url: `/api/exports/${createdExport.json().id}`,
+        headers: actorHeaders("auditor", "org_local")
+      });
+      expect(exportJob.statusCode).toBe(200);
+      expect(exportJob.body).toContain("record-local");
+      expect(exportJob.body).not.toContain("record-other");
+    } finally {
+      await app.close();
+    }
   });
 });
 

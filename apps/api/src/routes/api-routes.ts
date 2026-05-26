@@ -1,11 +1,20 @@
 import { randomUUID } from "node:crypto";
-import type { FastifyInstance } from "fastify";
-import { getMembershipCacheKey, type ChangeControlRecord } from "@agentforge/core";
+import type { Queue } from "bullmq";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import {
+  type AuditEventRecord,
+  getMembershipCacheKey,
+  type ChangeControlRecord,
+  type OverrideRecord,
+  type PullRequestInput
+} from "@agentforge/core";
+import type { PrismaClient } from "@agentforge/db";
 import {
   formatMergeGuardCheck,
   normalizeGithubWebhook,
   shouldEnqueueEvaluation,
-  verifyGithubSignature
+  verifyGithubSignature,
+  type GithubWebhookEnvelope
 } from "@agentforge/github";
 import {
   builtinPolicyPacks,
@@ -30,67 +39,448 @@ import {
   requireApiActor,
   requireOrganizationAccess,
   requireRole,
-  type ApiActor
+  type ApiActor,
+  type AuthzFailure
 } from "../auth.js";
 import { evaluateFixturePr } from "../evaluation.js";
-import type { ExportJob, RepositoryPolicyState } from "../app.js";
+import type { AppState, ExportJob, RepositoryPolicyState } from "../app.js";
+import type { loadConfig } from "@agentforge/config";
 
 type RawBodyRequest = {
   rawBody?: Buffer;
 };
 
-type RouteSchema<T = any> = {
+type RouteSchema<T = unknown> = {
   safeParse: (value: unknown) =>
     | { success: true; data: T }
     | {
         success: false;
         error: {
           issues: Array<{ path: PropertyKey[]; message: string }>;
-          flatten: () => any;
+          flatten: () => Record<string, unknown>;
         };
       };
 };
 
-type ApiRouteContext = {
+type ApiConfig = ReturnType<typeof loadConfig>;
+type MergeGuardEvaluationJobPayload = {
+  deliveryId: string;
+  envelope: GithubWebhookEnvelope;
+};
+type EvaluationQueue = Queue<MergeGuardEvaluationJobPayload> | undefined;
+type QueueBackend = "redis" | "in_memory";
+type WebhookDeliveryStatus =
+  | "received"
+  | "queued"
+  | "processing"
+  | "completed"
+  | "enqueue_failed"
+  | "failed";
+type QueueEnqueueResult = {
+  jobId: string;
+  deliveryId: string;
+  backend: QueueBackend;
+};
+type QueueStatus = {
+  status: "ready" | "not_ready";
+  backend: QueueBackend;
+  retryPolicy: Record<string, unknown>;
+  counts: Record<string, number>;
+  failedJobs: Array<Record<string, unknown>>;
+  error?: { errorClass: string; message: string };
+};
+type AuditInput = Record<string, unknown>;
+type OwnerMapping = {
+  organizationId?: string | undefined;
+  ownerKey: string;
+  reviewer: string;
+  reviewerType: "user" | "team";
+  id?: string | undefined;
+  createdAt?: string | undefined;
+  updatedAt?: string | undefined;
+};
+type RepositorySummary = {
+  id: string;
+  organizationId?: string | undefined;
+  fullName: string;
+  enabled?: boolean | undefined;
+  mode?: ChangeControlRecord["mode"] | undefined;
+  currentPolicyPack?: string | undefined;
+  currentPolicyVersion?: string | undefined;
+  protected?: boolean | undefined;
+  defaultBranch?: string | undefined;
+  dataHandling?: Record<string, unknown> | undefined;
+};
+type GithubInstallationSummary = {
+  connected: boolean;
+  [key: string]: unknown;
+};
+type GithubInstallation = {
+  id: string;
+  organizationId?: string | undefined;
+  githubInstallationId: string;
+  accountLogin?: string | undefined;
+  accountType?: string | undefined;
+  status?: string | undefined;
+};
+type RepositorySettingsPatch = {
+  enabled?: boolean | undefined;
+  mode?: ChangeControlRecord["mode"] | undefined;
+  policyVersion?: string | undefined;
+  dataHandling?: Record<string, unknown> | undefined;
+  ownerMappings?: OwnerMapping[] | undefined;
+  sourceCodeStorage?: boolean | undefined;
+  fullDiffRetention?: string | undefined;
+  redactSecrets?: boolean | undefined;
+  llmFeatures?: boolean | undefined;
+  auditRecordRetentionDays?: number | undefined;
+};
+type RepositorySettingsResult = {
+  organizationId: string;
+  repository: RepositorySummary;
+  ownerMappings: OwnerMapping[];
+};
+type RecordPageQuery = {
+  limit: number;
+  offset: number;
+  repositoryId?: string | undefined;
+  status?: ChangeControlRecord["checkStatus"] | undefined;
+  lifecycle?: ChangeControlRecord["lifecycle"] | undefined;
+  mode?: ChangeControlRecord["mode"] | undefined;
+  policyVersion?: string | undefined;
+  queue?: "action_required" | undefined;
+  sort: "updated_desc" | "updated_asc" | "created_desc" | "created_asc" | "pr_asc" | "pr_desc";
+};
+type PageInfo = {
+  limit: number;
+  offset: number;
+  total: number;
+  hasNextPage: boolean;
+};
+type PaginatedRecords = { records: ChangeControlRecord[]; pageInfo: PageInfo };
+type QueueReplayTarget = {
+  deliveryId?: string | undefined;
+  repositoryFullName?: string | undefined;
+  pullRequestNumber?: number | undefined;
+};
+type ReplayableDelivery = {
+  envelope: GithubWebhookEnvelope;
+  delivery: {
+    deliveryId: string;
+    event: string;
+    action: string | null;
+    organizationId: string | null;
+    repositoryId: string | null;
+    repositoryFullName: string | null;
+    pullRequestNumber: number | null;
+    headSha: string | null;
+    enqueued: boolean;
+    deliveryStatus: string;
+    payloadJson: unknown;
+    createdAt: Date | string;
+  };
+};
+type GithubInstallationVerifyInput = {
+  githubInstallationId: string;
+  accountLogin?: string | undefined;
+  accountType: "Organization" | "User";
+};
+type GithubInstallationDecisionInput = { reason?: string | undefined };
+type ExportRequest = { format: "json" | "csv"; maxRecords: number; offset: number };
+type CompliancePackageRequest = ExportRequest & {
+  format: "json";
+  repositoryId?: string | undefined;
+  policyPackId?: string | undefined;
+  policyVersion?: string | undefined;
+  startDate?: string | undefined;
+  endDate?: string | undefined;
+};
+type EvidenceSubmission = {
+  evidenceId?: string | undefined;
+  kind?: string | undefined;
+  content: string;
+};
+type EvidenceRejection = { recordId?: string | undefined; reason: string };
+type RecordScopedAction = { recordId?: string | undefined };
+type PolicyUpdateInput = { contentYaml: string };
+type PolicyPreviewInput = {
+  contentYaml?: string | undefined;
+  pr: PullRequestInput;
+  persist?: boolean | undefined;
+};
+type CodeownersPreviewInput = { content: string; changedPaths?: string[] | undefined };
+
+type ResolvedApiRouteContext = {
   apiCache: { del: (key: string) => Promise<unknown> };
-  audit: (...args: any[]) => Promise<any>;
-  auditReevaluation: (...args: any[]) => Promise<any>;
-  config: any;
-  evaluationQueue: any;
+  audit: (input: AuditInput) => Promise<unknown>;
+  auditReevaluation: (
+    record: ChangeControlRecord,
+    actor: ApiActor,
+    previousStatus: ChangeControlRecord["checkStatus"],
+    requestId?: string
+  ) => Promise<unknown>;
+  approveGithubInstallation: (
+    prisma: PrismaClient | undefined,
+    input: { id: string; organizationId: string; actor: string }
+  ) => Promise<GithubInstallation | undefined>;
+  collectPrometheusMetrics: (input: {
+    state: AppState;
+    prisma: PrismaClient | undefined;
+    evaluationQueue: EvaluationQueue;
+    config: ApiConfig;
+  }) => Promise<string>;
+  config: ApiConfig;
+  defaultDataHandlingSettings: (
+    prisma: PrismaClient | undefined,
+    config: ApiConfig
+  ) => Promise<Record<string, unknown>>;
+  enqueueMergeGuardEvaluation: (input: {
+    state: AppState;
+    evaluationQueue: EvaluationQueue;
+    deliveryId: string;
+    envelope: GithubWebhookEnvelope;
+    jobId?: string;
+  }) => Promise<QueueEnqueueResult>;
+  evaluationQueue: EvaluationQueue;
+  fetchGithubInstallationAccount: (
+    config: ApiConfig,
+    githubInstallationId: string
+  ) => Promise<{ accountLogin: string; accountType: "Organization" | "User" } | undefined>;
+  findReplayableDelivery: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    target: QueueReplayTarget,
+    organizationId?: string
+  ) => Promise<ReplayableDelivery | undefined>;
+  findRepositoryIdByFullName: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    fullName: string
+  ) => Promise<string | undefined>;
+  getExportJob: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    id: string
+  ) => Promise<ExportJob | undefined>;
   getRecord: (id: string) => Promise<ChangeControlRecord | undefined>;
-  listOwnerMappings: () => Promise<any[]>;
+  getRecordPolicyConfig: (record: ChangeControlRecord) => Promise<{
+    overrides: {
+      allowed_roles: string[];
+      require_reason: boolean;
+      visible_in_pr: boolean;
+      audit: boolean;
+    };
+  }>;
+  getRepositoryModeOverride: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    repositoryId: string
+  ) => Promise<ChangeControlRecord["mode"] | undefined>;
+  getRepositoryPolicy: (repositoryId: string) => Promise<RepositoryPolicyState | undefined>;
+  githubCredentialsConfigured: (config: ApiConfig) => boolean;
+  githubInstallationSummary: (
+    prisma: PrismaClient | undefined,
+    config: ApiConfig,
+    organizationId: string
+  ) => Promise<GithubInstallationSummary>;
+  githubInstallUrl: (config: ApiConfig) => string | undefined;
+  headerValue: (value: string | string[] | undefined) => string | undefined;
+  isRecoverableWebhookDeliveryForEnqueue: (status: WebhookDeliveryStatus) => boolean;
+  listAuditEvents: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    organizationId?: string
+  ) => Promise<Array<Record<string, unknown>>>;
+  listAuditEventsForRecordExport: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    records: ChangeControlRecord[]
+  ) => Promise<AuditEventRecord[]>;
+  listGithubInstallations: (
+    prisma: PrismaClient | undefined,
+    organizationId: string
+  ) => Promise<GithubInstallation[]>;
+  listOwnerMappings: () => Promise<OwnerMapping[]>;
   listRecords: () => Promise<ChangeControlRecord[]>;
-  listRepositories: (organizationId?: string) => Promise<any[]>;
-  prisma: any;
+  listRecentWebhookDeliveryFailures: (
+    prisma: PrismaClient | undefined,
+    organizationId?: string
+  ) => Promise<Array<Record<string, unknown>>>;
+  listRepositories: (organizationId?: string) => Promise<RepositorySummary[]>;
+  markWebhookDeliveryCompleted: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    deliveryId: string
+  ) => Promise<void>;
+  markWebhookDeliveryEnqueueFailed: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    deliveryId: string,
+    error: unknown
+  ) => Promise<void>;
+  markWebhookDeliveryQueued: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    deliveryId: string,
+    queueJobId: string
+  ) => Promise<void>;
+  markWebhookDeliveryReplayed: (
+    prisma: PrismaClient | undefined,
+    deliveryId: string,
+    actor: string
+  ) => Promise<void>;
+  onboardingStepsFromRuntime: (input: {
+    repositories: RepositorySummary[];
+    records: ChangeControlRecord[];
+    githubConnected: boolean;
+    ownerMappingsConfigured: boolean;
+  }) => unknown;
+  ownerMappingForApi: (mapping: OwnerMapping) => Record<string, unknown>;
+  prisma: PrismaClient | undefined;
+  processGithubInstallationWebhook: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    envelope: GithubWebhookEnvelope,
+    config: ApiConfig
+  ) => Promise<void>;
+  queueOperationalStatus: (input: {
+    state: AppState;
+    evaluationQueue: EvaluationQueue;
+  }) => Promise<QueueStatus>;
+  recomputeRequirementStatus: (record: ChangeControlRecord) => ChangeControlRecord;
+  rejectGithubInstallation: (
+    prisma: PrismaClient | undefined,
+    input: { id: string; organizationId: string; actor: string }
+  ) => Promise<GithubInstallation | undefined>;
+  repositoryIdFromFullName: (fullName: string) => string;
+  repositoryOrganizationId: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    repositoryId: string
+  ) => Promise<string | undefined>;
+  repositoryReadinessScore: (input: {
+    repositories: RepositorySummary[];
+    records: ChangeControlRecord[];
+    githubConnected: boolean;
+    ownerMappingsConfigured: boolean;
+  }) => unknown;
   recordsForAction: (recordId?: string) => Promise<ChangeControlRecord[]>;
   recordsVisibleTo: (actor: ApiActor) => Promise<ChangeControlRecord[]>;
   recordRequiresAction: (record: ChangeControlRecord) => boolean;
-  filterAndSortRecords: (records: ChangeControlRecord[], query: any) => ChangeControlRecord[];
-  paginateRecords: (
+  filterAndSortRecords: (
     records: ChangeControlRecord[],
-    query: any
-  ) => { records: ChangeControlRecord[]; pageInfo: any };
-  dashboardSummary: (records: ChangeControlRecord[]) => any;
+    query: RecordPageQuery
+  ) => ChangeControlRecord[];
+  paginateRecords: (records: ChangeControlRecord[], query: RecordPageQuery) => PaginatedRecords;
+  dashboardSummary: (records: ChangeControlRecord[]) => Record<string, unknown>;
   groupBy: <T>(items: T[], getKey: (item: T) => string) => Record<string, number>;
-  requireReadActor: (request: any, reply: any) => ApiActor | undefined;
+  requireReadActor: (request: FastifyRequest, reply: FastifyReply) => ApiActor | undefined;
+  routingDiagnosticsFromOwnerMappings: (
+    mappings: OwnerMapping[],
+    githubConnected: boolean
+  ) => unknown;
+  runtimeCapabilities: (input: { postgres: boolean; redisQueue: boolean }) => unknown;
   safe: <T>(value: T) => T;
-  saveRecord: (record: ChangeControlRecord, pr?: any) => Promise<ChangeControlRecord>;
+  safeErrorSummary: (error: unknown) => { errorClass: string; message: string };
+  saveAuditEvent: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    event: AuditEventRecord
+  ) => Promise<void>;
+  saveExportJob: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    job: ExportJob,
+    actor: string,
+    actorRole: string
+  ) => Promise<void>;
+  saveOverrideRecord: (prisma: PrismaClient | undefined, record: OverrideRecord) => Promise<void>;
+  saveRecord: (record: ChangeControlRecord, pr?: PullRequestInput) => Promise<ChangeControlRecord>;
+  saveRepositoryPolicy: (
+    repositoryId: string,
+    contentYaml: string,
+    actor: string,
+    parsed: ReturnType<typeof parsePolicyYaml>
+  ) => Promise<RepositoryPolicyState>;
+  saveRepositorySettings: (
+    repositoryId: string,
+    patch: RepositorySettingsPatch
+  ) => Promise<RepositorySettingsResult>;
+  state: AppState;
   storagePolicy: MetadataStoragePolicy;
-  codeownersPreviewSchema: RouteSchema;
-  compliancePackageRequestSchema: RouteSchema;
-  evidenceRejectionSchema: RouteSchema;
-  evidenceSubmissionSchema: RouteSchema;
-  exportRequestSchema: RouteSchema;
-  githubInstallationDecisionSchema: RouteSchema;
-  githubInstallationVerifySchema: RouteSchema;
-  policyPreviewSchema: RouteSchema;
-  policyUpdateSchema: RouteSchema;
-  queueReplaySchema: RouteSchema;
-  recordPageQuerySchema: RouteSchema;
-  recordScopedActionSchema: RouteSchema;
-  repositorySettingsPatchSchema: RouteSchema;
-  [key: string]: any;
+  syncRepositoriesFromCurrentGithubInstallation: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    config: ApiConfig,
+    installation: {
+      organizationId?: string | undefined;
+      githubInstallationId: string;
+      accountLogin?: string | undefined;
+      accountType?: string | undefined;
+    }
+  ) => Promise<unknown>;
+  syncRepositoriesFromStoredInstallationEvents: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    installation: GithubInstallation
+  ) => Promise<unknown>;
+  upsertPendingGithubInstallation: (
+    prisma: PrismaClient | undefined,
+    input: GithubInstallationVerifyInput & { organizationId: string }
+  ) => Promise<GithubInstallation | undefined>;
+  recordWebhookDeliveryReceived: (
+    state: AppState,
+    prisma: PrismaClient | undefined,
+    envelope: GithubWebhookEnvelope
+  ) => Promise<{
+    duplicate: boolean;
+    status: WebhookDeliveryStatus;
+  }>;
+  codeownersPreviewSchema: RouteSchema<CodeownersPreviewInput>;
+  compliancePackageRequestSchema: RouteSchema<CompliancePackageRequest>;
+  evidenceRejectionSchema: RouteSchema<EvidenceRejection>;
+  evidenceSubmissionSchema: RouteSchema<EvidenceSubmission>;
+  exportRequestSchema: RouteSchema<ExportRequest>;
+  githubInstallationDecisionSchema: RouteSchema<GithubInstallationDecisionInput>;
+  githubInstallationVerifySchema: RouteSchema<GithubInstallationVerifyInput>;
+  policyPreviewSchema: RouteSchema<PolicyPreviewInput>;
+  policyUpdateSchema: RouteSchema<PolicyUpdateInput>;
+  queueReplaySchema: RouteSchema<QueueReplayTarget>;
+  recordPageQuerySchema: RouteSchema<RecordPageQuery>;
+  recordScopedActionSchema: RouteSchema<RecordScopedAction>;
+  repositorySettingsPatchSchema: RouteSchema<RepositorySettingsPatch>;
 };
+
+type ApiRouteContext = {
+  [Key in keyof ResolvedApiRouteContext]: unknown;
+};
+
+function authzErrorCode(failure: AuthzFailure): string {
+  return failure.statusCode === 401 ? "api_actor_required" : "api_actor_not_authorized";
+}
+
+function handleAuthzFailure(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  failure: AuthzFailure,
+  errorCode = authzErrorCode(failure)
+) {
+  request.log.warn(
+    {
+      code: errorCode,
+      method: request.method,
+      requestId: request.id,
+      route: request.routeOptions.url ?? request.url,
+      statusCode: failure.statusCode
+    },
+    "Authorization failure"
+  );
+  return reply.code(failure.statusCode).send({
+    code: errorCode,
+    error: failure.reason,
+    requestId: request.id
+  });
+}
 
 export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext): void {
   const {
@@ -174,7 +564,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     recordWebhookDeliveryReceived,
     recordRequiresAction,
     groupBy
-  } = context;
+  } = context as ResolvedApiRouteContext;
 
   void app.register(async function systemRoutes(app) {
     app.get("/health", async () => ({
@@ -318,15 +708,11 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.get("/api/admin/queue", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
-      const allowed = requireRole(
-        actor,
-        ["platform_admin", "engineering_manager", "auditor"],
-        "Queue inspection"
-      );
+      const allowed = requireRole(actor, ["platform_admin"], "Queue inspection");
       if (isAuthzFailure(allowed)) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
 
       const queue = await queueOperationalStatus({ state, evaluationQueue });
@@ -344,15 +730,11 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.post("/api/admin/queue/replay", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
-      const allowed = requireRole(
-        actor,
-        ["platform_admin", "engineering_manager"],
-        "Webhook replay"
-      );
+      const allowed = requireRole(actor, ["platform_admin"], "Webhook replay");
       if (isAuthzFailure(allowed)) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       const parsed = queueReplaySchema.safeParse(request.body ?? {});
       if (!parsed.success) {
@@ -382,20 +764,68 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       }
       const tenantAccess = requireOrganizationAccess(actor, replayOrganizationId, "Webhook replay");
       if (!tenantAccess.ok) {
-        return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+        return handleAuthzFailure(request, reply, tenantAccess);
       }
       if (!shouldEnqueueEvaluation(replayable.envelope)) {
         return reply.code(400).send({ error: "Webhook delivery is not an evaluation event." });
       }
 
       const replayJobId = `replay:${replayable.envelope.deliveryId}:${randomUUID()}`;
-      const queued = await enqueueMergeGuardEvaluation({
-        state,
-        evaluationQueue,
-        deliveryId: replayable.envelope.deliveryId,
-        envelope: replayable.envelope,
-        jobId: replayJobId
-      });
+      let queued: QueueEnqueueResult;
+      try {
+        queued = await enqueueMergeGuardEvaluation({
+          state,
+          evaluationQueue,
+          deliveryId: replayable.envelope.deliveryId,
+          envelope: replayable.envelope,
+          jobId: replayJobId
+        });
+        await markWebhookDeliveryQueued(
+          state,
+          prisma,
+          replayable.envelope.deliveryId,
+          queued.jobId
+        );
+      } catch (error) {
+        await markWebhookDeliveryEnqueueFailed(
+          state,
+          prisma,
+          replayable.envelope.deliveryId,
+          error
+        );
+        const summary = safeErrorSummary(error);
+        request.log.error(
+          {
+            deliveryId: replayable.envelope.deliveryId,
+            error: summary
+          },
+          "Failed to enqueue replayed webhook delivery"
+        );
+        await audit({
+          organizationId: replayOrganizationId,
+          repositoryId: replayable.delivery.repositoryId ?? undefined,
+          actor: actor.login,
+          actorRole: actor.role,
+          action: "webhook_replay_enqueue_failed",
+          targetType: "webhook_delivery",
+          targetId: replayable.envelope.deliveryId,
+          source: "api",
+          requestId: request.id,
+          correlationId: replayable.envelope.deliveryId,
+          metadataJson: {
+            deliveryId: replayable.envelope.deliveryId,
+            replayJobId,
+            errorClass: summary.errorClass,
+            repositoryFullName: replayable.delivery.repositoryFullName,
+            pullRequestNumber: replayable.delivery.pullRequestNumber
+          }
+        });
+        return reply.code(503).send({
+          replayed: false,
+          deliveryId: replayable.envelope.deliveryId,
+          error: "Webhook replay enqueue failed."
+        });
+      }
       await markWebhookDeliveryReplayed(prisma, replayable.envelope.deliveryId, actor.login);
       await audit({
         organizationId: replayOrganizationId,
@@ -516,7 +946,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.get("/api/github/installations", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(
         actor,
@@ -524,7 +954,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "GitHub installation administration"
       );
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       return safe({
         installations: await listGithubInstallations(prisma, actor.organizationId),
@@ -536,11 +966,11 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.post("/api/github/installations/verify", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(actor, ["platform_admin"], "GitHub installation verification");
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       const parsed = githubInstallationVerifySchema.safeParse(request.body ?? {});
       if (!parsed.success) {
@@ -595,11 +1025,11 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.post("/api/github/installations/:id/approve", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(actor, ["platform_admin"], "GitHub installation approval");
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       const parsed = githubInstallationDecisionSchema.safeParse(request.body ?? {});
       if (!parsed.success) {
@@ -641,11 +1071,11 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.post("/api/github/installations/:id/reject", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(actor, ["platform_admin"], "GitHub installation rejection");
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       const parsed = githubInstallationDecisionSchema.safeParse(request.body ?? {});
       if (!parsed.success) {
@@ -680,7 +1110,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.patch("/api/repositories/:id/settings", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(
         actor,
@@ -688,7 +1118,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Repository settings update"
       );
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       const repositoryId = (request.params as { id: string }).id;
       const organizationId = await repositoryOrganizationId(state, prisma, repositoryId);
@@ -701,7 +1131,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Repository settings update"
       );
       if (!tenantAccess.ok) {
-        return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+        return handleAuthzFailure(request, reply, tenantAccess);
       }
       const parsed = repositorySettingsPatchSchema.safeParse(request.body ?? {});
       if (!parsed.success) {
@@ -827,7 +1257,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.post("/api/policy-packs/:id/fork", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(
         actor,
@@ -835,7 +1265,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Policy pack fork"
       );
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       const pack = getPolicyPack((request.params as { id: string }).id);
       if (!pack) {
@@ -861,7 +1291,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       }
       const tenantAccess = requireOrganizationAccess(actor, organizationId, "Policy access");
       if (!tenantAccess.ok) {
-        return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+        return handleAuthzFailure(request, reply, tenantAccess);
       }
       const policy = await getRepositoryPolicy(repositoryId);
       if (!policy) {
@@ -883,7 +1313,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.put("/api/repositories/:id/policy", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(
         actor,
@@ -891,7 +1321,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Policy update"
       );
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       const repositoryId = (request.params as { id: string }).id;
       const organizationId = await repositoryOrganizationId(state, prisma, repositoryId);
@@ -900,7 +1330,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       }
       const tenantAccess = requireOrganizationAccess(actor, organizationId, "Policy update");
       if (!tenantAccess.ok) {
-        return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+        return handleAuthzFailure(request, reply, tenantAccess);
       }
       const parsedBody = policyUpdateSchema.safeParse(request.body ?? {});
       if (!parsedBody.success) {
@@ -989,7 +1419,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (body.persist) {
         const resolvedActor = requireApiActor(request);
         if (isAuthzFailure(resolvedActor)) {
-          return reply.code(resolvedActor.statusCode).send({ error: resolvedActor.reason });
+          return handleAuthzFailure(request, reply, resolvedActor);
         }
         actor = resolvedActor;
         const allowed = requireRole(
@@ -998,21 +1428,27 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           "Persisted policy preview"
         );
         if (!allowed.ok) {
-          return reply.code(allowed.statusCode).send({ error: allowed.reason });
+          return handleAuthzFailure(request, reply, allowed);
         }
       }
-      const repositoryId = body.pr
-        ? await findRepositoryIdByFullName(state, prisma, body.pr.repositoryFullName)
-        : undefined;
-      const activePolicy = body.pr
-        ? await getRepositoryPolicy(
-            repositoryId ?? repositoryIdFromFullName(body.pr.repositoryFullName)
-          )
-        : undefined;
-      const contentYaml = body.contentYaml ?? activePolicy?.contentYaml;
       if (!body.pr) {
         return reply.code(400).send({ error: "pull request input is required" });
       }
+      if (
+        typeof body.pr.repositoryFullName !== "string" ||
+        body.pr.repositoryFullName.trim().length === 0
+      ) {
+        return reply.code(400).send({ error: "pr.repositoryFullName is required" });
+      }
+      const repositoryId = await findRepositoryIdByFullName(
+        state,
+        prisma,
+        body.pr.repositoryFullName
+      );
+      const activePolicy = await getRepositoryPolicy(
+        repositoryId ?? repositoryIdFromFullName(body.pr.repositoryFullName)
+      );
+      const contentYaml = body.contentYaml ?? activePolicy?.contentYaml;
       if (!contentYaml) {
         return reply
           .code(400)
@@ -1038,7 +1474,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
               "Persisted policy preview"
             );
             if (!tenantAccess.ok) {
-              return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+              return handleAuthzFailure(request, reply, tenantAccess);
             }
           }
         }
@@ -1056,7 +1492,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (!actor) {
         const resolvedActor = requireApiActor(request);
         if (isAuthzFailure(resolvedActor)) {
-          return reply.code(resolvedActor.statusCode).send({ error: resolvedActor.reason });
+          return handleAuthzFailure(request, reply, resolvedActor);
         }
         actor = resolvedActor;
       }
@@ -1130,7 +1566,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Change Control Record access"
       );
       if (!tenantAccess.ok) {
-        return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+        return handleAuthzFailure(request, reply, tenantAccess);
       }
       return {
         record: sanitizeChangeControlRecord(record, storagePolicy),
@@ -1168,7 +1604,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       }
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const tenantAccess = requireOrganizationAccess(
         actor,
@@ -1176,7 +1612,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Evidence submission"
       );
       if (!tenantAccess.ok) {
-        return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+        return handleAuthzFailure(request, reply, tenantAccess);
       }
       const parsedBody = evidenceSubmissionSchema.safeParse(request.body ?? {});
       if (!parsedBody.success) {
@@ -1250,7 +1686,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.patch("/api/evidence/:id/approve", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(
         actor,
@@ -1258,7 +1694,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Evidence approval"
       );
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       const parsedBody = recordScopedActionSchema.safeParse(request.body ?? {});
       if (!parsedBody.success) {
@@ -1277,7 +1713,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           "Evidence approval"
         );
         if (!tenantAccess.ok) {
-          return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+          return handleAuthzFailure(request, reply, tenantAccess);
         }
         const evidence = record.requiredEvidence.find(
           (item) => item.id === (request.params as { id: string }).id
@@ -1323,7 +1759,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.patch("/api/evidence/:id/reject", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(
         actor,
@@ -1331,7 +1767,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Evidence rejection"
       );
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       const parsedBody = evidenceRejectionSchema.safeParse(request.body ?? {});
       if (!parsedBody.success) {
@@ -1350,7 +1786,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           "Evidence rejection"
         );
         if (!tenantAccess.ok) {
-          return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+          return handleAuthzFailure(request, reply, tenantAccess);
         }
         const evidence = record.requiredEvidence.find(
           (item) => item.id === (request.params as { id: string }).id
@@ -1400,7 +1836,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.patch("/api/reviewers/:id/approve", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const parsedBody = recordScopedActionSchema.safeParse(request.body ?? {});
       if (!parsedBody.success) {
@@ -1419,7 +1855,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           "Reviewer approval"
         );
         if (!tenantAccess.ok) {
-          return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+          return handleAuthzFailure(request, reply, tenantAccess);
         }
         const reviewer = record.requiredReviewers.find(
           (item) => item.id === (request.params as { id: string }).id
@@ -1477,11 +1913,11 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       };
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const tenantAccess = requireOrganizationAccess(actor, record.organizationId, "Override");
       if (!tenantAccess.ok) {
-        return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+        return handleAuthzFailure(request, reply, tenantAccess);
       }
       try {
         const policy = await getRecordPolicyConfig(record);
@@ -1700,7 +2136,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.post("/api/exports/change-control-records", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(
         actor,
@@ -1708,7 +2144,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Change Control Record export"
       );
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       const parsedBody = exportRequestSchema.safeParse(request.body ?? {});
       if (!parsedBody.success) {
@@ -1779,7 +2215,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.post("/api/exports/compliance-evidence-package", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(
         actor,
@@ -1787,7 +2223,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Compliance evidence package export"
       );
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       const parsedBody = compliancePackageRequestSchema.safeParse(request.body ?? {});
       if (!parsedBody.success) {
@@ -1882,7 +2318,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.get("/api/exports/:id", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(
         actor,
@@ -1890,7 +2326,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Change Control Record export"
       );
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       const job = await getExportJob(state, prisma, (request.params as { id: string }).id);
       if (!job) {
@@ -1902,7 +2338,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Export job access"
       );
       if (!tenantAccess.ok) {
-        return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+        return handleAuthzFailure(request, reply, tenantAccess);
       }
       return job;
     });
@@ -1910,7 +2346,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.get("/api/audit-events", async (request, reply) => {
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
-        return reply.code(actor.statusCode).send({ error: actor.reason });
+        return handleAuthzFailure(request, reply, actor);
       }
       const allowed = requireRole(
         actor,
@@ -1918,7 +2354,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Audit event access"
       );
       if (!allowed.ok) {
-        return reply.code(allowed.statusCode).send({ error: allowed.reason });
+        return handleAuthzFailure(request, reply, allowed);
       }
       return { auditEvents: safe(await listAuditEvents(state, prisma, actor.organizationId)) };
     });
@@ -1938,7 +2374,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         "Check output access"
       );
       if (!tenantAccess.ok) {
-        return reply.code(tenantAccess.statusCode).send({ error: tenantAccess.reason });
+        return handleAuthzFailure(request, reply, tenantAccess);
       }
       return formatMergeGuardCheck({
         mode: record.mode,
