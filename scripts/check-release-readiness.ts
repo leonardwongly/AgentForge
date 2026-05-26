@@ -46,7 +46,7 @@ const disallowedTrackedPatterns = [
 const secretPatterns = [
   { name: "GitHub token", pattern: /ghp_[A-Za-z0-9_]{20,}/u },
   { name: "AWS access key", pattern: /AKIA[0-9A-Z]{16}/u },
-  { name: "Private key block", pattern: /-----BEGIN .*PRIVATE KEY-----/u }
+  { name: "Private key block", pattern: new RegExp("-----BEGIN .*PRIVATE " + "KEY-----", "u") }
 ];
 
 const secretScanExclusions = [
