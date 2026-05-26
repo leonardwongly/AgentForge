@@ -15,7 +15,9 @@ Required backing services:
 
 - PostgreSQL for policy versions, repositories, Change Control Records, audit events, exports, and webhook delivery idempotency.
 - Redis for BullMQ worker dispatch.
-- Optional object storage for export delivery when `EXPORT_STORAGE_BUCKET` is configured.
+- Export delivery through API export jobs. `EXPORT_STORAGE_BUCKET` and
+  `EXPORT_STORAGE_REGION` are reserved for a future object-storage delivery
+  adapter and do not change the current delivery path.
 
 ## Environment Gate
 

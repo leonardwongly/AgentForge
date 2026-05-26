@@ -151,6 +151,23 @@ export type OnboardingStep = {
   status: "complete" | "active" | "pending";
 };
 
+export type RepositoryReadiness = {
+  score: number;
+  recommendation:
+    | "stay_observe"
+    | "move_to_warn"
+    | "validate_reviewers"
+    | "require_branch_check"
+    | "move_to_enforce";
+  checks: Array<{
+    id: string;
+    label: string;
+    status: "passed" | "needs_action" | "unknown";
+    weight: number;
+    detail: string;
+  }>;
+};
+
 export type SettingsData = {
   runtimeStore?: "postgres" | "in_memory" | undefined;
   githubInstallation: {
@@ -196,8 +213,16 @@ export type SettingsData = {
   exports: {
     json: boolean;
     csv: boolean;
+    deliveryModel?: "api_job_download" | undefined;
     storageBucketConfigured: boolean;
     storageRegion?: string | undefined;
+  };
+  runtimeCapabilities?: {
+    durableRecords: boolean;
+    durableWebhookReplay: boolean;
+    manualGitHubInstallationApproval: boolean;
+    queueBackedEvaluations: boolean;
+    productionReady: boolean;
   };
 };
 
@@ -452,13 +477,18 @@ export async function loadPolicyPacks(): Promise<{
 
 export async function loadOnboardingStatus(): Promise<{
   steps: OnboardingStep[];
+  readiness?: RepositoryReadiness | undefined;
   source: DashboardDataSource;
   message: string;
 }> {
   try {
-    const payload = await fetchApiJson<{ steps: OnboardingStep[] }>("/api/onboarding/status");
+    const payload = await fetchApiJson<{
+      steps: OnboardingStep[];
+      readiness?: RepositoryReadiness | undefined;
+    }>("/api/onboarding/status");
     return {
       steps: payload.steps ?? [],
+      readiness: payload.readiness,
       source: "api",
       message: "Loaded onboarding status from the API."
     };

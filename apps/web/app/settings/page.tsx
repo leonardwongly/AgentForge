@@ -258,9 +258,9 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                   />
                 </div>
                 <p>
-                  {canRecordGithubInstallation
-                    ? "GitHub installation approval state is durable."
-                    : "Manual installation approval requires the Postgres runtime store."}
+                  {settings?.runtimeCapabilities?.productionReady
+                    ? "Postgres records and Redis-backed evaluations are configured."
+                    : "Public deployments require Postgres for durable records and Redis for queued evaluations."}
                 </p>
               </li>
               <li>
@@ -717,19 +717,10 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
             </li>
             <li>
               <div className="list-row">
-                <span>Export storage</span>
-                <StatusBadge
-                  status={settings?.exports.storageBucketConfigured ? "approved" : "low"}
-                  label={
-                    settings?.exports.storageBucketConfigured ? "configured" : "not configured"
-                  }
-                />
+                <span>Export delivery</span>
+                <StatusBadge status="approved" label="API job download" />
               </div>
-              <p>
-                {settings?.exports.storageRegion
-                  ? `Region: ${settings.exports.storageRegion}`
-                  : "Exports are available through API jobs when no bucket is configured."}
-              </p>
+              <p>Generated artifacts are retained as export jobs and downloaded through the API.</p>
             </li>
           </ul>
         </section>

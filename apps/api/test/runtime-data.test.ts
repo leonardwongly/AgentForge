@@ -71,6 +71,21 @@ describe("runtime data surfaces", () => {
     await app.close();
   });
 
+  it("exposes domain metrics without requiring privileged data access", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+
+    const metrics = await app.inject({ method: "GET", url: "/metrics" });
+
+    expect(metrics.statusCode).toBe(200);
+    expect(metrics.headers["content-type"]).toContain("text/plain");
+    expect(metrics.body).toContain('agentforge_runtime_store{backend="in_memory"} 1');
+    expect(metrics.body).toContain('agentforge_queue_ready{backend="in_memory"} 1');
+    expect(metrics.body).toContain("agentforge_webhook_deliveries_total");
+    expect(metrics.body).toContain("agentforge_exports_total");
+    await app.close();
+  });
+
   it("exposes runtime store and GitHub setup readiness in settings", async () => {
     const state = createInitialState();
     const app = createApp(state);
@@ -90,7 +105,20 @@ describe("runtime data surfaces", () => {
           appCredentialsConfigured: expect.any(Boolean),
           webhookSecretConfigured: expect.any(Boolean),
           pendingApprovalCount: 0
-        })
+        }),
+        exports: expect.objectContaining({
+          json: true,
+          csv: true,
+          deliveryModel: "api_job_download",
+          storageBucketConfigured: false
+        }),
+        runtimeCapabilities: {
+          durableRecords: false,
+          durableWebhookReplay: false,
+          manualGitHubInstallationApproval: false,
+          queueBackedEvaluations: expect.any(Boolean),
+          productionReady: false
+        }
       })
     );
 

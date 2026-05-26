@@ -814,6 +814,11 @@ export function createApp(
     });
   });
 
+  app.get("/metrics", async (_request, reply) => {
+    const body = await collectPrometheusMetrics({ state, prisma, evaluationQueue, config });
+    return reply.header("content-type", "text/plain; version=0.0.4; charset=utf-8").send(body);
+  });
+
   app.post("/webhooks/github", async (request, reply) => {
     const deliveryId = headerValue(request.headers["x-github-delivery"]);
     const event = headerValue(request.headers["x-github-event"]);
@@ -1064,9 +1069,14 @@ export function createApp(
       exports: {
         json: true,
         csv: true,
-        storageBucketConfigured: Boolean(config.exportStorageBucket),
-        storageRegion: config.exportStorageRegion
-      }
+        deliveryModel: "api_job_download",
+        storageBucketConfigured: false,
+        storageRegion: undefined
+      },
+      runtimeCapabilities: runtimeCapabilities({
+        postgres: Boolean(prisma),
+        redisQueue: Boolean(config.redisUrl)
+      })
     });
   });
 
@@ -1085,6 +1095,12 @@ export function createApp(
     };
     return safe({
       steps: onboardingStepsFromRuntime({
+        repositories,
+        records,
+        githubConnected: settings.githubInstallation.connected,
+        ownerMappingsConfigured: settings.ownerMappings.length > 0
+      }),
+      readiness: repositoryReadinessScore({
         repositories,
         records,
         githubConnected: settings.githubInstallation.connected,
@@ -4123,6 +4139,145 @@ async function queueOperationalStatus(input: {
   }
 }
 
+async function collectPrometheusMetrics(input: {
+  state: AppState;
+  prisma: PrismaClient | undefined;
+  evaluationQueue: Queue<MergeGuardEvaluationJobPayload> | undefined;
+  config: ReturnType<typeof loadConfig>;
+}): Promise<string> {
+  const queue = await queueOperationalStatus({
+    state: input.state,
+    evaluationQueue: input.evaluationQueue
+  });
+  const lines: string[] = [
+    "# HELP agentforge_runtime_store Runtime persistence backend. 1 means active.",
+    "# TYPE agentforge_runtime_store gauge",
+    metricLine("agentforge_runtime_store", { backend: input.prisma ? "postgres" : "in_memory" }, 1),
+    "# HELP agentforge_github_app_configured GitHub App credentials configured. 1 means configured.",
+    "# TYPE agentforge_github_app_configured gauge",
+    metricLine(
+      "agentforge_github_app_configured",
+      {},
+      input.config.github.appId && input.config.github.privateKey ? 1 : 0
+    ),
+    "# HELP agentforge_queue_ready Merge Guard evaluation queue readiness. 1 means ready.",
+    "# TYPE agentforge_queue_ready gauge",
+    metricLine(
+      "agentforge_queue_ready",
+      { backend: queue.backend },
+      queue.status === "ready" ? 1 : 0
+    ),
+    "# HELP agentforge_queue_jobs Merge Guard evaluation queue jobs by state.",
+    "# TYPE agentforge_queue_jobs gauge"
+  ];
+  for (const [stateName, count] of Object.entries(queue.counts)) {
+    lines.push(metricLine("agentforge_queue_jobs", { state: stateName }, count));
+  }
+
+  const domainCounts = await domainMetricCounts(input.state, input.prisma);
+  lines.push(
+    "# HELP agentforge_webhook_deliveries_total GitHub webhook deliveries recorded by status.",
+    "# TYPE agentforge_webhook_deliveries_total gauge"
+  );
+  for (const [status, count] of Object.entries(domainCounts.webhookDeliveriesByStatus)) {
+    lines.push(metricLine("agentforge_webhook_deliveries_total", { status }, count));
+  }
+  lines.push(
+    "# HELP agentforge_change_control_records_total Change Control Records by check status.",
+    "# TYPE agentforge_change_control_records_total gauge"
+  );
+  for (const [status, count] of Object.entries(domainCounts.recordsByStatus)) {
+    lines.push(metricLine("agentforge_change_control_records_total", { status }, count));
+  }
+  lines.push(
+    "# HELP agentforge_check_runs_total Persisted Merge Guard check-run publications.",
+    "# TYPE agentforge_check_runs_total gauge",
+    metricLine("agentforge_check_runs_total", {}, domainCounts.checkRuns),
+    "# HELP agentforge_exports_total Audit export jobs created.",
+    "# TYPE agentforge_exports_total gauge",
+    metricLine("agentforge_exports_total", {}, domainCounts.exports)
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+async function domainMetricCounts(
+  state: AppState,
+  prisma: PrismaClient | undefined
+): Promise<{
+  webhookDeliveriesByStatus: Record<string, number>;
+  recordsByStatus: Record<string, number>;
+  checkRuns: number;
+  exports: number;
+}> {
+  if (!prisma) {
+    return {
+      webhookDeliveriesByStatus: {
+        recorded: state.deliveries.size
+      },
+      recordsByStatus: countBy(state.records, (record) => record.checkStatus),
+      checkRuns: 0,
+      exports: state.exports.length
+    };
+  }
+
+  const [webhookGroups, recordGroups, checkRuns, exports] = await Promise.all([
+    prisma.webhookDelivery.groupBy({ by: ["deliveryStatus"], _count: { _all: true } }),
+    prisma.changeControlRecord.groupBy({ by: ["checkStatus"], _count: { _all: true } }),
+    prisma.checkRun.count(),
+    prisma.exportJob.count()
+  ]);
+  return {
+    webhookDeliveriesByStatus: Object.fromEntries(
+      webhookGroups.map((group) => [group.deliveryStatus, group._count._all])
+    ),
+    recordsByStatus: Object.fromEntries(
+      recordGroups.map((group) => [String(group.checkStatus), group._count._all])
+    ),
+    checkRuns,
+    exports
+  };
+}
+
+function countBy<T>(items: T[], keyFor: (item: T) => string): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of items) {
+    const key = keyFor(item);
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function metricLine(name: string, labels: Record<string, string>, value: number): string {
+  const entries = Object.entries(labels);
+  if (entries.length === 0) {
+    return `${name} ${value}`;
+  }
+  const labelText = entries
+    .map(([key, labelValue]) => `${key}="${prometheusLabelValue(labelValue)}"`)
+    .join(",");
+  return `${name}{${labelText}} ${value}`;
+}
+
+function prometheusLabelValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+}
+
+function runtimeCapabilities(input: { postgres: boolean; redisQueue: boolean }): {
+  durableRecords: boolean;
+  durableWebhookReplay: boolean;
+  manualGitHubInstallationApproval: boolean;
+  queueBackedEvaluations: boolean;
+  productionReady: boolean;
+} {
+  return {
+    durableRecords: input.postgres,
+    durableWebhookReplay: input.postgres,
+    manualGitHubInstallationApproval: input.postgres,
+    queueBackedEvaluations: input.redisQueue,
+    productionReady: input.postgres && input.redisQueue
+  };
+}
+
 async function findReplayableDelivery(
   state: AppState,
   prisma: PrismaClient | undefined,
@@ -5066,6 +5221,164 @@ function onboardingStepsFromRuntime(input: {
       status: active(input.githubConnected && hasRepositories && hasPolicyPack, hasPreviewRecords)
     }
   ];
+}
+
+function repositoryReadinessScore(input: {
+  repositories: Array<{ currentPolicyPack?: string | undefined; mode?: string | undefined }>;
+  records: ChangeControlRecord[];
+  githubConnected: boolean;
+  ownerMappingsConfigured: boolean;
+}): {
+  score: number;
+  recommendation:
+    | "stay_observe"
+    | "move_to_warn"
+    | "validate_reviewers"
+    | "require_branch_check"
+    | "move_to_enforce";
+  checks: Array<{
+    id: string;
+    label: string;
+    status: "passed" | "needs_action" | "unknown";
+    weight: number;
+    detail: string;
+  }>;
+} {
+  const hasRepositories = input.repositories.length > 0;
+  const hasPolicyPack = input.repositories.some((repository) => repository.currentPolicyPack);
+  const hasSuccessfulRecord = input.records.some(
+    (record) => record.checkStatus === "pass" || record.checkStatus === "warn"
+  );
+  const hasApprovedEvidence = input.records.some((record) =>
+    record.requiredEvidence.some((item) => item.status === "approved")
+  );
+  const overrideRate = percent(
+    input.records.filter((record) => record.lifecycle === "overridden").length,
+    input.records.length
+  );
+  const lowOverrideRate = input.records.length >= 3 && overrideRate <= 20;
+  const checks = [
+    readinessCheck(
+      "webhook_active",
+      "GitHub App and webhook are connected",
+      input.githubConnected,
+      15,
+      "Approve/link the GitHub installation and verify a signed webhook delivery."
+    ),
+    readinessCheck(
+      "repository_selected",
+      "At least one governed repository is selected",
+      hasRepositories,
+      15,
+      "Enable a repository before evaluating mode escalation."
+    ),
+    readinessCheck(
+      "policy_selected",
+      "A policy pack is selected",
+      hasPolicyPack,
+      15,
+      "Select a policy pack and keep mode changes as explicit admin actions."
+    ),
+    readinessCheck(
+      "reviewer_routing",
+      "Reviewer routing is configured",
+      input.ownerMappingsConfigured,
+      10,
+      "Add owner mappings and verify team membership permissions when team reviewers are required."
+    ),
+    readinessCheck(
+      "evidence_path",
+      "Evidence approval path has been exercised",
+      hasApprovedEvidence,
+      10,
+      "Approve at least one required evidence item before enforcing evidence gates."
+    ),
+    readinessCheck(
+      "test_pr_evaluated",
+      "A test pull request has produced a non-blocking result",
+      hasSuccessfulRecord,
+      15,
+      "Run a representative pull request through observe or warn mode."
+    ),
+    readinessCheck(
+      "low_override_rate",
+      "Recent override rate is low",
+      lowOverrideRate,
+      10,
+      "Review false positives until fewer than 20% of recent records need overrides."
+    ),
+    {
+      id: "branch_protection",
+      label: "Branch protection requires the Merge Guard check",
+      status: "unknown" as const,
+      weight: 10,
+      detail:
+        "Confirm branch protection in GitHub after smoke checks pass; AgentForge keeps this as an explicit admin action."
+    }
+  ];
+  const passedWeight = checks
+    .filter((check) => check.status === "passed")
+    .reduce((sum, check) => sum + check.weight, 0);
+  const totalWeight = checks.reduce((sum, check) => sum + check.weight, 0);
+  const score = totalWeight === 0 ? 0 : Math.round((passedWeight / totalWeight) * 100);
+  return {
+    score,
+    recommendation: readinessRecommendation(score, checks),
+    checks
+  };
+}
+
+function readinessCheck(
+  id: string,
+  label: string,
+  passed: boolean,
+  weight: number,
+  actionDetail: string
+): {
+  id: string;
+  label: string;
+  status: "passed" | "needs_action";
+  weight: number;
+  detail: string;
+} {
+  return {
+    id,
+    label,
+    status: passed ? "passed" : "needs_action",
+    weight,
+    detail: passed ? "Verified from current AgentForge records." : actionDetail
+  };
+}
+
+function readinessRecommendation(
+  score: number,
+  checks: Array<{ id: string; status: "passed" | "needs_action" | "unknown" }>
+):
+  | "stay_observe"
+  | "move_to_warn"
+  | "validate_reviewers"
+  | "require_branch_check"
+  | "move_to_enforce" {
+  if (checks.some((check) => check.id === "reviewer_routing" && check.status !== "passed")) {
+    return "validate_reviewers";
+  }
+  if (checks.some((check) => check.id === "branch_protection" && check.status !== "passed")) {
+    return score >= 70 ? "require_branch_check" : "move_to_warn";
+  }
+  if (score >= 85) {
+    return "move_to_enforce";
+  }
+  if (score >= 55) {
+    return "move_to_warn";
+  }
+  return "stay_observe";
+}
+
+function percent(part: number, total: number): number {
+  if (total <= 0) {
+    return 0;
+  }
+  return Math.round((part / total) * 100);
 }
 
 function dashboardSummary(records: ChangeControlRecord[]) {
