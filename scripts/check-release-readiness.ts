@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
 const expectedVersion = "1.0.0";
@@ -103,8 +103,9 @@ function checkApacheLicense(): CheckResult {
 function checkPackageVersions(): CheckResult {
   const packageFiles = [
     "package.json",
-    ...run("rg", ["--files", "-g", "package.json", "apps", "packages"]).trim().split("\n")
-  ].filter(Boolean);
+    ...findPackageFiles("apps"),
+    ...findPackageFiles("packages")
+  ];
   const mismatches = packageFiles.filter((file) => {
     const packageJson = JSON.parse(readText(file)) as { version?: string; private?: boolean };
     return packageJson.version !== expectedVersion || packageJson.private !== true;
@@ -114,6 +115,21 @@ function checkPackageVersions(): CheckResult {
     ok: mismatches.length === 0,
     detail: mismatches.length > 0 ? `mismatched ${mismatches.join(", ")}` : undefined
   };
+}
+
+function findPackageFiles(directory: string): string[] {
+  const ignoredDirectories = new Set([".next", ".turbo", "coverage", "dist", "node_modules"]);
+  const entries = readdirSync(directory, { withFileTypes: true });
+  return entries.flatMap((entry) => {
+    const path = `${directory}/${entry.name}`;
+    if (entry.isFile() && entry.name === "package.json") {
+      return [path];
+    }
+    if (entry.isDirectory() && !ignoredDirectories.has(entry.name)) {
+      return findPackageFiles(path);
+    }
+    return [];
+  });
 }
 
 function checkTrackedArtifacts(): CheckResult {
