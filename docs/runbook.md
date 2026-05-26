@@ -166,9 +166,16 @@ Then create a test PR that changes a sensitive path and confirm:
   missing GitHub installation credentials, missing pull request payloads, or
   authorization/configuration failures. These are terminal until configuration
   or payload data changes.
-- Failed evaluations update `WebhookDelivery` with attempts, terminal-failure
-  state, a safe error class/message, and the webhook delivery ID as correlation
-  ID. Inspect these fields before replaying an incident.
+- Webhook deliveries move through an explicit lifecycle: `received`, `queued`,
+  `processing`, `completed`, `enqueue_failed`, or `failed`. The API records a
+  signed delivery as `received` before enqueueing and marks it `queued` only
+  after BullMQ accepts the deterministic delivery-ID job. If enqueue fails, the
+  row is left as `enqueue_failed` with a safe error class/message so a GitHub
+  retry with the same delivery ID can recover by enqueueing the stored delivery
+  instead of being discarded as a duplicate.
+- Failed evaluations update `WebhookDelivery` with lifecycle state, attempts,
+  terminal-failure state, a safe error class/message, and the webhook delivery
+  ID as correlation ID. Inspect these fields before replaying an incident.
 - `POST /api/admin/queue/replay` requires `platform_admin` or
   `engineering_manager` and accepts either `{ "deliveryId": "..." }` or
   `{ "repositoryFullName": "owner/repo", "pullRequestNumber": 123 }`.

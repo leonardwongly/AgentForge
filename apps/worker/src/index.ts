@@ -368,6 +368,21 @@ function startWorker(): void {
     }
   );
 
+  worker.on("active", (job) => {
+    if (workerPrisma && job.data.deliveryId) {
+      void markWebhookDeliveryProcessing(workerPrisma, job.data.deliveryId).catch((error) => {
+        const summary = classifyMergeGuardEvaluationFailure({
+          error,
+          deliveryId: job.data.deliveryId
+        });
+        console.error("Failed to persist Merge Guard evaluation processing state", {
+          deliveryId: job.data.deliveryId,
+          errorClass: summary.errorClass,
+          message: summary.message
+        });
+      });
+    }
+  });
   worker.on("completed", (job, result) => {
     console.log("Merge Guard evaluation job completed", {
       jobId: job.id,
@@ -375,6 +390,19 @@ function startWorker(): void {
       status: result.status,
       checkConclusion: result.checkConclusion
     });
+    if (workerPrisma && job.data.deliveryId) {
+      void markWebhookDeliveryCompleted(workerPrisma, job.data.deliveryId).catch((error) => {
+        const summary = classifyMergeGuardEvaluationFailure({
+          error,
+          deliveryId: job.data.deliveryId
+        });
+        console.error("Failed to persist Merge Guard evaluation completion state", {
+          deliveryId: job.data.deliveryId,
+          errorClass: summary.errorClass,
+          message: summary.message
+        });
+      });
+    }
   });
   worker.on("failed", (job, error) => {
     const summary = classifyMergeGuardEvaluationFailure({
@@ -445,12 +473,39 @@ export async function recordMergeGuardEvaluationFailure(input: {
   await input.prisma.webhookDelivery.updateMany({
     where: { deliveryId: input.deliveryId },
     data: {
+      deliveryStatus: input.summary.terminalFailure ? "failed" : "processing",
       evaluationAttemptsMade: input.summary.attemptsMade,
       evaluationTerminalFailure: input.summary.terminalFailure,
       lastFailureClass: input.summary.errorClass,
       lastFailureMessage: input.summary.message,
       lastFailureCorrelationId: input.summary.correlationId,
       lastFailedAt: new Date(input.summary.failedAt)
+    }
+  });
+}
+
+async function markWebhookDeliveryProcessing(
+  prisma: PrismaClient,
+  deliveryId: string
+): Promise<void> {
+  await prisma.webhookDelivery.updateMany({
+    where: { deliveryId },
+    data: {
+      deliveryStatus: "processing",
+      processingStartedAt: new Date()
+    }
+  });
+}
+
+async function markWebhookDeliveryCompleted(
+  prisma: PrismaClient,
+  deliveryId: string
+): Promise<void> {
+  await prisma.webhookDelivery.updateMany({
+    where: { deliveryId },
+    data: {
+      deliveryStatus: "completed",
+      completedAt: new Date()
     }
   });
 }

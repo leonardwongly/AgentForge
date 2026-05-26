@@ -291,6 +291,14 @@ model WebhookDelivery {
   pullRequestNumber         Int?
   headSha                   String?
   enqueued                  Boolean   @default(false)
+  deliveryStatus            String    @default("received")
+  queueJobId                String?
+  queuedAt                  DateTime?
+  processingStartedAt       DateTime?
+  completedAt               DateTime?
+  lastEnqueueFailureClass   String?
+  lastEnqueueFailureMessage String?
+  lastEnqueueFailedAt       DateTime?
   payloadJson               Json?
   evaluationAttemptsMade    Int       @default(0)
   evaluationTerminalFailure Boolean   @default(false)
@@ -307,6 +315,7 @@ model WebhookDelivery {
   @@index([organizationId, createdAt])
   @@index([repositoryId, pullRequestNumber])
   @@index([repositoryFullName, pullRequestNumber])
+  @@index([deliveryStatus, createdAt])
   @@index([evaluationTerminalFailure, lastFailedAt])
 }
 

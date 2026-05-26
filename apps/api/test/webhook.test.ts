@@ -103,6 +103,105 @@ describe("GitHub webhook API", () => {
     await app.close();
   });
 
+  it("records enqueue failures as recoverable and re-enqueues duplicate retries", async () => {
+    process.env.GITHUB_WEBHOOK_SECRET = "secret";
+    const state = createInitialState();
+    const rows = new Map<string, Record<string, any>>();
+    const prisma = {
+      repository: {
+        findFirst: vi.fn(async () => null)
+      },
+      webhookDelivery: {
+        findUnique: vi.fn(async ({ where }: { where: { deliveryId: string } }) => {
+          return rows.get(where.deliveryId) ?? null;
+        }),
+        create: vi.fn(async ({ data }: { data: Record<string, any> }) => {
+          const row = { ...data, createdAt: new Date("2026-05-26T00:00:00.000Z") };
+          rows.set(data.deliveryId, row);
+          return row;
+        }),
+        updateMany: vi.fn(async ({ where, data }: { where: { deliveryId: string }; data: any }) => {
+          const row = rows.get(where.deliveryId);
+          if (row) {
+            rows.set(where.deliveryId, { ...row, ...data });
+          }
+          return { count: row ? 1 : 0 };
+        })
+      }
+    };
+    const queue = {
+      add: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("redis unavailable"))
+        .mockResolvedValueOnce({ id: "delivery-recoverable" })
+    };
+    const app = createApp(state, {
+      prisma: prisma as never,
+      evaluationQueue: queue as never
+    });
+    const payload = {
+      action: "opened",
+      repository: { id: 1, full_name: "acme/payments", default_branch: "main" },
+      pull_request: {
+        id: 2,
+        number: 3,
+        title: "PR",
+        body: "",
+        state: "open",
+        merged: false,
+        user: { login: "sam" },
+        base: { ref: "main" },
+        head: { ref: "feature/demo", sha: "sha" }
+      }
+    };
+    const body = JSON.stringify(payload);
+    const signature = `sha256=${createHmac("sha256", "secret").update(body).digest("hex")}`;
+    const request = {
+      method: "POST" as const,
+      url: "/webhooks/github",
+      payload: body,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-recoverable",
+        "x-github-event": "pull_request",
+        "x-hub-signature-256": signature
+      }
+    };
+
+    const failed = await app.inject(request);
+    const retried = await app.inject(request);
+
+    expect(failed.statusCode).toBe(503);
+    expect(failed.json()).toMatchObject({
+      accepted: true,
+      duplicate: false,
+      enqueued: false,
+      deliveryStatus: "enqueue_failed"
+    });
+    expect(retried.statusCode).toBe(202);
+    expect(retried.json()).toMatchObject({
+      accepted: true,
+      duplicate: true,
+      enqueued: true,
+      deliveryStatus: "queued"
+    });
+    expect(queue.add).toHaveBeenCalledTimes(2);
+    expect(queue.add).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({ deliveryId: "delivery-recoverable" }),
+      expect.objectContaining({ jobId: "delivery-recoverable" })
+    );
+    expect(rows.get("delivery-recoverable")).toMatchObject({
+      deliveryStatus: "queued",
+      enqueued: true,
+      queueJobId: "delivery-recoverable",
+      lastEnqueueFailureClass: null,
+      lastEnqueueFailureMessage: null,
+      lastEnqueueFailedAt: null
+    });
+    await app.close();
+  });
+
   it("replays an accepted delivery through an authenticated idempotent queue path", async () => {
     process.env.GITHUB_WEBHOOK_SECRET = "secret";
     const state = createInitialState();
