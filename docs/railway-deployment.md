@@ -47,14 +47,24 @@ FULL_DIFF_RETENTION=disabled
 REDACT_SECRETS=true
 LLM_FEATURES=false
 SESSION_SECRET=<random-32-byte-or-longer-secret>
-AGENTFORGE_API_TRUST_PROXY_HEADERS=false
+AGENTFORGE_API_TRUST_PROXY_HEADERS=true
 AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=false
-AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=false
+AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true
 AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR=false
-AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS=false
+AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS=true
+AGENTFORGE_API_PROXY_SECRET=<random-32-byte-or-longer-shared-secret>
 ```
 
-Only set `AGENTFORGE_API_TRUST_PROXY_HEADERS=true`, `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true`, and `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS=true` after the deployed ingress strips spoofed `x-agentforge-*` and `x-agentforge-authenticated-*` headers before injecting trusted `x-agentforge-authenticated-actor`, `x-agentforge-authenticated-role`, and `x-agentforge-authenticated-organization` headers.
+Production startup intentionally fails when trusted proxy identity and header
+stripping are not enabled. The values above are valid only behind ingress that
+strips spoofed `x-agentforge-*` and `x-agentforge-authenticated-*` headers
+before injecting trusted `x-agentforge-authenticated-actor`,
+`x-agentforge-authenticated-role`, `x-agentforge-authenticated-organization`,
+`x-agentforge-signature-timestamp`, and `x-agentforge-signature` headers.
+
+For a private local smoke deployment without a stripping auth proxy, keep
+`NODE_ENV=development`, keep both `*_TRUST_PROXY_HEADERS=false`, and do not use
+that environment for public webhook or dashboard traffic.
 
 Use Railway shared variables for duplicated non-public values when practical. Avoid printing `railway variable list --json` or `railway variable list --kv` output in logs because those modes include raw secret values.
 
@@ -122,6 +132,30 @@ pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-i
 pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-id <installation-id> --publish-check
 ```
 
+Verify the auth proxy stripping rule before enabling dashboard mutations from a
+public host. A spoofed local actor header must not grant access:
+
+```bash
+curl -i "$API_BASE_URL/api/settings" \
+  -H "x-agentforge-actor: attacker" \
+  -H "x-agentforge-role: platform_admin" \
+  -H "x-agentforge-organization: org_local"
+```
+
+Also verify spoofed authenticated identity headers fail without a valid proxy
+signature:
+
+```bash
+curl -i "$API_BASE_URL/api/settings" \
+  -H "x-agentforge-authenticated-actor: attacker" \
+  -H "x-agentforge-authenticated-role: platform_admin" \
+  -H "x-agentforge-authenticated-organization: org_local"
+```
+
+The expected result for both requests is `401` or `403`. If either request
+succeeds, do not cut over traffic; fix ingress header stripping and proxy
+signature enforcement before setting the GitHub App webhook URL.
+
 Poll `/ready` with retry/backoff until it returns success. Do not update the
 GitHub App webhook URL until `/health`, `/ready`, and the GitHub smoke checks
 pass; `/ready` proves Redis/BullMQ are reachable before webhook traffic is cut
@@ -157,7 +191,9 @@ public deployments:
 curl -fsS "$API_BASE_URL/api/admin/queue" \
   -H "x-agentforge-authenticated-actor: <operator-login>" \
   -H "x-agentforge-authenticated-role: platform_admin" \
-  -H "x-agentforge-authenticated-organization: <organization-id>"
+  -H "x-agentforge-authenticated-organization: <organization-id>" \
+  -H "x-agentforge-signature-timestamp: <unix-seconds>" \
+  -H "x-agentforge-signature: <proxy-signature>"
 ```
 
 Replay a specific stored webhook delivery only after confirming the failure is
@@ -169,5 +205,7 @@ curl -fsS -X POST "$API_BASE_URL/api/admin/queue/replay" \
   -H "x-agentforge-authenticated-actor: <operator-login>" \
   -H "x-agentforge-authenticated-role: platform_admin" \
   -H "x-agentforge-authenticated-organization: <organization-id>" \
+  -H "x-agentforge-signature-timestamp: <unix-seconds>" \
+  -H "x-agentforge-signature: <proxy-signature>" \
   --data '{"deliveryId":"<github-delivery-id>"}'
 ```

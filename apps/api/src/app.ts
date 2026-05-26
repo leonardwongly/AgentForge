@@ -82,6 +82,14 @@ type QueueEnqueueResult = {
   backend: QueueBackend;
 };
 
+type WebhookDeliveryStatus =
+  | "received"
+  | "queued"
+  | "processing"
+  | "completed"
+  | "enqueue_failed"
+  | "failed";
+
 type StoredWebhookDelivery = {
   deliveryId: string;
   event: string;
@@ -92,6 +100,14 @@ type StoredWebhookDelivery = {
   pullRequestNumber: number | null;
   headSha: string | null;
   enqueued: boolean;
+  deliveryStatus?: WebhookDeliveryStatus | string | undefined;
+  queueJobId?: string | null | undefined;
+  queuedAt?: Date | string | null | undefined;
+  processingStartedAt?: Date | string | null | undefined;
+  completedAt?: Date | string | null | undefined;
+  lastEnqueueFailureClass?: string | null | undefined;
+  lastEnqueueFailureMessage?: string | null | undefined;
+  lastEnqueueFailedAt?: Date | string | null | undefined;
   payloadJson: unknown;
   evaluationAttemptsMade?: number | undefined;
   evaluationTerminalFailure?: boolean | undefined;
@@ -108,6 +124,11 @@ type StoredWebhookDelivery = {
 type ReplayableDelivery = {
   delivery: StoredWebhookDelivery;
   envelope: GithubWebhookEnvelope;
+};
+
+type AppDependencyOverrides = {
+  prisma?: PrismaClient | undefined;
+  evaluationQueue?: Queue<MergeGuardEvaluationJobPayload> | undefined;
 };
 
 type ExportJob = {
@@ -572,7 +593,10 @@ export function mergeGuardEvaluationJobOptions(jobId: string): JobsOptions {
   };
 }
 
-export function createApp(state: AppState = createInitialState()): FastifyInstance {
+export function createApp(
+  state: AppState = createInitialState(),
+  overrides: AppDependencyOverrides = {}
+): FastifyInstance {
   const config = loadConfig();
   const storagePolicy: MetadataStoragePolicy = {
     sourceCodeStorage: config.sourceCodeStorage,
@@ -580,8 +604,11 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     redactSecrets: config.redactSecrets
   };
   const safe = <T>(value: T): T => sanitizeForMetadataStorage(value, storagePolicy);
-  const prisma =
-    config.databaseUrl && config.nodeEnv !== "test"
+  const ownsPrisma = !Object.hasOwn(overrides, "prisma");
+  const ownsEvaluationQueue = !Object.hasOwn(overrides, "evaluationQueue");
+  const prisma = Object.hasOwn(overrides, "prisma")
+    ? overrides.prisma
+    : config.databaseUrl && config.nodeEnv !== "test"
       ? new PrismaClient({ datasourceUrl: config.databaseUrl })
       : undefined;
   const apiCache = new RedisCacheManager(
@@ -596,11 +623,13 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
           connectTimeout: QUEUE_STATUS_TIMEOUT_MS
         })
       : undefined;
-  const evaluationQueue = queueConnection
-    ? new Queue<MergeGuardEvaluationJobPayload>(MERGE_GUARD_EVALUATION_QUEUE, {
-        connection: queueConnection
-      })
-    : undefined;
+  const evaluationQueue = Object.hasOwn(overrides, "evaluationQueue")
+    ? overrides.evaluationQueue
+    : queueConnection
+      ? new Queue<MergeGuardEvaluationJobPayload>(MERGE_GUARD_EVALUATION_QUEUE, {
+          connection: queueConnection
+        })
+      : undefined;
   const listRecords = () => listChangeControlRecords(state, prisma);
   const getRecord = (id: string) => getChangeControlRecord(state, prisma, id);
   const saveRecord = (record: ChangeControlRecord, pr?: PullRequestInput) =>
@@ -745,7 +774,9 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
   });
 
   app.addHook("onClose", async () => {
-    await evaluationQueue?.close().catch(() => undefined);
+    if (ownsEvaluationQueue) {
+      await evaluationQueue?.close().catch(() => undefined);
+    }
     if (queueConnection) {
       queueConnection.removeAllListeners("error");
       if (queueConnection.status === "ready") {
@@ -755,7 +786,9 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       }
     }
     await apiCache.disconnect();
-    await prisma?.$disconnect();
+    if (ownsPrisma) {
+      await prisma?.$disconnect();
+    }
   });
 
   app.get("/health", async () => ({
@@ -779,6 +812,11 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       queue,
       version: "0.1.0"
     });
+  });
+
+  app.get("/metrics", async (_request, reply) => {
+    const body = await collectPrometheusMetrics({ state, prisma, evaluationQueue, config });
+    return reply.header("content-type", "text/plain; version=0.0.4; charset=utf-8").send(body);
   });
 
   app.post("/webhooks/github", async (request, reply) => {
@@ -821,31 +859,66 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       }
     }
 
-    if (await hasWebhookDelivery(state, prisma, deliveryId)) {
-      return reply.code(202).send({ accepted: true, duplicate: true });
-    }
-
     const envelope = normalizeGithubWebhook({
       deliveryId,
       event,
       payload: request.body as Record<string, unknown>
     });
-    const enqueued = shouldEnqueueEvaluation(envelope);
-    await recordWebhookDelivery(state, prisma, envelope, enqueued);
+    const shouldQueue = shouldEnqueueEvaluation(envelope);
+    const delivery = await recordWebhookDeliveryReceived(state, prisma, envelope);
     await processGithubInstallationWebhook(state, prisma, envelope, config);
-    if (enqueued) {
-      await enqueueMergeGuardEvaluation({
+
+    if (!shouldQueue) {
+      await markWebhookDeliveryCompleted(state, prisma, deliveryId);
+      return reply.code(202).send({
+        accepted: true,
+        duplicate: delivery.duplicate,
+        enqueued: false,
+        deliveryStatus: "completed"
+      });
+    }
+
+    if (!isRecoverableWebhookDeliveryForEnqueue(delivery.status)) {
+      return reply.code(202).send({
+        accepted: true,
+        duplicate: true,
+        enqueued: delivery.status !== "received" && delivery.status !== "enqueue_failed",
+        deliveryStatus: delivery.status
+      });
+    }
+
+    try {
+      const queued = await enqueueMergeGuardEvaluation({
         state,
         evaluationQueue,
         deliveryId,
         envelope
       });
+      await markWebhookDeliveryQueued(state, prisma, deliveryId, queued.jobId);
+    } catch (error) {
+      await markWebhookDeliveryEnqueueFailed(state, prisma, deliveryId, error);
+      app.log.error(
+        {
+          deliveryId,
+          event,
+          error: safeErrorSummary(error)
+        },
+        "Failed to enqueue Merge Guard evaluation for webhook delivery"
+      );
+      return reply.code(503).send({
+        accepted: true,
+        duplicate: delivery.duplicate,
+        enqueued: false,
+        deliveryStatus: "enqueue_failed",
+        error: "Webhook delivery was recorded but evaluation enqueue failed; GitHub may retry."
+      });
     }
 
     return reply.code(202).send({
       accepted: true,
-      duplicate: false,
-      enqueued
+      duplicate: delivery.duplicate,
+      enqueued: true,
+      deliveryStatus: "queued"
     });
   });
 
@@ -996,9 +1069,14 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
       exports: {
         json: true,
         csv: true,
-        storageBucketConfigured: Boolean(config.exportStorageBucket),
-        storageRegion: config.exportStorageRegion
-      }
+        deliveryModel: "api_job_download",
+        storageBucketConfigured: false,
+        storageRegion: undefined
+      },
+      runtimeCapabilities: runtimeCapabilities({
+        postgres: Boolean(prisma),
+        redisQueue: Boolean(config.redisUrl)
+      })
     });
   });
 
@@ -1017,6 +1095,12 @@ export function createApp(state: AppState = createInitialState()): FastifyInstan
     };
     return safe({
       steps: onboardingStepsFromRuntime({
+        repositories,
+        records,
+        githubConnected: settings.githubInstallation.connected,
+        ownerMappingsConfigured: settings.ownerMappings.length > 0
+      }),
+      readiness: repositoryReadinessScore({
         repositories,
         records,
         githubConnected: settings.githubInstallation.connected,
@@ -3321,30 +3405,12 @@ function checkConclusionForRecord(
   return record.checkStatus === "block" ? "failure" : "success";
 }
 
-async function hasWebhookDelivery(
+async function recordWebhookDeliveryReceived(
   state: AppState,
   prisma: PrismaClient | undefined,
-  deliveryId: string
-): Promise<boolean> {
-  if (state.deliveries.has(deliveryId)) {
-    return true;
-  }
-  if (!prisma) {
-    return false;
-  }
-  const existing = await prisma.webhookDelivery.findUnique({
-    where: { deliveryId },
-    select: { deliveryId: true }
-  });
-  return Boolean(existing);
-}
-
-async function recordWebhookDelivery(
-  state: AppState,
-  prisma: PrismaClient | undefined,
-  envelope: GithubWebhookEnvelope,
-  enqueued: boolean
-): Promise<void> {
+  envelope: GithubWebhookEnvelope
+): Promise<{ duplicate: boolean; status: WebhookDeliveryStatus }> {
+  const inMemoryDuplicate = state.deliveries.has(envelope.deliveryId);
   state.deliveries.add(envelope.deliveryId);
   const repositoryFullName = envelope.repository?.fullName ?? null;
   const repositoryId = repositoryFullName
@@ -3355,29 +3421,147 @@ async function recordWebhookDelivery(
     : state.records.find((record) => record.repositoryFullName === repositoryFullName)
         ?.organizationId;
   if (!prisma) {
+    return { duplicate: inMemoryDuplicate, status: inMemoryDuplicate ? "queued" : "received" };
+  }
+  const payloadJson = {
+    installationId: envelope.installationId,
+    repository: envelope.repository,
+    pullRequest: envelope.pullRequest,
+    review: envelope.review,
+    checkRun: envelope.checkRun,
+    installation: envelope.installation,
+    receivedAt: envelope.receivedAt
+  } as never;
+  const existing = await prisma.webhookDelivery.findUnique({
+    where: { deliveryId: envelope.deliveryId },
+    select: { deliveryStatus: true, enqueued: true }
+  });
+  if (existing) {
+    return {
+      duplicate: true,
+      status: webhookDeliveryStatus(existing.deliveryStatus, existing.enqueued)
+    };
+  }
+  try {
+    const created = await prisma.webhookDelivery.create({
+      data: {
+        deliveryId: envelope.deliveryId,
+        event: envelope.event,
+        action: envelope.action ?? null,
+        organizationId: organizationId ?? null,
+        repositoryId: repositoryId ?? null,
+        repositoryFullName,
+        pullRequestNumber:
+          envelope.pullRequest?.number ?? envelope.checkRun?.pullRequests[0]?.number ?? null,
+        headSha: envelope.pullRequest?.headSha ?? envelope.checkRun?.headSha ?? null,
+        enqueued: false,
+        deliveryStatus: "received",
+        payloadJson
+      },
+      select: { deliveryStatus: true, enqueued: true }
+    });
+    return {
+      duplicate: false,
+      status: webhookDeliveryStatus(created.deliveryStatus, created.enqueued)
+    };
+  } catch (error) {
+    const retryExisting = await prisma.webhookDelivery.findUnique({
+      where: { deliveryId: envelope.deliveryId },
+      select: { deliveryStatus: true, enqueued: true }
+    });
+    if (retryExisting) {
+      return {
+        duplicate: true,
+        status: webhookDeliveryStatus(retryExisting.deliveryStatus, retryExisting.enqueued)
+      };
+    }
+    throw error;
+  }
+}
+
+function webhookDeliveryStatus(value: string, enqueued: boolean): WebhookDeliveryStatus {
+  if (isWebhookDeliveryStatus(value)) {
+    return value;
+  }
+  return enqueued ? "queued" : "received";
+}
+
+function isWebhookDeliveryStatus(value: string): value is WebhookDeliveryStatus {
+  return (
+    value === "received" ||
+    value === "queued" ||
+    value === "processing" ||
+    value === "completed" ||
+    value === "enqueue_failed" ||
+    value === "failed"
+  );
+}
+
+function isRecoverableWebhookDeliveryForEnqueue(status: WebhookDeliveryStatus): boolean {
+  return status === "received" || status === "enqueue_failed";
+}
+
+async function markWebhookDeliveryQueued(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  deliveryId: string,
+  queueJobId: string
+): Promise<void> {
+  state.deliveries.add(deliveryId);
+  if (!prisma) {
     return;
   }
-  await prisma.webhookDelivery.create({
+  await prisma.webhookDelivery.updateMany({
+    where: { deliveryId },
     data: {
-      deliveryId: envelope.deliveryId,
-      event: envelope.event,
-      action: envelope.action ?? null,
-      organizationId: organizationId ?? null,
-      repositoryId: repositoryId ?? null,
-      repositoryFullName,
-      pullRequestNumber:
-        envelope.pullRequest?.number ?? envelope.checkRun?.pullRequests[0]?.number ?? null,
-      headSha: envelope.pullRequest?.headSha ?? envelope.checkRun?.headSha ?? null,
-      enqueued,
-      payloadJson: {
-        installationId: envelope.installationId,
-        repository: envelope.repository,
-        pullRequest: envelope.pullRequest,
-        review: envelope.review,
-        checkRun: envelope.checkRun,
-        installation: envelope.installation,
-        receivedAt: envelope.receivedAt
-      } as never
+      enqueued: true,
+      deliveryStatus: "queued",
+      queueJobId,
+      queuedAt: new Date(),
+      lastEnqueueFailureClass: null,
+      lastEnqueueFailureMessage: null,
+      lastEnqueueFailedAt: null
+    }
+  });
+}
+
+async function markWebhookDeliveryCompleted(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  deliveryId: string
+): Promise<void> {
+  state.deliveries.add(deliveryId);
+  if (!prisma) {
+    return;
+  }
+  await prisma.webhookDelivery.updateMany({
+    where: { deliveryId },
+    data: {
+      deliveryStatus: "completed",
+      completedAt: new Date()
+    }
+  });
+}
+
+async function markWebhookDeliveryEnqueueFailed(
+  state: AppState,
+  prisma: PrismaClient | undefined,
+  deliveryId: string,
+  error: unknown
+): Promise<void> {
+  state.deliveries.add(deliveryId);
+  if (!prisma) {
+    return;
+  }
+  const summary = safeErrorSummary(error);
+  await prisma.webhookDelivery.updateMany({
+    where: { deliveryId, deliveryStatus: { in: ["received", "enqueue_failed"] } },
+    data: {
+      enqueued: false,
+      deliveryStatus: "enqueue_failed",
+      lastEnqueueFailureClass: summary.errorClass,
+      lastEnqueueFailureMessage: summary.message,
+      lastEnqueueFailedAt: new Date()
     }
   });
 }
@@ -3856,6 +4040,10 @@ async function enqueueMergeGuardEvaluation(input: {
     return { jobId, deliveryId: input.deliveryId, backend: "redis" };
   }
 
+  const existing = input.state.queuedEvaluations.find((item) => item.id === jobId);
+  if (existing) {
+    return { jobId, deliveryId: input.deliveryId, backend: "in_memory" };
+  }
   input.state.queuedEvaluations.push({
     id: jobId,
     deliveryId: input.deliveryId,
@@ -3951,6 +4139,145 @@ async function queueOperationalStatus(input: {
   }
 }
 
+async function collectPrometheusMetrics(input: {
+  state: AppState;
+  prisma: PrismaClient | undefined;
+  evaluationQueue: Queue<MergeGuardEvaluationJobPayload> | undefined;
+  config: ReturnType<typeof loadConfig>;
+}): Promise<string> {
+  const queue = await queueOperationalStatus({
+    state: input.state,
+    evaluationQueue: input.evaluationQueue
+  });
+  const lines: string[] = [
+    "# HELP agentforge_runtime_store Runtime persistence backend. 1 means active.",
+    "# TYPE agentforge_runtime_store gauge",
+    metricLine("agentforge_runtime_store", { backend: input.prisma ? "postgres" : "in_memory" }, 1),
+    "# HELP agentforge_github_app_configured GitHub App credentials configured. 1 means configured.",
+    "# TYPE agentforge_github_app_configured gauge",
+    metricLine(
+      "agentforge_github_app_configured",
+      {},
+      input.config.github.appId && input.config.github.privateKey ? 1 : 0
+    ),
+    "# HELP agentforge_queue_ready Merge Guard evaluation queue readiness. 1 means ready.",
+    "# TYPE agentforge_queue_ready gauge",
+    metricLine(
+      "agentforge_queue_ready",
+      { backend: queue.backend },
+      queue.status === "ready" ? 1 : 0
+    ),
+    "# HELP agentforge_queue_jobs Merge Guard evaluation queue jobs by state.",
+    "# TYPE agentforge_queue_jobs gauge"
+  ];
+  for (const [stateName, count] of Object.entries(queue.counts)) {
+    lines.push(metricLine("agentforge_queue_jobs", { state: stateName }, count));
+  }
+
+  const domainCounts = await domainMetricCounts(input.state, input.prisma);
+  lines.push(
+    "# HELP agentforge_webhook_deliveries_total GitHub webhook deliveries recorded by status.",
+    "# TYPE agentforge_webhook_deliveries_total gauge"
+  );
+  for (const [status, count] of Object.entries(domainCounts.webhookDeliveriesByStatus)) {
+    lines.push(metricLine("agentforge_webhook_deliveries_total", { status }, count));
+  }
+  lines.push(
+    "# HELP agentforge_change_control_records_total Change Control Records by check status.",
+    "# TYPE agentforge_change_control_records_total gauge"
+  );
+  for (const [status, count] of Object.entries(domainCounts.recordsByStatus)) {
+    lines.push(metricLine("agentforge_change_control_records_total", { status }, count));
+  }
+  lines.push(
+    "# HELP agentforge_check_runs_total Persisted Merge Guard check-run publications.",
+    "# TYPE agentforge_check_runs_total gauge",
+    metricLine("agentforge_check_runs_total", {}, domainCounts.checkRuns),
+    "# HELP agentforge_exports_total Audit export jobs created.",
+    "# TYPE agentforge_exports_total gauge",
+    metricLine("agentforge_exports_total", {}, domainCounts.exports)
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+async function domainMetricCounts(
+  state: AppState,
+  prisma: PrismaClient | undefined
+): Promise<{
+  webhookDeliveriesByStatus: Record<string, number>;
+  recordsByStatus: Record<string, number>;
+  checkRuns: number;
+  exports: number;
+}> {
+  if (!prisma) {
+    return {
+      webhookDeliveriesByStatus: {
+        recorded: state.deliveries.size
+      },
+      recordsByStatus: countBy(state.records, (record) => record.checkStatus),
+      checkRuns: 0,
+      exports: state.exports.length
+    };
+  }
+
+  const [webhookGroups, recordGroups, checkRuns, exports] = await Promise.all([
+    prisma.webhookDelivery.groupBy({ by: ["deliveryStatus"], _count: { _all: true } }),
+    prisma.changeControlRecord.groupBy({ by: ["checkStatus"], _count: { _all: true } }),
+    prisma.checkRun.count(),
+    prisma.exportJob.count()
+  ]);
+  return {
+    webhookDeliveriesByStatus: Object.fromEntries(
+      webhookGroups.map((group) => [group.deliveryStatus, group._count._all])
+    ),
+    recordsByStatus: Object.fromEntries(
+      recordGroups.map((group) => [String(group.checkStatus), group._count._all])
+    ),
+    checkRuns,
+    exports
+  };
+}
+
+function countBy<T>(items: T[], keyFor: (item: T) => string): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of items) {
+    const key = keyFor(item);
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function metricLine(name: string, labels: Record<string, string>, value: number): string {
+  const entries = Object.entries(labels);
+  if (entries.length === 0) {
+    return `${name} ${value}`;
+  }
+  const labelText = entries
+    .map(([key, labelValue]) => `${key}="${prometheusLabelValue(labelValue)}"`)
+    .join(",");
+  return `${name}{${labelText}} ${value}`;
+}
+
+function prometheusLabelValue(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
+}
+
+function runtimeCapabilities(input: { postgres: boolean; redisQueue: boolean }): {
+  durableRecords: boolean;
+  durableWebhookReplay: boolean;
+  manualGitHubInstallationApproval: boolean;
+  queueBackedEvaluations: boolean;
+  productionReady: boolean;
+} {
+  return {
+    durableRecords: input.postgres,
+    durableWebhookReplay: input.postgres,
+    manualGitHubInstallationApproval: input.postgres,
+    queueBackedEvaluations: input.redisQueue,
+    productionReady: input.postgres && input.redisQueue
+  };
+}
+
 async function findReplayableDelivery(
   state: AppState,
   prisma: PrismaClient | undefined,
@@ -3973,7 +4300,9 @@ async function findReplayableDelivery(
         where: {
           repositoryFullName: target.repositoryFullName!,
           pullRequestNumber: target.pullRequestNumber!,
-          enqueued: true,
+          deliveryStatus: {
+            in: ["received", "queued", "processing", "completed", "failed", "enqueue_failed"]
+          },
           ...(organizationId ? { organizationId } : {})
         },
         orderBy: { createdAt: "desc" }
@@ -4020,6 +4349,7 @@ function replayableDeliveryFromState(
       pullRequestNumber: queued.envelope.pullRequest?.number ?? null,
       headSha: queued.envelope.pullRequest?.headSha ?? queued.envelope.checkRun?.headSha ?? null,
       enqueued: true,
+      deliveryStatus: "queued",
       payloadJson: {},
       createdAt: queued.queuedAt
     }
@@ -4077,19 +4407,27 @@ async function listRecentWebhookDeliveryFailures(
   }
   const deliveries = await prisma.webhookDelivery.findMany({
     where: {
-      lastFailedAt: { not: null },
+      OR: [{ lastFailedAt: { not: null } }, { lastEnqueueFailedAt: { not: null } }],
       ...(organizationId ? { organizationId } : {})
     },
-    orderBy: { lastFailedAt: "desc" },
+    orderBy: [
+      { lastEnqueueFailedAt: { sort: "desc", nulls: "last" } },
+      { lastFailedAt: { sort: "desc", nulls: "last" } }
+    ],
     take: QUEUE_FAILED_JOB_LIMIT
   });
   return deliveries.map((delivery) => ({
     deliveryId: delivery.deliveryId,
+    deliveryStatus: delivery.deliveryStatus,
+    queueJobId: delivery.queueJobId,
     repositoryFullName: delivery.repositoryFullName,
     pullRequestNumber: delivery.pullRequestNumber,
     headSha: delivery.headSha,
     attemptsMade: delivery.evaluationAttemptsMade,
     terminalFailure: delivery.evaluationTerminalFailure,
+    enqueueErrorClass: delivery.lastEnqueueFailureClass,
+    enqueueMessage: safeErrorText(delivery.lastEnqueueFailureMessage),
+    enqueueFailedAt: dateString(delivery.lastEnqueueFailedAt),
     errorClass: delivery.lastFailureClass,
     message: safeErrorText(delivery.lastFailureMessage),
     correlationId: delivery.lastFailureCorrelationId,
@@ -4888,6 +5226,169 @@ function onboardingStepsFromRuntime(input: {
       status: active(input.githubConnected && hasRepositories && hasPolicyPack, hasPreviewRecords)
     }
   ];
+}
+
+function repositoryReadinessScore(input: {
+  repositories: Array<{ currentPolicyPack?: string | undefined; mode?: string | undefined }>;
+  records: ChangeControlRecord[];
+  githubConnected: boolean;
+  ownerMappingsConfigured: boolean;
+  branchProtectionConfirmed?: boolean | undefined;
+}): {
+  score: number;
+  recommendation:
+    | "stay_observe"
+    | "move_to_warn"
+    | "validate_reviewers"
+    | "require_branch_check"
+    | "move_to_enforce";
+  checks: Array<{
+    id: string;
+    label: string;
+    status: "passed" | "needs_action" | "unknown";
+    weight: number;
+    detail: string;
+  }>;
+} {
+  const hasRepositories = input.repositories.length > 0;
+  const hasPolicyPack = input.repositories.some((repository) => repository.currentPolicyPack);
+  const hasSuccessfulRecord = input.records.some(
+    (record) => record.checkStatus === "pass" || record.checkStatus === "warn"
+  );
+  const hasApprovedEvidence = input.records.some((record) =>
+    record.requiredEvidence.some((item) => item.status === "approved")
+  );
+  const overrideRate = percent(
+    input.records.filter((record) => record.lifecycle === "overridden").length,
+    input.records.length
+  );
+  const lowOverrideRate = input.records.length >= 3 && overrideRate <= 20;
+  const checks = [
+    readinessCheck(
+      "webhook_active",
+      "GitHub App and webhook are connected",
+      input.githubConnected,
+      15,
+      "Approve/link the GitHub installation and verify a signed webhook delivery."
+    ),
+    readinessCheck(
+      "repository_selected",
+      "At least one governed repository is selected",
+      hasRepositories,
+      15,
+      "Enable a repository before evaluating mode escalation."
+    ),
+    readinessCheck(
+      "policy_selected",
+      "A policy pack is selected",
+      hasPolicyPack,
+      15,
+      "Select a policy pack and keep mode changes as explicit admin actions."
+    ),
+    readinessCheck(
+      "reviewer_routing",
+      "Reviewer routing is configured",
+      input.ownerMappingsConfigured,
+      10,
+      "Add owner mappings and verify team membership permissions when team reviewers are required."
+    ),
+    readinessCheck(
+      "evidence_path",
+      "Evidence approval path has been exercised",
+      hasApprovedEvidence,
+      10,
+      "Approve at least one required evidence item before enforcing evidence gates."
+    ),
+    readinessCheck(
+      "test_pr_evaluated",
+      "A test pull request has produced a non-blocking result",
+      hasSuccessfulRecord,
+      15,
+      "Run a representative pull request through observe or warn mode."
+    ),
+    readinessCheck(
+      "low_override_rate",
+      "Recent override rate is low",
+      lowOverrideRate,
+      10,
+      "Review false positives until fewer than 20% of recent records need overrides."
+    ),
+    {
+      id: "branch_protection",
+      label: "Branch protection requires the Merge Guard check",
+      status: input.branchProtectionConfirmed ? ("passed" as const) : ("unknown" as const),
+      weight: 10,
+      detail: input.branchProtectionConfirmed
+        ? "Verified from a trusted branch protection source."
+        : "Confirm branch protection in GitHub after smoke checks pass; AgentForge keeps this as an explicit admin action."
+    }
+  ];
+  const passedWeight = checks
+    .filter((check) => check.status === "passed")
+    .reduce((sum, check) => sum + check.weight, 0);
+  const totalWeight = checks.reduce((sum, check) => sum + check.weight, 0);
+  const score = totalWeight === 0 ? 0 : Math.round((passedWeight / totalWeight) * 100);
+  return {
+    score,
+    recommendation: readinessRecommendation(score, checks),
+    checks
+  };
+}
+
+function readinessCheck(
+  id: string,
+  label: string,
+  passed: boolean,
+  weight: number,
+  actionDetail: string
+): {
+  id: string;
+  label: string;
+  status: "passed" | "needs_action";
+  weight: number;
+  detail: string;
+} {
+  return {
+    id,
+    label,
+    status: passed ? "passed" : "needs_action",
+    weight,
+    detail: passed ? "Verified from current AgentForge records." : actionDetail
+  };
+}
+
+function readinessRecommendation(
+  score: number,
+  checks: Array<{ id: string; status: "passed" | "needs_action" | "unknown" }>
+):
+  | "stay_observe"
+  | "move_to_warn"
+  | "validate_reviewers"
+  | "require_branch_check"
+  | "move_to_enforce" {
+  if (score < 55) {
+    return "stay_observe";
+  }
+  if (checks.some((check) => check.id === "reviewer_routing" && check.status !== "passed")) {
+    return "validate_reviewers";
+  }
+  if (checks.some((check) => check.id === "branch_protection" && check.status !== "passed")) {
+    return score >= 70 ? "require_branch_check" : "move_to_warn";
+  }
+  if (score >= 85) {
+    return "move_to_enforce";
+  }
+  if (score >= 55) {
+    return "move_to_warn";
+  }
+  return "stay_observe";
+}
+
+function percent(part: number, total: number): number {
+  if (total <= 0) {
+    return 0;
+  }
+  return Math.round((part / total) * 100);
 }
 
 function dashboardSummary(records: ChangeControlRecord[]) {

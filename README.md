@@ -143,8 +143,8 @@ Default local endpoints:
 
 The local Postgres port is `15432` to avoid conflicts with a workstation Postgres on `5432`.
 Redis is required for queue-backed API and worker flows. MinIO is optional for
-routine development and is only needed when testing local export or
-object-storage behavior.
+future object-storage adapter experiments; V1 exports are delivered through
+authorized API export jobs.
 
 ## Common Commands
 
@@ -214,7 +214,7 @@ Important variables:
 | `REDACT_SECRETS`                                  | Redacts secrets in logs, snippets, check output, dashboard display, exports, and prompts.                              |
 | `LLM_FEATURES`                                    | Optional advisory AI features. Blocking decisions never depend on this.                                                |
 | `AUDIT_RECORD_RETENTION_DAYS`                     | Retention period for audit and change-control records.                                                                 |
-| `EXPORT_STORAGE_BUCKET` / `EXPORT_STORAGE_REGION` | Optional object storage settings for exports.                                                                          |
+| `EXPORT_STORAGE_BUCKET` / `EXPORT_STORAGE_REGION` | Reserved for a future object-storage export adapter. V1 export delivery is API job download.                           |
 | `SESSION_SECRET`                                  | Session signing secret. Required before production deployment.                                                         |
 | `AGENTFORGE_GITHUB_ADMIN_LOGINS`                  | Comma-separated GitHub logins that receive `platform_admin` when built-in GitHub OAuth is used.                        |
 | `AGENTFORGE_GITHUB_ALLOWED_LOGINS`                | Comma-separated GitHub logins that receive `developer` when built-in GitHub OAuth is used.                             |
@@ -461,8 +461,8 @@ curl -fsS http://localhost:4000/ready
 
 ### MinIO is unavailable in local development
 
-MinIO backs optional local export and object-storage experiments. Start it only
-when those flows are under test:
+MinIO backs future object-storage adapter experiments. V1 exports do not require
+MinIO:
 
 ```bash
 docker compose up -d minio
@@ -548,6 +548,7 @@ For API, worker, database, or dashboard changes, also run the relevant integrati
 - [docs/change-control-records.md](docs/change-control-records.md) - CCR lifecycle and export model.
 - [docs/security-and-data-handling.md](docs/security-and-data-handling.md) - security and privacy posture.
 - [docs/testing.md](docs/testing.md) - validation strategy and E2E details.
+- [docs/runtime-boundaries.md](docs/runtime-boundaries.md) - in-memory versus Postgres/Redis capability contract.
 - [docs/railway-deployment.md](docs/railway-deployment.md) - Railway topology, variables, deploy, validation, and rollback.
 - [docs/runbook.md](docs/runbook.md) - operational launch and rollback steps.
 - [docs/roadmap.md](docs/roadmap.md) - backlog and intentionally excluded V1 capabilities.

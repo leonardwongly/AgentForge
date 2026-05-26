@@ -83,6 +83,11 @@ type TeamMembershipCheck =
   | { status: "verified"; teamSlug: string; active: boolean }
   | { status: "failed"; teamSlug: string; reason: string };
 
+const DEFAULT_MAX_MANIFEST_FILES = 25;
+const DEFAULT_MAX_CONCURRENT_GITHUB_CONTENT_REQUESTS = 4;
+const DEFAULT_MAX_CONCURRENT_GITHUB_MEMBERSHIP_REQUESTS = 4;
+const DEFAULT_GITHUB_REQUEST_TIMEOUT_MS = 10_000;
+
 export type GithubAdapterClient = {
   pulls: {
     get: GithubRequest<Record<string, unknown>>;
@@ -200,24 +205,43 @@ export async function fetchPullRequestInputFromGithub(input: {
   pullNumber: number;
   includeManifestContents?: boolean | undefined;
   maxManifestBytes?: number | undefined;
+  maxManifestFiles?: number | undefined;
+  maxConcurrentContentRequests?: number | undefined;
+  maxConcurrentMembershipRequests?: number | undefined;
+  requestTimeoutMs?: number | undefined;
   requiredReviewerTeams?: string[] | undefined;
   cache?: RedisCacheManager | undefined;
 }): Promise<PullRequestInput> {
   const params = { owner: input.owner, repo: input.repo, pull_number: input.pullNumber };
-  const prResponse = await input.client.pulls.get(params);
+  const requestTimeoutMs = boundedPositiveInteger(
+    input.requestTimeoutMs,
+    DEFAULT_GITHUB_REQUEST_TIMEOUT_MS
+  );
+  const prResponse = await withGithubRequestTimeout(
+    () => input.client.pulls.get(params),
+    requestTimeoutMs
+  );
   const pr = prResponse.data;
-  const files = await paginateOrRequest(input.client, input.client.pulls.listFiles, {
-    ...params,
-    per_page: 100
-  });
-  const reviews = await paginateOrRequest(input.client, input.client.pulls.listReviews, {
-    ...params,
-    per_page: 100
-  });
-  const commits = await paginateOrRequest(input.client, input.client.pulls.listCommits, {
-    ...params,
-    per_page: 100
-  });
+  const [files, reviews, commits] = await Promise.all([
+    paginateOrRequest(
+      input.client,
+      input.client.pulls.listFiles,
+      { ...params, per_page: 100 },
+      requestTimeoutMs
+    ),
+    paginateOrRequest(
+      input.client,
+      input.client.pulls.listReviews,
+      { ...params, per_page: 100 },
+      requestTimeoutMs
+    ),
+    paginateOrRequest(
+      input.client,
+      input.client.pulls.listCommits,
+      { ...params, per_page: 100 },
+      requestTimeoutMs
+    )
+  ]);
 
   const base = recordValue(pr.base);
   const head = recordValue(pr.head);
@@ -225,8 +249,22 @@ export async function fetchPullRequestInputFromGithub(input: {
   const headSha = stringValue(recordValue(head?.commit)?.sha) ?? stringValue(head?.sha) ?? "";
   const repositoryFullName =
     stringValue(recordValue(base?.repo)?.full_name) ?? `${input.owner}/${input.repo}`;
-  const changedFiles = await Promise.all(
-    files.map((file) =>
+  const maxManifestFiles = boundedNonNegativeInteger(
+    input.maxManifestFiles,
+    DEFAULT_MAX_MANIFEST_FILES
+  );
+  const manifestContentAllowedByIndex = manifestContentAllowanceByIndex({
+    files,
+    includeManifestContents: input.includeManifestContents ?? true,
+    maxManifestFiles
+  });
+  const changedFiles = await mapWithConcurrency(
+    files,
+    boundedPositiveInteger(
+      input.maxConcurrentContentRequests,
+      DEFAULT_MAX_CONCURRENT_GITHUB_CONTENT_REQUESTS
+    ),
+    async (file, index) =>
       githubChangedFileToInput({
         client: input.client,
         owner: input.owner,
@@ -234,11 +272,11 @@ export async function fetchPullRequestInputFromGithub(input: {
         file,
         baseSha,
         headSha,
-        includeManifestContents: input.includeManifestContents ?? true,
+        includeManifestContents: manifestContentAllowedByIndex[index] ?? false,
         maxManifestBytes: input.maxManifestBytes ?? 200_000,
+        requestTimeoutMs,
         cache: input.cache
       })
-    )
   );
   const mappedReviews = reviews.map(githubReviewToInput);
   const enrichedReviews = await enrichPullRequestReviewsWithTeamMemberships({
@@ -246,6 +284,8 @@ export async function fetchPullRequestInputFromGithub(input: {
     org: input.owner,
     reviews: mappedReviews,
     teamSlugs: input.requiredReviewerTeams ?? [],
+    maxConcurrentMembershipRequests: input.maxConcurrentMembershipRequests,
+    requestTimeoutMs,
     cache: input.cache
   });
 
@@ -274,6 +314,8 @@ export async function enrichPullRequestReviewsWithTeamMemberships(input: {
   org: string;
   reviews: PullRequestReview[];
   teamSlugs: string[];
+  maxConcurrentMembershipRequests?: number | undefined;
+  requestTimeoutMs?: number | undefined;
   cache?: RedisCacheManager | undefined;
 }): Promise<PullRequestReview[]> {
   const requiredTeamSlugs = uniqueNormalizedTeamSlugs(input.teamSlugs);
@@ -290,22 +332,44 @@ export async function enrichPullRequestReviewsWithTeamMemberships(input: {
     );
   }
 
-  const membershipChecks = new Map<string, Promise<TeamMembershipCheck>>();
-  const cachedMembershipCheck = (teamSlug: string, username: string) => {
-    const key = `${username.toLowerCase()}:${teamSlug}`;
-    let check = membershipChecks.get(key);
-    if (!check) {
-      check = checkActiveTeamMember({
+  const membershipRequests = new Map<string, { teamSlug: string; username: string }>();
+  for (const review of input.reviews) {
+    if (
+      review.state !== "APPROVED" ||
+      !review.reviewer ||
+      (review.reviewerType ?? "user") !== "user"
+    ) {
+      continue;
+    }
+    for (const teamSlug of requiredTeamSlugs) {
+      const key = membershipCheckKey(teamSlug, review.reviewer);
+      membershipRequests.set(key, { teamSlug, username: review.reviewer });
+    }
+  }
+
+  const membershipResults = new Map<string, TeamMembershipCheck>();
+  const requestTimeoutMs = boundedPositiveInteger(
+    input.requestTimeoutMs,
+    DEFAULT_GITHUB_REQUEST_TIMEOUT_MS
+  );
+  await mapWithConcurrency(
+    [...membershipRequests.values()],
+    boundedPositiveInteger(
+      input.maxConcurrentMembershipRequests,
+      DEFAULT_MAX_CONCURRENT_GITHUB_MEMBERSHIP_REQUESTS
+    ),
+    async ({ teamSlug, username }) => {
+      const check = await checkActiveTeamMember({
         client: input.client,
         org: input.org,
         teamSlug,
         username,
+        requestTimeoutMs,
         cache: input.cache
       });
-      membershipChecks.set(key, check);
+      membershipResults.set(membershipCheckKey(teamSlug, username), check);
     }
-    return check;
-  };
+  );
 
   return Promise.all(
     input.reviews.map(async (review) => {
@@ -318,22 +382,23 @@ export async function enrichPullRequestReviewsWithTeamMemberships(input: {
         return applyReviewTeamSlugs(review, existing);
       }
 
-      const memberships = await Promise.all(
-        requiredTeamSlugs.map(
-          async (teamSlug) => await cachedMembershipCheck(teamSlug, review.reviewer)
-        )
-      );
+      const memberships = requiredTeamSlugs
+        .map((teamSlug) => membershipResults.get(membershipCheckKey(teamSlug, review.reviewer)))
+        .filter((membership): membership is TeamMembershipCheck => Boolean(membership));
       const failedMemberships = memberships.filter((membership) => membership.status === "failed");
       const verifiedTeamSlugs = memberships
         .filter((membership) => membership.status === "verified" && membership.active)
         .map((membership) => membership.teamSlug);
       if (failedMemberships.length > 0) {
+        const failureReason = [...new Set(failedMemberships.map((membership) => membership.reason))]
+          .filter(Boolean)
+          .join(" ");
         return applyReviewTeamVerification(
           applyReviewTeamSlugs(review, [...existing, ...verifiedTeamSlugs]),
           "failed",
           `GitHub team membership verification failed for ${failedMemberships
             .map((membership) => membership.teamSlug)
-            .join(", ")}.`,
+            .join(", ")}.${failureReason ? ` ${failureReason}` : ""}`,
           requiredTeamSlugs
         );
       }
@@ -645,6 +710,7 @@ async function checkActiveTeamMember(input: {
   org: string;
   teamSlug: string;
   username: string;
+  requestTimeoutMs: number;
   cache?: RedisCacheManager | undefined;
 }): Promise<TeamMembershipCheck> {
   const cacheKey = getMembershipCacheKey(input.org, input.teamSlug, input.username);
@@ -670,14 +736,18 @@ async function checkActiveTeamMember(input: {
   }
 
   try {
-    const response = await input.client.teams?.getMembershipForUserInOrg({
-      org: input.org,
-      team_slug: input.teamSlug,
-      username: input.username
-    });
-    const active = stringValue(response?.data.state)?.toLowerCase() === "active";
+    const response = await withGithubRequestTimeout(
+      () =>
+        input.client.teams?.getMembershipForUserInOrg({
+          org: input.org,
+          team_slug: input.teamSlug,
+          username: input.username
+        }) ?? Promise.resolve({ data: {} }),
+      input.requestTimeoutMs
+    );
+    const active = stringValue(recordValue(response?.data)?.state)?.toLowerCase() === "active";
     if (input.cache) {
-      await input.cache.set(cacheKey, active ? "active" : "inactive", 3600); // 1 hour TTL
+      await writeMembershipCache(input.cache, cacheKey, active ? "active" : "inactive");
     }
     return {
       status: "verified",
@@ -687,7 +757,7 @@ async function checkActiveTeamMember(input: {
   } catch (error) {
     if (githubErrorStatus(error) === 404) {
       if (input.cache) {
-        await input.cache.set(cacheKey, "inactive", 3600);
+        await writeMembershipCache(input.cache, cacheKey, "inactive");
       }
       return {
         status: "verified",
@@ -698,9 +768,96 @@ async function checkActiveTeamMember(input: {
     return {
       status: "failed",
       teamSlug: input.teamSlug,
-      reason: `GitHub team membership API rejected the verification request${githubErrorMessage(error)}.`
+      reason: githubRequestFailureReason(error, "team membership")
     };
   }
+}
+
+function membershipCheckKey(teamSlug: string, username: string): string {
+  return `${username.toLowerCase()}:${teamSlug}`;
+}
+
+async function writeMembershipCache(
+  cache: RedisCacheManager,
+  key: string,
+  value: "active" | "inactive"
+): Promise<void> {
+  try {
+    await cache.set(key, value, 3600);
+  } catch (err) {
+    console.warn("Error writing membership cache:", err);
+  }
+}
+
+class GithubRequestTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`GitHub request timed out after ${timeoutMs}ms`);
+    this.name = "GithubRequestTimeoutError";
+  }
+}
+
+async function withGithubRequestTimeout<T>(
+  request: () => Promise<T>,
+  timeoutMs: number
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return request();
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      request(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new GithubRequestTimeoutError(timeoutMs)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+function githubRequestFailureReason(error: unknown, requestType: string): string {
+  if (error instanceof GithubRequestTimeoutError) {
+    return `GitHub ${requestType} request timed out after ${error.timeoutMs}ms.`;
+  }
+  const status = githubErrorStatus(error);
+  if (status === 429 || (status === 403 && githubErrorLooksRateLimited(error))) {
+    return `GitHub ${requestType} request was rate limited${githubErrorMessage(error)}.`;
+  }
+  return `GitHub ${requestType} API rejected the verification request${githubErrorMessage(error)}.`;
+}
+
+function githubErrorLooksRateLimited(error: unknown): boolean {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (message.includes("rate limit") || message.includes("secondary rate")) {
+    return true;
+  }
+  const headers = githubErrorHeaders(error);
+  return headers?.["x-ratelimit-remaining"] === "0";
+}
+
+function githubErrorHeaders(error: unknown): Record<string, string> | undefined {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+  const response = "response" in error ? (error as { response?: unknown }).response : undefined;
+  const source =
+    typeof response === "object" && response !== null && "headers" in response
+      ? (response as { headers?: unknown }).headers
+      : "headers" in error
+        ? (error as { headers?: unknown }).headers
+        : undefined;
+  if (typeof source !== "object" || source === null) {
+    return undefined;
+  }
+  return Object.fromEntries(
+    Object.entries(source as Record<string, unknown>).map(([key, value]) => [
+      key.toLowerCase(),
+      String(value)
+    ])
+  );
 }
 
 function githubErrorStatus(error: unknown): number | undefined {
@@ -775,15 +932,81 @@ function normalizeTeamSlug(value: string): string | undefined {
   return teamSlug;
 }
 
+function manifestContentAllowanceByIndex(input: {
+  files: Array<Record<string, unknown>>;
+  includeManifestContents: boolean;
+  maxManifestFiles: number;
+}): boolean[] {
+  const allowed = input.files.map(() => false);
+  if (!input.includeManifestContents || input.maxManifestFiles <= 0) {
+    return allowed;
+  }
+
+  let remaining = input.maxManifestFiles;
+  for (const [index, file] of input.files.entries()) {
+    if (remaining <= 0) {
+      break;
+    }
+    const filename = stringValue(file.filename) ?? "";
+    if (!isSupportedManifest(filename)) {
+      continue;
+    }
+    allowed[index] = true;
+    remaining -= 1;
+  }
+  return allowed;
+}
+
+async function mapWithConcurrency<TItem, TResult>(
+  items: TItem[],
+  concurrency: number,
+  mapper: (item: TItem, index: number) => Promise<TResult>
+): Promise<TResult[]> {
+  if (items.length === 0) {
+    return [];
+  }
+  const results = new Array<TResult>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      for (;;) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= items.length) {
+          return;
+        }
+        results[index] = await mapper(items[index]!, index);
+      }
+    })
+  );
+  return results;
+}
+
+function boundedPositiveInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value < 1) {
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
+function boundedNonNegativeInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value) || value < 0) {
+    return fallback;
+  }
+  return Math.floor(value);
+}
+
 async function paginateOrRequest<TData>(
   client: GithubAdapterClient,
   method: GithubRequest<Array<TData>>,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  requestTimeoutMs: number
 ): Promise<TData[]> {
   if (client.paginate) {
-    return client.paginate(method, params);
+    return withGithubRequestTimeout(() => client.paginate!(method, params), requestTimeoutMs);
   }
-  return (await method(params)).data;
+  return (await withGithubRequestTimeout(() => method(params), requestTimeoutMs)).data;
 }
 
 async function githubChangedFileToInput(input: {
@@ -795,6 +1018,7 @@ async function githubChangedFileToInput(input: {
   headSha: string;
   includeManifestContents: boolean;
   maxManifestBytes: number;
+  requestTimeoutMs: number;
   cache?: RedisCacheManager | undefined;
 }): Promise<ChangedFile> {
   const filename = stringValue(input.file.filename) ?? "";
@@ -822,6 +1046,7 @@ async function githubChangedFileToInput(input: {
         path: changedFile.previousFilename ?? filename,
         ref: input.baseSha,
         maxBytes: input.maxManifestBytes,
+        requestTimeoutMs: input.requestTimeoutMs,
         cache: input.cache
       });
     }
@@ -833,6 +1058,7 @@ async function githubChangedFileToInput(input: {
         path: filename,
         ref: input.headSha,
         maxBytes: input.maxManifestBytes,
+        requestTimeoutMs: input.requestTimeoutMs,
         cache: input.cache
       });
     }
@@ -884,6 +1110,7 @@ async function fetchTextContent(input: {
   path: string;
   ref: string;
   maxBytes: number;
+  requestTimeoutMs: number;
   cache?: RedisCacheManager | undefined;
 }): Promise<string | undefined> {
   const isImmutableSha = /^[a-fA-F0-9]{40}$/.test(input.ref);
@@ -902,13 +1129,19 @@ async function fetchTextContent(input: {
 
   let response: { data: Record<string, unknown> | Array<Record<string, unknown>> } | undefined;
   try {
-    response = await input.client.repos?.getContent({
-      owner: input.owner,
-      repo: input.repo,
-      path: input.path,
-      ref: input.ref
-    });
-  } catch {
+    response = await withGithubRequestTimeout(
+      () =>
+        input.client.repos?.getContent({
+          owner: input.owner,
+          repo: input.repo,
+          path: input.path,
+          ref: input.ref
+        }) ?? Promise.resolve({ data: {} }),
+      input.requestTimeoutMs
+    );
+  } catch (err) {
+    const reason = githubRequestFailureReason(err, "file content");
+    console.warn(reason);
     return undefined;
   }
   const data = response?.data;

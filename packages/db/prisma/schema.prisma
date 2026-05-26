@@ -268,7 +268,7 @@ model OverrideRecord {
 
 model CheckRun {
   id               String     @id @default(uuid())
-  evaluationId     String
+  evaluationId     String     @unique
   githubCheckRunId BigInt?
   conclusion       String
   outputTitle      String
@@ -276,8 +276,6 @@ model CheckRun {
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
   evaluation       Evaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
-
-  @@index([evaluationId])
 }
 
 model WebhookDelivery {
@@ -291,6 +289,17 @@ model WebhookDelivery {
   pullRequestNumber         Int?
   headSha                   String?
   enqueued                  Boolean   @default(false)
+  deliveryStatus            String    @default("received")
+  queueJobId                String?
+  queuedAt                  DateTime?
+  processingStartedAt       DateTime?
+  completedAt               DateTime?
+  publishedCheckRunId       BigInt?
+  checkConclusion           String?
+  checkPublishedAt          DateTime?
+  lastEnqueueFailureClass   String?
+  lastEnqueueFailureMessage String?
+  lastEnqueueFailedAt       DateTime?
   payloadJson               Json?
   evaluationAttemptsMade    Int       @default(0)
   evaluationTerminalFailure Boolean   @default(false)
@@ -307,6 +316,7 @@ model WebhookDelivery {
   @@index([organizationId, createdAt])
   @@index([repositoryId, pullRequestNumber])
   @@index([repositoryFullName, pullRequestNumber])
+  @@index([deliveryStatus, createdAt])
   @@index([evaluationTerminalFailure, lastFailedAt])
 }
 

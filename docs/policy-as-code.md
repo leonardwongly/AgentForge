@@ -87,3 +87,19 @@ pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.
 ```
 
 The API preview route is read-only unless the request includes `persist: true` and an authorized server-resolved actor. Use read-only previews for policy tuning and persisted previews only when intentionally creating audit/demo records.
+
+## Policy Tuning And Readiness
+
+Policy tuning is deterministic and advisory. AgentForge derives recommendations
+from Change Control Records, audit events, evidence state, reviewer state,
+override concentration, repeated findings, and observe/warn open requirements.
+Recommendations cite the affected records and never mutate policy YAML or check
+status automatically.
+
+The onboarding readiness score is a separate adoption signal for repository mode
+transitions. It weighs GitHub webhook connectivity, governed repository
+selection, policy-pack selection, reviewer routing, exercised evidence approval,
+successful test PR evaluation, low override rate, and branch-protection
+confirmation. The score can recommend staying in observe, moving to warn,
+validating reviewers, requiring the branch check, or moving to enforce, but the
+mode change remains an explicit admin action.

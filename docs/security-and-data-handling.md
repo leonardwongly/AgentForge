@@ -26,6 +26,10 @@ LLM controls:
 - Customer code is not used for model training by this V1 implementation.
 
 Exports exclude full source code by default and are redacted before output.
+Current export delivery is `api_job_download`: the API creates a bounded export
+job, stores the sanitized artifact with the job record, and serves it through
+authorized API reads. Object-storage variables are reserved for a future
+delivery adapter and are not treated as active storage configuration.
 
 Audit readiness:
 

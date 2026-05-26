@@ -216,6 +216,50 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
           </div>
         </section>
 
+        {onboarding.readiness ? (
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>Enforcement readiness</h2>
+                <p>{readinessRecommendationText(onboarding.readiness.recommendation)}</p>
+              </div>
+              <StatusBadge
+                status={
+                  onboarding.readiness.score >= 85
+                    ? "approved"
+                    : onboarding.readiness.score >= 55
+                      ? "provided"
+                      : "low"
+                }
+                label={`${onboarding.readiness.score}% ready`}
+              />
+            </div>
+            <div className="panel-body">
+              <ProgressBar value={onboarding.readiness.score} label="Repository readiness" />
+              <ul className="compact-list">
+                {onboarding.readiness.checks.map((check) => (
+                  <li key={check.id}>
+                    <div className="list-row">
+                      <span>{check.label}</span>
+                      <StatusBadge
+                        status={
+                          check.status === "passed"
+                            ? "approved"
+                            : check.status === "unknown"
+                              ? "provided"
+                              : "low"
+                        }
+                        label={check.status.replace("_", " ")}
+                      />
+                    </div>
+                    <p>{check.detail}</p>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </section>
+        ) : null}
+
         <div className="step-grid">
           {onboarding.steps.length === 0 ? (
             <section className="step step--pending">
@@ -565,4 +609,16 @@ function onboardingErrorMessage(error: string): string {
       "The bundled sample preview could not be created. Verify the API is running and local actor fallback is enabled."
   };
   return messages[error] ?? error;
+}
+
+function readinessRecommendationText(recommendation: string): string {
+  const messages: Record<string, string> = {
+    stay_observe:
+      "Stay in observe until installation, policy, reviewer, and evidence paths are proven.",
+    move_to_warn: "Move mature rules to warn while collecting more reviewer and evidence outcomes.",
+    validate_reviewers: "Validate reviewer routing before escalating policy mode.",
+    require_branch_check: "Require the Merge Guard branch check in GitHub before enforcing.",
+    move_to_enforce: "Ready for an explicit admin-reviewed move to enforce."
+  };
+  return messages[recommendation] ?? "Review readiness before changing enforcement mode.";
 }
