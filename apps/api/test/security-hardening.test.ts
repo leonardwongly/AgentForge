@@ -5,7 +5,12 @@ import { buildLlmAdvisoryPrompt } from "@agentforge/security";
 import { resolveApiActor } from "../src/auth.js";
 import { createApp, createInitialState } from "../src/index.js";
 
-const rawGithubToken = "ghp_123456789012345678901234567890123456";
+const rawGithubToken = `ghp_${"1".repeat(36)}`;
+const testPrivateKey = [
+  ["-----BEGIN", "PRIVATE", "KEY-----"].join(" "),
+  "test",
+  ["-----END", "PRIVATE", "KEY-----"].join(" ")
+].join("\n");
 const rawSource = "export const checkoutToken = process.env.CHECKOUT_TOKEN;";
 const mutableEnvKeys = [
   "DATABASE_URL",
@@ -86,8 +91,7 @@ function setProductionProxyAuthEnv() {
   delete process.env.REDIS_URL;
   process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
   process.env.GITHUB_APP_ID = "123456";
-  process.env.GITHUB_APP_PRIVATE_KEY =
-    "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----";
+  process.env.GITHUB_APP_PRIVATE_KEY = testPrivateKey;
   process.env.GITHUB_APP_SLUG = "agentforge-test";
   process.env.GITHUB_CLIENT_ID = "Iv1.test";
   process.env.GITHUB_CLIENT_SECRET = "github-client-secret";

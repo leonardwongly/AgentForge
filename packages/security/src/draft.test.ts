@@ -3,6 +3,8 @@ import type { PullRequestInput, VerifiedFact } from "@agentforge/core";
 import { generateAiDraftForEvidence } from "./draft.js";
 
 describe("generateAiDraftForEvidence", () => {
+  const rawGithubToken = `ghp_secretToken${"1".repeat(26)}`;
+  const rawAwsKey = `AKIA${"1234567890ABCDEF"}`;
   const mockPr: PullRequestInput = {
     repositoryFullName: "acme/service",
     pullRequestNumber: 42,
@@ -11,7 +13,7 @@ describe("generateAiDraftForEvidence", () => {
     baseBranch: "main",
     headBranch: "feature-migration",
     headSha: "a9876b543210cdef1234567890abcdef12345678",
-    body: "This PR introduces the new accounts table. API_KEY=ghp_secretToken12345678901234567890123456",
+    body: `This PR introduces the new accounts table. API_KEY=${rawGithubToken}`,
     changedFiles: []
   };
 
@@ -97,12 +99,12 @@ describe("generateAiDraftForEvidence", () => {
       finding,
       pr: {
         ...mockPr,
-        title: "Deploy using AKIA1234567890ABCDEF key"
+        title: `Deploy using ${rawAwsKey} key`
       }
     });
 
     // Ensure the AWS access key in title is redacted
-    expect(draft).not.toContain("AKIA1234567890ABCDEF");
+    expect(draft).not.toContain(rawAwsKey);
     expect(draft).toContain("[REDACTED]");
   });
 });

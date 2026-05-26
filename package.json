@@ -1,6 +1,6 @@
 {
   "name": "agentforge",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "AgentForge Merge Guard is a deterministic, evidence-based GitHub pull request change-control system.",
@@ -38,7 +38,8 @@
     "messaging:validate": "tsx scripts/check-liability-copy.ts",
     "policy:validate": "tsx scripts/validate-policy.ts",
     "policy:preview": "tsx scripts/preview-policy.ts",
-    "prisma:validate": "pnpm --filter @agentforge/db prisma:validate"
+    "prisma:validate": "pnpm --filter @agentforge/db prisma:validate",
+    "release:check": "tsx scripts/check-release-readiness.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0",

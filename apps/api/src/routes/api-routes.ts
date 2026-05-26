@@ -50,6 +50,8 @@ type RawBodyRequest = {
   rawBody?: Buffer;
 };
 
+const AGENTFORGE_VERSION = "1.0.0";
+
 type RouteSchema<T = unknown> = {
   safeParse: (value: unknown) =>
     | { success: true; data: T }
@@ -576,7 +578,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         !config.github.webhookSecret && config.github.allowUnsignedWebhooks
           ? "enabled"
           : "disabled",
-      version: "0.1.0"
+      version: AGENTFORGE_VERSION
     }));
 
     app.get("/ready", async (_request, reply) => {
@@ -588,7 +590,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         workerQueue: config.redisUrl ? "configured" : "in_memory",
         runtimeStore: prisma ? "postgres" : "in_memory",
         queue,
-        version: "0.1.0"
+        version: AGENTFORGE_VERSION
       });
     });
 
