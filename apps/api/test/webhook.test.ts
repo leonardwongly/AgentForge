@@ -202,7 +202,7 @@ describe("GitHub webhook API", () => {
     await app.close();
   });
 
-  it("does not enqueue duplicate received rows left by interrupted requests", async () => {
+  it("re-enqueues duplicate received rows left by interrupted requests", async () => {
     process.env.GITHUB_WEBHOOK_SECRET = "secret";
     const state = createInitialState();
     const row = {
@@ -222,7 +222,7 @@ describe("GitHub webhook API", () => {
       }
     };
     const queue = {
-      add: vi.fn()
+      add: vi.fn(async () => ({ id: "delivery-received-duplicate" }))
     };
     const app = createApp(state, {
       prisma: prisma as never,
@@ -262,11 +262,20 @@ describe("GitHub webhook API", () => {
     expect(response.json()).toMatchObject({
       accepted: true,
       duplicate: true,
-      enqueued: false,
-      deliveryStatus: "received"
+      enqueued: true,
+      deliveryStatus: "queued"
     });
-    expect(queue.add).not.toHaveBeenCalled();
-    expect(prisma.webhookDelivery.updateMany).not.toHaveBeenCalled();
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(prisma.webhookDelivery.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { deliveryId: "delivery-received-duplicate" },
+        data: expect.objectContaining({
+          deliveryStatus: "queued",
+          enqueued: true,
+          queueJobId: "delivery-received-duplicate"
+        })
+      })
+    );
     await app.close();
   });
 

@@ -878,15 +878,6 @@ export function createApp(
       });
     }
 
-    if (delivery.duplicate && delivery.status === "received") {
-      return reply.code(202).send({
-        accepted: true,
-        duplicate: true,
-        enqueued: false,
-        deliveryStatus: "received"
-      });
-    }
-
     if (!isRecoverableWebhookDeliveryForEnqueue(delivery.status)) {
       return reply.code(202).send({
         accepted: true,
@@ -3564,7 +3555,7 @@ async function markWebhookDeliveryEnqueueFailed(
   }
   const summary = safeErrorSummary(error);
   await prisma.webhookDelivery.updateMany({
-    where: { deliveryId },
+    where: { deliveryId, deliveryStatus: { in: ["received", "enqueue_failed"] } },
     data: {
       enqueued: false,
       deliveryStatus: "enqueue_failed",
@@ -5242,6 +5233,7 @@ function repositoryReadinessScore(input: {
   records: ChangeControlRecord[];
   githubConnected: boolean;
   ownerMappingsConfigured: boolean;
+  branchProtectionConfirmed?: boolean | undefined;
 }): {
   score: number;
   recommendation:
@@ -5271,11 +5263,6 @@ function repositoryReadinessScore(input: {
     input.records.length
   );
   const lowOverrideRate = input.records.length >= 3 && overrideRate <= 20;
-  const branchProtectionConfirmed = input.records.some(
-    (record) =>
-      (record.mode === "enforce" || record.mode === "optimize") &&
-      (record.checkStatus === "pass" || record.checkStatus === "warn")
-  );
   const checks = [
     readinessCheck(
       "webhook_active",
@@ -5329,10 +5316,10 @@ function repositoryReadinessScore(input: {
     {
       id: "branch_protection",
       label: "Branch protection requires the Merge Guard check",
-      status: branchProtectionConfirmed ? ("passed" as const) : ("unknown" as const),
+      status: input.branchProtectionConfirmed ? ("passed" as const) : ("unknown" as const),
       weight: 10,
-      detail: branchProtectionConfirmed
-        ? "Verified from an enforce or optimize mode evaluation record."
+      detail: input.branchProtectionConfirmed
+        ? "Verified from a trusted branch protection source."
         : "Confirm branch protection in GitHub after smoke checks pass; AgentForge keeps this as an explicit admin action."
     }
   ];
@@ -5379,6 +5366,9 @@ function readinessRecommendation(
   | "validate_reviewers"
   | "require_branch_check"
   | "move_to_enforce" {
+  if (score < 55) {
+    return "stay_observe";
+  }
   if (checks.some((check) => check.id === "reviewer_routing" && check.status !== "passed")) {
     return "validate_reviewers";
   }

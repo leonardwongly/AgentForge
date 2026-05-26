@@ -440,45 +440,48 @@ describe("github integration", () => {
   it("keeps verified team membership results when cache writes fail", async () => {
     let clientCalls = 0;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const cache = {
-      get: vi.fn(async () => null),
-      set: vi.fn(async () => {
-        throw new Error("redis write failed");
-      })
-    } as unknown as RedisCacheManager;
+    try {
+      const cache = {
+        get: vi.fn(async () => null),
+        set: vi.fn(async () => {
+          throw new Error("redis write failed");
+        })
+      } as unknown as RedisCacheManager;
 
-    const reviews = await enrichPullRequestReviewsWithTeamMemberships({
-      client: {
-        pulls: {
-          get: async () => ({ data: {} }),
-          listFiles: async () => ({ data: [] }),
-          listReviews: async () => ({ data: [] }),
-          listCommits: async () => ({ data: [] })
-        },
-        teams: {
-          getMembershipForUserInOrg: async () => {
-            clientCalls += 1;
-            return { data: { state: "active" } };
+      const reviews = await enrichPullRequestReviewsWithTeamMemberships({
+        client: {
+          pulls: {
+            get: async () => ({ data: {} }),
+            listFiles: async () => ({ data: [] }),
+            listReviews: async () => ({ data: [] }),
+            listCommits: async () => ({ data: [] })
+          },
+          teams: {
+            getMembershipForUserInOrg: async () => {
+              clientCalls += 1;
+              return { data: { state: "active" } };
+            }
           }
-        }
-      },
-      org: "acme",
-      teamSlugs: ["security-team"],
-      reviews: [
-        {
-          reviewer: "alice",
-          reviewerType: "user",
-          state: "APPROVED",
-          submittedAt: "2026-05-14T00:00:00.000Z"
-        }
-      ],
-      cache
-    });
+        },
+        org: "acme",
+        teamSlugs: ["security-team"],
+        reviews: [
+          {
+            reviewer: "alice",
+            reviewerType: "user",
+            state: "APPROVED",
+            submittedAt: "2026-05-14T00:00:00.000Z"
+          }
+        ],
+        cache
+      });
 
-    expect(clientCalls).toBe(1);
-    expect(reviews[0]?.teamSlugs).toContain("security-team");
-    expect(warn).toHaveBeenCalledWith("Error writing membership cache:", expect.any(Error));
-    warn.mockRestore();
+      expect(clientCalls).toBe(1);
+      expect(reviews[0]?.teamSlugs).toContain("security-team");
+      expect(warn).toHaveBeenCalledWith("Error writing membership cache:", expect.any(Error));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("uses RedisCacheManager and respects inactive cached team memberships", async () => {

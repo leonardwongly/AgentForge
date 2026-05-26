@@ -69,6 +69,7 @@ type CheckPublicationResult = {
 let workerPrisma: PrismaClient | undefined;
 
 const WORKER_FAILURE_MESSAGE_LIMIT = 500;
+const CHECK_PUBLICATION_CLAIM_TTL_MS = 5 * 60 * 1000;
 
 export class RepositoryNotConfiguredError extends Error {
   constructor(repositoryFullName: string) {
@@ -922,10 +923,20 @@ async function publishCheckOnce(input: {
         }
       })
     : undefined;
-  if (previous?.checkPublishedAt) {
+  if (previous?.checkPublishedAt && previous.publishedCheckRunId) {
     return {
-      published: Boolean(previous.publishedCheckRunId),
-      id: previous.publishedCheckRunId ? Number(previous.publishedCheckRunId) : undefined,
+      published: true,
+      id: Number(previous.publishedCheckRunId),
+      conclusion: checkConclusionFromStoredValue(previous.checkConclusion) ?? input.checkConclusion,
+      reused: true
+    };
+  }
+  if (
+    previous?.checkPublishedAt &&
+    Date.now() - previous.checkPublishedAt.getTime() < CHECK_PUBLICATION_CLAIM_TTL_MS
+  ) {
+    return {
+      published: false,
       conclusion: checkConclusionFromStoredValue(previous.checkConclusion) ?? input.checkConclusion,
       reused: true
     };
@@ -941,8 +952,15 @@ async function publishCheckOnce(input: {
   }
 
   const claimTime = new Date();
+  const claimWhere = previous?.checkPublishedAt
+    ? {
+        deliveryId: input.deliveryId,
+        checkPublishedAt: previous.checkPublishedAt,
+        publishedCheckRunId: null
+      }
+    : { deliveryId: input.deliveryId, checkPublishedAt: null };
   const claim = await input.prisma.webhookDelivery.updateMany({
-    where: { deliveryId: input.deliveryId, checkPublishedAt: null },
+    where: claimWhere,
     data: {
       checkConclusion: input.checkConclusion,
       checkPublishedAt: claimTime
