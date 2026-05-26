@@ -24,6 +24,32 @@ This repository is a working TypeScript monorepo for the Merge Guard V1 runtime:
 
 For product positioning and non-goals, see [docs/product-overview.md](docs/product-overview.md) and [docs/launch-positioning-and-pricing.md](docs/launch-positioning-and-pricing.md).
 
+## V1.0 Release Scope
+
+AgentForge v1.0 is a self-hosted GitHub governance release. The repository can
+be published publicly on GitHub, but the workspace packages intentionally remain
+`private: true` and are not published to npm.
+
+Included in v1.0:
+
+- GitHub App webhook ingestion, durable delivery records, queue-backed
+  evaluation, check publication, and platform-admin replay.
+- GitHub OAuth or trusted-proxy dashboard authentication. Username/password
+  login is intentionally out of scope.
+- Policy-as-code evaluation, evidence requirements, reviewer routing, Change
+  Control Records, audit events, and authorized exports.
+- Production fail-closed configuration for signed webhooks, auth proxy trust,
+  local actor fallback, source-code storage, secret redaction, and session/OAuth
+  settings.
+
+Not included in v1.0:
+
+- Hosted SaaS operation.
+- npm package publication.
+- Production object-storage export adapters.
+- AI-based blocking decisions. Optional AI features are advisory only and
+  disabled by default.
+
 ## Repository Layout
 
 ```text

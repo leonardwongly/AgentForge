@@ -3,6 +3,12 @@ import { dashboardRoleForGitHubLogin } from "./access";
 import { githubOAuthRuntime } from "./runtime";
 
 describe("GitHub OAuth runtime config", () => {
+  const testPrivateKey = [
+    ["-----BEGIN", "PRIVATE", "KEY-----"].join(" "),
+    "test",
+    ["-----END", "PRIVATE", "KEY-----"].join(" ")
+  ].join("\n");
+
   it("loads OAuth credentials and authorization lists through shared config", () => {
     const runtime = githubOAuthRuntime({
       NODE_ENV: "development",
@@ -30,7 +36,7 @@ describe("GitHub OAuth runtime config", () => {
       NODE_ENV: "production",
       GITHUB_WEBHOOK_SECRET: "production-secret",
       GITHUB_APP_ID: "123456",
-      GITHUB_APP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+      GITHUB_APP_PRIVATE_KEY: testPrivateKey,
       GITHUB_CLIENT_ID: "Iv1.production",
       GITHUB_CLIENT_SECRET: "github-client-secret",
       SESSION_SECRET: "session-secret-32-characters-long",

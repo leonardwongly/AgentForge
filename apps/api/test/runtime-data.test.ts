@@ -64,7 +64,7 @@ describe("runtime data surfaces", () => {
         runtimeStore: "in_memory",
         database: expect.stringMatching(/^(configured|not_configured)$/u),
         workerQueue: expect.stringMatching(/^(configured|in_memory)$/u),
-        version: "0.1.0"
+        version: "1.0.0"
       })
     );
 

@@ -8,14 +8,17 @@ import {
 } from "./index.js";
 
 describe("redaction", () => {
+  const rawGithubToken = `ghp_${"1".repeat(36)}`;
+  const rawAwsKey = `AKIA${"1234567890ABCDEF"}`;
+
   it("redacts common credentials without removing surrounding context", () => {
-    const input = "token=ghp_123456789012345678901234567890123456 aws=AKIA1234567890ABCDEF";
+    const input = `token=${rawGithubToken} aws=${rawAwsKey}`;
 
     const redacted = redactSecrets(input);
 
     expect(redacted).toContain("token=[REDACTED]");
     expect(redacted).not.toContain("ghp_123456");
-    expect(redacted).not.toContain("AKIA1234567890ABCDEF");
+    expect(redacted).not.toContain(rawAwsKey);
   });
 
   it("redacts nested object strings", () => {
@@ -113,7 +116,7 @@ describe("redaction", () => {
   it("removes source blobs and full diffs by default while preserving metadata", () => {
     const value = sanitizeForMetadataStorage({
       filename: "src/billing/checkout.ts",
-      patch: "+ const token = 'ghp_123456789012345678901234567890123456'",
+      patch: `+ const token = '${rawGithubToken}'`,
       previousContent: "export const before = true;",
       currentContent: "export const after = true;",
       evidence: "Changed path matched billing policy"
@@ -123,14 +126,14 @@ describe("redaction", () => {
       filename: "src/billing/checkout.ts",
       evidence: "Changed path matched billing policy"
     });
-    expect(JSON.stringify(value)).not.toContain("ghp_123456");
+    expect(JSON.stringify(value)).not.toContain("ghp_");
     expect(JSON.stringify(value)).not.toContain("export const");
   });
 
   it("retains redacted diffs only when diff retention is enabled", () => {
     const value = sanitizeForMetadataStorage(
       {
-        patch: "+ token=ghp_123456789012345678901234567890123456",
+        patch: `+ token=${rawGithubToken}`,
         currentContent: "const source = true;"
       },
       { fullDiffRetention: "7d", sourceCodeStorage: false, redactSecrets: true }
@@ -146,7 +149,7 @@ describe("redaction", () => {
         {
           id: "fact_1",
           type: "secret_like_value_detected",
-          evidence: "token=ghp_123456789012345678901234567890123456",
+          evidence: `token=${rawGithubToken}`,
           confidence: "observed"
         }
       ],
@@ -170,7 +173,7 @@ describe("redaction", () => {
         {
           id: "fact_1",
           type: "secret_like_value_detected",
-          evidence: "token=ghp_123456789012345678901234567890123456",
+          evidence: `token=${rawGithubToken}`,
           confidence: "observed"
         }
       ],
@@ -183,7 +186,7 @@ describe("redaction", () => {
     expect(prompt.promptGenerated).toBe(true);
     if (prompt.promptGenerated) {
       expect(prompt.prompt).toContain("advisory only");
-      expect(prompt.prompt).not.toContain("ghp_123456");
+      expect(prompt.prompt).not.toContain("ghp_");
     }
   });
 });

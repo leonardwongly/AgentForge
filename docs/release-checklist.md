@@ -7,14 +7,18 @@ Use this checklist before making the repository public or cutting a tagged relea
 - [ ] `LICENSE` is present and matches Apache-2.0.
 - [ ] `NOTICE` is present.
 - [ ] `README.md` describes setup, architecture, configuration, testing, GitHub App setup, and security posture.
+- [ ] `CHANGELOG.md` and `RELEASE_NOTES.md` include the intended `v1.0.0` release summary.
 - [ ] `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `SECURITY.md` are present.
 - [ ] Issue templates, PR template, CODEOWNERS, Dependabot, CodeQL, dependency review, and CI workflows are enabled.
 - [ ] `.gitignore` excludes local metadata, logs, build output, coverage, Playwright output, and `.env` files.
+- [ ] Workspace manifests intentionally keep `private: true` while reporting the release version.
 
 ## Secret And Data Hygiene
 
 - [ ] `git ls-files | grep -E '(^|/)\.DS_Store$|(^|/)\.env($|\.)|(^|/)playwright-report/|(^|/)test-results/' | grep -v '^\.env\.example$'` returns no committed local artifacts.
 - [ ] Run the secret-grep command from `.github/workflows/security.yml` locally and confirm it returns no real secrets.
+- [ ] Run `pnpm release:check` and confirm it passes.
+- [ ] Run a git-history secret scan before changing repository visibility to public. If a real secret is found, rotate it before deciding whether history remediation is required.
 - [ ] `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=false`, `SOURCE_CODE_STORAGE=false`, and `REDACT_SECRETS=true` are documented as production defaults.
 - [ ] Exports and dashboard views are verified to exclude raw source code and secrets under the default storage policy.
 
@@ -46,6 +50,7 @@ pnpm test
 pnpm fixtures:run
 pnpm build
 pnpm audit --audit-level high
+pnpm release:check
 ```
 
 With local services:
@@ -70,3 +75,13 @@ Manual browser QA:
 - [ ] Owner-mapping validation preserves typed values and shows inline guidance for malformed team/user routes before submitting.
 - [ ] Dashboard action queues distinguish open evidence from approved evidence.
 - [ ] Record detail, evidence, reviewer, override, export, policy preview, and policy settings pages load without framework or console errors.
+
+## Tag And Publication
+
+- [ ] Merge release-readiness changes to `main`.
+- [ ] Confirm `CI`, `Security`, `CodeQL`, dependency review, and E2E workflows pass on `main`.
+- [ ] Create and push the `v1.0.0` tag.
+- [ ] Create the GitHub Release from `RELEASE_NOTES.md`.
+- [ ] Set repository topics, homepage/docs URL, and description.
+- [ ] Switch repository visibility to public only after secret/history scan and fresh-clone validation are complete.
+- [ ] Verify the public anonymous repository page shows README, license, security policy, and the `v1.0.0` release.

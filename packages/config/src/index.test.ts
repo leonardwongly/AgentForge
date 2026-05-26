@@ -5,7 +5,11 @@ const productionBaseEnv = {
   NODE_ENV: "production",
   GITHUB_WEBHOOK_SECRET: "production-secret",
   GITHUB_APP_ID: "123456",
-  GITHUB_APP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----",
+  GITHUB_APP_PRIVATE_KEY: [
+    ["-----BEGIN", "PRIVATE", "KEY-----"].join(" "),
+    "test",
+    ["-----END", "PRIVATE", "KEY-----"].join(" ")
+  ].join("\n"),
   GITHUB_APP_SLUG: "agentforge-test",
   GITHUB_CLIENT_ID: "Iv1.test",
   GITHUB_CLIENT_SECRET: "github-client-secret",

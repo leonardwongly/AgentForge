@@ -66,7 +66,7 @@ Expected health output:
   "workerQueue": "configured",
   "runtimeStore": "postgres",
   "unsignedWebhookMode": "disabled",
-  "version": "0.1.0"
+  "version": "1.0.0"
 }
 ```
 
