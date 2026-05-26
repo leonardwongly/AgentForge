@@ -508,6 +508,53 @@ describe("github integration", () => {
     expect(reviews[0]?.teamVerification).toBeUndefined();
   });
 
+  it("bounds team membership verification fan-out and surfaces rate limits", async () => {
+    let activeMembershipRequests = 0;
+    let maxActiveMembershipRequests = 0;
+    const rateLimited = new Error("secondary rate limit") as Error & {
+      status: number;
+      response: { headers: Record<string, string> };
+    };
+    rateLimited.status = 403;
+    rateLimited.response = { headers: { "x-ratelimit-remaining": "0" } };
+
+    const reviews = await enrichPullRequestReviewsWithTeamMemberships({
+      client: {
+        pulls: {
+          get: async () => ({ data: {} }),
+          listFiles: async () => ({ data: [] }),
+          listReviews: async () => ({ data: [] }),
+          listCommits: async () => ({ data: [] })
+        },
+        teams: {
+          getMembershipForUserInOrg: async () => {
+            activeMembershipRequests += 1;
+            maxActiveMembershipRequests = Math.max(
+              maxActiveMembershipRequests,
+              activeMembershipRequests
+            );
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            activeMembershipRequests -= 1;
+            throw rateLimited;
+          }
+        }
+      },
+      org: "acme",
+      teamSlugs: ["security-team"],
+      maxConcurrentMembershipRequests: 2,
+      reviews: Array.from({ length: 5 }, (_, index) => ({
+        reviewer: `reviewer-${index}`,
+        reviewerType: "user" as const,
+        state: "APPROVED" as const,
+        submittedAt: "2026-05-14T00:00:00.000Z"
+      }))
+    });
+
+    expect(maxActiveMembershipRequests).toBeLessThanOrEqual(2);
+    expect(reviews.every((review) => review.teamVerification?.status === "failed")).toBe(true);
+    expect(reviews[0]?.teamVerification?.reason).toContain("rate limited");
+  });
+
   it("keeps PR extraction usable when manifest content fetch is unavailable", async () => {
     const client: GithubAdapterClient = {
       pulls: {
@@ -544,6 +591,111 @@ describe("github integration", () => {
       filename: "package.json",
       currentContent: undefined,
       previousContent: undefined
+    });
+  });
+
+  it("bounds manifest content hydration fan-out for large pull requests", async () => {
+    let activeContentRequests = 0;
+    let maxActiveContentRequests = 0;
+    const fetchedPaths: string[] = [];
+    const client: GithubAdapterClient = {
+      pulls: {
+        get: async () => ({
+          data: {
+            number: 9,
+            title: "Large dependency change",
+            user: { login: "sam" },
+            base: { ref: "main", sha: "base-sha", repo: { full_name: "acme/payments" } },
+            head: { ref: "feature/deps", sha: "head-sha", repo: { full_name: "acme/payments" } }
+          }
+        }),
+        listFiles: async () => ({
+          data: Array.from({ length: 8 }, (_, index) => ({
+            filename: `service-${index}/package.json`,
+            status: "added"
+          }))
+        }),
+        listReviews: async () => ({ data: [] }),
+        listCommits: async () => ({ data: [] })
+      },
+      repos: {
+        getContent: async ({ path }) => {
+          activeContentRequests += 1;
+          maxActiveContentRequests = Math.max(maxActiveContentRequests, activeContentRequests);
+          fetchedPaths.push(String(path));
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          activeContentRequests -= 1;
+          return {
+            data: {
+              encoding: "base64",
+              content: Buffer.from(JSON.stringify({ name: path })).toString("base64")
+            }
+          };
+        }
+      }
+    };
+
+    const pr = await fetchPullRequestInputFromGithub({
+      client,
+      owner: "acme",
+      repo: "payments",
+      pullNumber: 9,
+      maxManifestFiles: 3,
+      maxConcurrentContentRequests: 2
+    });
+
+    expect(fetchedPaths).toEqual([
+      "service-0/package.json",
+      "service-1/package.json",
+      "service-2/package.json"
+    ]);
+    expect(maxActiveContentRequests).toBeLessThanOrEqual(2);
+    expect(pr.changedFiles.slice(0, 3).every((file) => file.currentContent)).toBe(true);
+    expect(pr.changedFiles.slice(3).every((file) => file.currentContent === undefined)).toBe(true);
+  });
+
+  it("keeps pull request hydration usable when manifest content requests time out", async () => {
+    const client: GithubAdapterClient = {
+      pulls: {
+        get: async () => ({
+          data: {
+            number: 10,
+            title: "Slow dependency change",
+            user: { login: "sam" },
+            base: { ref: "main", sha: "base-sha", repo: { full_name: "acme/payments" } },
+            head: { ref: "feature/deps", sha: "head-sha", repo: { full_name: "acme/payments" } }
+          }
+        }),
+        listFiles: async () => ({
+          data: [{ filename: "package.json", status: "added" }]
+        }),
+        listReviews: async () => ({ data: [] }),
+        listCommits: async () => ({ data: [] })
+      },
+      repos: {
+        getContent: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          return {
+            data: {
+              encoding: "base64",
+              content: Buffer.from(JSON.stringify({ name: "slow" })).toString("base64")
+            }
+          };
+        }
+      }
+    };
+
+    const pr = await fetchPullRequestInputFromGithub({
+      client,
+      owner: "acme",
+      repo: "payments",
+      pullNumber: 10,
+      requestTimeoutMs: 1
+    });
+
+    expect(pr.changedFiles[0]).toMatchObject({
+      filename: "package.json",
+      currentContent: undefined
     });
   });
 
