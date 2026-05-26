@@ -108,6 +108,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@agentforge/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@agentforge/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -169,6 +172,9 @@ importers:
 
   packages/config:
     dependencies:
+      '@agentforge/core':
+        specifier: workspace:*
+        version: link:../core
       zod:
         specifier: 4.4.3
         version: 4.4.3

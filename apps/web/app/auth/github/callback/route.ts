@@ -7,6 +7,7 @@ import {
   readOauthStateCookie
 } from "../../session";
 import { dashboardRoleForGitHubLogin } from "../access";
+import { githubOAuthRuntime } from "../runtime";
 
 type GitHubTokenResponse = {
   access_token?: string;
@@ -22,16 +23,16 @@ export async function GET(request: Request): Promise<never> {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
-  const sessionSecret = process.env.SESSION_SECRET;
-  const clientId = process.env.GITHUB_CLIENT_ID;
-  const clientSecret = process.env.GITHUB_CLIENT_SECRET;
+  const { clientId, clientSecret, sessionSecret, secureCookies, organizationId, accessEnv } =
+    githubOAuthRuntime();
+
+  if (!sessionSecret || !clientId || !clientSecret) {
+    redirect("/settings?error=GitHub%20OAuth%20is%20not%20configured");
+  }
   const expectedState = readOauthStateCookie((await headers()).get("cookie"), sessionSecret);
 
   if (!code || !state || !expectedState || state !== expectedState) {
     redirect("/settings?error=Invalid%20GitHub%20OAuth%20state");
-  }
-  if (!sessionSecret || !clientId || !clientSecret) {
-    redirect("/settings?error=GitHub%20OAuth%20is%20not%20configured");
   }
 
   let login: string | undefined;
@@ -46,9 +47,24 @@ export async function GET(request: Request): Promise<never> {
   if (!login) {
     redirect("/settings?error=GitHub%20OAuth%20did%20not%20return%20a%20login");
   }
-  const role = dashboardRoleForGitHubLogin(login);
+  const role = dashboardRoleForGitHubLogin(login, accessEnv);
   if (!role) {
-    redirect("/settings?error=GitHub%20login%20is%20not%20authorized");
+    const requestId = requestIdForLog(request);
+    console.warn(
+      JSON.stringify({
+        errorCode: "UNAUTHORIZED_GITHUB_LOGIN",
+        githubLogin: login,
+        httpMethod: request.method,
+        requestId,
+        route: "/auth/github/callback",
+        statusCode: 403
+      })
+    );
+    redirect(
+      `/settings?error=GitHub%20login%20is%20not%20authorized&requestId=${encodeURIComponent(
+        requestId
+      )}`
+    );
   }
 
   try {
@@ -60,7 +76,7 @@ export async function GET(request: Request): Promise<never> {
         {
           login,
           role,
-          organizationId: process.env.AGENTFORGE_DASHBOARD_ORGANIZATION ?? "org_local",
+          organizationId,
           provider: "github"
         },
         sessionSecret
@@ -68,7 +84,7 @@ export async function GET(request: Request): Promise<never> {
       {
         httpOnly: true,
         sameSite: "lax",
-        secure: process.env.NODE_ENV === "production",
+        secure: secureCookies,
         path: "/",
         maxAge: 60 * 60 * 8
       }
@@ -103,6 +119,14 @@ async function exchangeCodeForToken(input: {
     throw new Error(payload.error_description ?? payload.error ?? "GitHub OAuth token failed");
   }
   return payload.access_token;
+}
+
+function requestIdForLog(request: Request): string {
+  const requestId = request.headers.get("x-request-id")?.trim();
+  if (requestId && requestId.length <= 128) {
+    return requestId;
+  }
+  return crypto.randomUUID();
 }
 
 async function loadGitHubUser(token: string): Promise<GitHubUserResponse> {

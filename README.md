@@ -217,6 +217,7 @@ Important variables:
 | `EXPORT_STORAGE_BUCKET` / `EXPORT_STORAGE_REGION` | Optional object storage settings for exports.                                                                          |
 | `SESSION_SECRET`                                  | Session signing secret. Required before production deployment.                                                         |
 | `AGENTFORGE_GITHUB_ADMIN_LOGINS`                  | Comma-separated GitHub logins that receive `platform_admin` when built-in GitHub OAuth is used.                        |
+| `AGENTFORGE_GITHUB_ALLOWED_LOGINS`                | Comma-separated GitHub logins that receive `developer` when built-in GitHub OAuth is used.                             |
 | `AGENTFORGE_API_TRUST_PROXY_HEADERS`              | Trust authenticated API actor headers only behind a verified stripping auth proxy.                                     |
 | `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS`        | Local-only API fallback for raw actor headers. Keep `false` in deployed environments.                                  |
 | `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS`        | Trust authenticated dashboard actor headers only behind a verified auth proxy.                                         |

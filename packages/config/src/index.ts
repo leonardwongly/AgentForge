@@ -40,6 +40,8 @@ const envSchema = z.object({
   ALLOW_UNSIGNED_GITHUB_WEBHOOKS: booleanFromEnv.default(false),
   GITHUB_CLIENT_ID: optionalStringFromEnv,
   GITHUB_CLIENT_SECRET: optionalStringFromEnv,
+  AGENTFORGE_GITHUB_ADMIN_LOGINS: optionalStringFromEnv,
+  AGENTFORGE_GITHUB_ALLOWED_LOGINS: optionalStringFromEnv,
   APP_BASE_URL: z.string().url().default("http://localhost:3000"),
   API_BASE_URL: z.string().url().default("http://localhost:4000"),
   DEFAULT_POLICY_MODE: z.enum(["observe", "warn", "enforce", "optimize"]).default("observe"),
@@ -56,6 +58,7 @@ const envSchema = z.object({
   AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS: booleanFromEnv.default(false),
   AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: booleanFromEnv.default(false),
   AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: booleanFromEnv.default(false),
+  AGENTFORGE_DASHBOARD_ORGANIZATION: optionalStringFromEnv,
   AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS: booleanFromEnv.default(false)
 });
 
@@ -72,6 +75,8 @@ export type AgentForgeConfig = {
     allowUnsignedWebhooks: boolean;
     clientId: string | undefined;
     clientSecret: string | undefined;
+    adminLogins: string | undefined;
+    allowedLogins: string | undefined;
   };
   appBaseUrl: string;
   apiBaseUrl: string;
@@ -92,6 +97,9 @@ export type AgentForgeConfig = {
     proxyStripsIdentityHeaders: boolean;
     apiProxySecret: string | undefined;
   };
+  dashboard: {
+    organizationId: string | undefined;
+  };
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConfig {
@@ -109,7 +117,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConf
       appSlug: parsed.GITHUB_APP_SLUG,
       allowUnsignedWebhooks: parsed.ALLOW_UNSIGNED_GITHUB_WEBHOOKS ?? false,
       clientId: parsed.GITHUB_CLIENT_ID,
-      clientSecret: parsed.GITHUB_CLIENT_SECRET
+      clientSecret: parsed.GITHUB_CLIENT_SECRET,
+      adminLogins: parsed.AGENTFORGE_GITHUB_ADMIN_LOGINS,
+      allowedLogins: parsed.AGENTFORGE_GITHUB_ALLOWED_LOGINS
     },
     appBaseUrl: parsed.APP_BASE_URL,
     apiBaseUrl: parsed.API_BASE_URL,
@@ -129,6 +139,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConf
       dashboardAllowLocalActor: parsed.AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR ?? false,
       proxyStripsIdentityHeaders: parsed.AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS ?? false,
       apiProxySecret: parsed.AGENTFORGE_API_PROXY_SECRET
+    },
+    dashboard: {
+      organizationId: parsed.AGENTFORGE_DASHBOARD_ORGANIZATION
     }
   };
   validateProductionConfig(config);
@@ -233,8 +246,8 @@ function findDotEnv(start: string): string | undefined {
   }
 }
 
-function parseDotEnv(content: string): NodeJS.ProcessEnv {
-  const parsed: NodeJS.ProcessEnv = {};
+function parseDotEnv(content: string): Record<string, string | undefined> {
+  const parsed: Record<string, string | undefined> = {};
   for (const rawLine of content.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith("#")) {

@@ -104,6 +104,27 @@ describe("AgentForge runtime config", () => {
     expect(config.github.installationId).toBe("12345");
   });
 
+  it("loads built-in GitHub OAuth authorization settings", () => {
+    const config = loadConfig({
+      NODE_ENV: "development",
+      GITHUB_CLIENT_ID: "Iv1.local",
+      GITHUB_CLIENT_SECRET: "github-client-secret",
+      SESSION_SECRET: "session-secret",
+      AGENTFORGE_GITHUB_ADMIN_LOGINS: "octocat",
+      AGENTFORGE_GITHUB_ALLOWED_LOGINS: "hubot",
+      AGENTFORGE_DASHBOARD_ORGANIZATION: "org-dev"
+    });
+
+    expect(config.github).toMatchObject({
+      clientId: "Iv1.local",
+      clientSecret: "github-client-secret",
+      adminLogins: "octocat",
+      allowedLogins: "hubot"
+    });
+    expect(config.sessionSecret).toBe("session-secret");
+    expect(config.dashboard.organizationId).toBe("org-dev");
+  });
+
   it("loads the explicit proxy-only auth boundary flags", () => {
     const config = loadConfig(productionBaseEnv);
 
