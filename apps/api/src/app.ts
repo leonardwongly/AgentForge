@@ -878,6 +878,15 @@ export function createApp(
       });
     }
 
+    if (delivery.duplicate && delivery.status === "received") {
+      return reply.code(202).send({
+        accepted: true,
+        duplicate: true,
+        enqueued: false,
+        deliveryStatus: "received"
+      });
+    }
+
     if (!isRecoverableWebhookDeliveryForEnqueue(delivery.status)) {
       return reply.code(202).send({
         accepted: true,
@@ -4300,7 +4309,9 @@ async function findReplayableDelivery(
         where: {
           repositoryFullName: target.repositoryFullName!,
           pullRequestNumber: target.pullRequestNumber!,
-          deliveryStatus: { in: ["queued", "processing", "completed", "failed", "enqueue_failed"] },
+          deliveryStatus: {
+            in: ["received", "queued", "processing", "completed", "failed", "enqueue_failed"]
+          },
           ...(organizationId ? { organizationId } : {})
         },
         orderBy: { createdAt: "desc" }
@@ -4408,7 +4419,10 @@ async function listRecentWebhookDeliveryFailures(
       OR: [{ lastFailedAt: { not: null } }, { lastEnqueueFailedAt: { not: null } }],
       ...(organizationId ? { organizationId } : {})
     },
-    orderBy: [{ lastEnqueueFailedAt: "desc" }, { lastFailedAt: "desc" }],
+    orderBy: [
+      { lastEnqueueFailedAt: { sort: "desc", nulls: "last" } },
+      { lastFailedAt: { sort: "desc", nulls: "last" } }
+    ],
     take: QUEUE_FAILED_JOB_LIMIT
   });
   return deliveries.map((delivery) => ({
@@ -5257,6 +5271,11 @@ function repositoryReadinessScore(input: {
     input.records.length
   );
   const lowOverrideRate = input.records.length >= 3 && overrideRate <= 20;
+  const branchProtectionConfirmed = input.records.some(
+    (record) =>
+      (record.mode === "enforce" || record.mode === "optimize") &&
+      (record.checkStatus === "pass" || record.checkStatus === "warn")
+  );
   const checks = [
     readinessCheck(
       "webhook_active",
@@ -5310,10 +5329,11 @@ function repositoryReadinessScore(input: {
     {
       id: "branch_protection",
       label: "Branch protection requires the Merge Guard check",
-      status: "unknown" as const,
+      status: branchProtectionConfirmed ? ("passed" as const) : ("unknown" as const),
       weight: 10,
-      detail:
-        "Confirm branch protection in GitHub after smoke checks pass; AgentForge keeps this as an explicit admin action."
+      detail: branchProtectionConfirmed
+        ? "Verified from an enforce or optimize mode evaluation record."
+        : "Confirm branch protection in GitHub after smoke checks pass; AgentForge keeps this as an explicit admin action."
     }
   ];
   const passedWeight = checks

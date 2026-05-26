@@ -60,7 +60,7 @@ stripping are not enabled. The values above are valid only behind ingress that
 strips spoofed `x-agentforge-*` and `x-agentforge-authenticated-*` headers
 before injecting trusted `x-agentforge-authenticated-actor`,
 `x-agentforge-authenticated-role`, `x-agentforge-authenticated-organization`,
-and `x-agentforge-authenticated-signature` headers.
+`x-agentforge-signature-timestamp`, and `x-agentforge-signature` headers.
 
 For a private local smoke deployment without a stripping auth proxy, keep
 `NODE_ENV=development`, keep both `*_TRUST_PROXY_HEADERS=false`, and do not use
@@ -142,8 +142,19 @@ curl -i "$API_BASE_URL/api/settings" \
   -H "x-agentforge-organization: org_local"
 ```
 
-The expected result is `401` or `403`. If the request succeeds, do not cut over
-traffic; fix ingress header stripping before setting the GitHub App webhook URL.
+Also verify spoofed authenticated identity headers fail without a valid proxy
+signature:
+
+```bash
+curl -i "$API_BASE_URL/api/settings" \
+  -H "x-agentforge-authenticated-actor: attacker" \
+  -H "x-agentforge-authenticated-role: platform_admin" \
+  -H "x-agentforge-authenticated-organization: org_local"
+```
+
+The expected result for both requests is `401` or `403`. If either request
+succeeds, do not cut over traffic; fix ingress header stripping and proxy
+signature enforcement before setting the GitHub App webhook URL.
 
 Poll `/ready` with retry/backoff until it returns success. Do not update the
 GitHub App webhook URL until `/health`, `/ready`, and the GitHub smoke checks
@@ -180,7 +191,9 @@ public deployments:
 curl -fsS "$API_BASE_URL/api/admin/queue" \
   -H "x-agentforge-authenticated-actor: <operator-login>" \
   -H "x-agentforge-authenticated-role: platform_admin" \
-  -H "x-agentforge-authenticated-organization: <organization-id>"
+  -H "x-agentforge-authenticated-organization: <organization-id>" \
+  -H "x-agentforge-signature-timestamp: <unix-seconds>" \
+  -H "x-agentforge-signature: <proxy-signature>"
 ```
 
 Replay a specific stored webhook delivery only after confirming the failure is
@@ -192,5 +205,7 @@ curl -fsS -X POST "$API_BASE_URL/api/admin/queue/replay" \
   -H "x-agentforge-authenticated-actor: <operator-login>" \
   -H "x-agentforge-authenticated-role: platform_admin" \
   -H "x-agentforge-authenticated-organization: <organization-id>" \
+  -H "x-agentforge-signature-timestamp: <unix-seconds>" \
+  -H "x-agentforge-signature: <proxy-signature>" \
   --data '{"deliveryId":"<github-delivery-id>"}'
 ```

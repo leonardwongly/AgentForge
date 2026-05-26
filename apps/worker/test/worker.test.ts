@@ -16,9 +16,7 @@ const mockPrismaUpsert = vi.fn();
 const mockWebhookDeliveryFindUnique = vi.fn();
 const mockWebhookDeliveryUpdateMany = vi.fn();
 const mockEvaluationUpsert = vi.fn();
-const mockCheckRunFindFirst = vi.fn();
-const mockCheckRunUpdate = vi.fn();
-const mockCheckRunCreate = vi.fn();
+const mockCheckRunUpsert = vi.fn();
 vi.mock("@agentforge/db", () => {
   class MockPrismaClient {
     organization = { upsert: vi.fn().mockResolvedValue({ id: "org" }) };
@@ -51,9 +49,7 @@ vi.mock("@agentforge/db", () => {
       createMany: vi.fn().mockResolvedValue({})
     };
     checkRun = {
-      findFirst: mockCheckRunFindFirst,
-      update: mockCheckRunUpdate,
-      create: mockCheckRunCreate
+      upsert: mockCheckRunUpsert
     };
     policyVersion = { findFirst: vi.fn().mockResolvedValue({ id: "pol" }) };
     auditEvent = { upsert: vi.fn().mockResolvedValue({}) };
@@ -61,6 +57,9 @@ vi.mock("@agentforge/db", () => {
       findUnique: mockWebhookDeliveryFindUnique,
       updateMany: mockWebhookDeliveryUpdateMany
     };
+    $transaction = vi.fn(async (callback: (tx: MockPrismaClient) => Promise<unknown>) =>
+      callback(this)
+    );
   }
   return {
     PrismaClient: MockPrismaClient
@@ -99,15 +98,11 @@ describe("Merge Guard worker evaluation jobs", () => {
     mockWebhookDeliveryFindUnique.mockReset();
     mockWebhookDeliveryUpdateMany.mockReset();
     mockEvaluationUpsert.mockReset();
-    mockCheckRunFindFirst.mockReset();
-    mockCheckRunUpdate.mockReset();
-    mockCheckRunCreate.mockReset();
+    mockCheckRunUpsert.mockReset();
     mockWebhookDeliveryFindUnique.mockResolvedValue(null);
     mockWebhookDeliveryUpdateMany.mockResolvedValue({ count: 1 });
     mockEvaluationUpsert.mockResolvedValue({ id: "eval" });
-    mockCheckRunFindFirst.mockResolvedValue(null);
-    mockCheckRunUpdate.mockResolvedValue({});
-    mockCheckRunCreate.mockResolvedValue({});
+    mockCheckRunUpsert.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -311,9 +306,13 @@ describe("Merge Guard worker evaluation jobs", () => {
         where: { id: expect.stringMatching(/^eval_[a-f0-9]{32}$/u) }
       })
     );
-    expect(mockCheckRunCreate).toHaveBeenCalledWith(
+    expect(mockCheckRunUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({
+        where: { evaluationId: expect.stringMatching(/^eval_[a-f0-9]{32}$/u) },
+        update: expect.objectContaining({
+          githubCheckRunId: BigInt(42)
+        }),
+        create: expect.objectContaining({
           githubCheckRunId: BigInt(42)
         })
       })

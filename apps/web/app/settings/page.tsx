@@ -35,6 +35,8 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
   const defaultMode = selectedRepository?.mode;
   const installation = installationDisplay(settings?.githubInstallation);
   const canRecordGithubInstallation = settings?.runtimeStore === "postgres";
+  const runtimeStoreStatus = runtimeStoreDisplay(settings);
+  const exportDelivery = exportDeliveryDisplay(settings);
   const repositoryOwnerMappings =
     settings?.ownerMappings.filter((mapping) =>
       selectedRepository ? mapping.sources.includes(selectedRepository.id) : true
@@ -253,15 +255,11 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                 <div className="list-row">
                   <span>Runtime store</span>
                   <StatusBadge
-                    status={canRecordGithubInstallation ? "approved" : "low"}
-                    label={settings?.runtimeStore === "postgres" ? "Postgres" : "in-memory"}
+                    status={runtimeStoreStatus.status}
+                    label={runtimeStoreStatus.label}
                   />
                 </div>
-                <p>
-                  {settings?.runtimeCapabilities?.productionReady
-                    ? "Postgres records and Redis-backed evaluations are configured."
-                    : "Public deployments require Postgres for durable records and Redis for queued evaluations."}
-                </p>
+                <p>{runtimeStoreStatus.detail}</p>
               </li>
               <li>
                 <div className="list-row">
@@ -718,15 +716,62 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
             <li>
               <div className="list-row">
                 <span>Export delivery</span>
-                <StatusBadge status="approved" label="API job download" />
+                <StatusBadge status={exportDelivery.status} label={exportDelivery.label} />
               </div>
-              <p>Generated artifacts are retained as export jobs and downloaded through the API.</p>
+              <p>{exportDelivery.detail}</p>
             </li>
           </ul>
         </section>
       </section>
     </>
   );
+}
+
+function runtimeStoreDisplay(settings: SettingsData | undefined): {
+  status: "approved" | "warn" | "low";
+  label: string;
+  detail: string;
+} {
+  if (settings?.runtimeCapabilities?.productionReady) {
+    return {
+      status: "approved",
+      label: "Postgres + Redis",
+      detail: "Postgres records and Redis-backed evaluations are configured."
+    };
+  }
+  if (settings?.runtimeStore === "postgres") {
+    return {
+      status: "warn",
+      label: "Postgres only",
+      detail:
+        "Durable records are configured, but public deployments still require Redis for queued evaluations."
+    };
+  }
+  return {
+    status: "low",
+    label: "in-memory",
+    detail:
+      "Public deployments require Postgres for durable records and Redis for queued evaluations."
+  };
+}
+
+function exportDeliveryDisplay(settings: SettingsData | undefined): {
+  status: "approved" | "low";
+  label: string;
+  detail: string;
+} {
+  if (settings?.exports.deliveryModel === "api_job_download") {
+    return {
+      status: "approved",
+      label: "API job download",
+      detail: "Generated artifacts are retained as export jobs and downloaded through the API."
+    };
+  }
+  return {
+    status: "low",
+    label: "unavailable",
+    detail: "Export delivery is unavailable from the current runtime settings."
+  };
 }
 
 function installationDisplay(installation: SettingsData["githubInstallation"] | undefined): {

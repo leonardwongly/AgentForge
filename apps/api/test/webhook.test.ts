@@ -202,6 +202,74 @@ describe("GitHub webhook API", () => {
     await app.close();
   });
 
+  it("does not enqueue duplicate received rows left by interrupted requests", async () => {
+    process.env.GITHUB_WEBHOOK_SECRET = "secret";
+    const state = createInitialState();
+    const row = {
+      deliveryId: "delivery-received-duplicate",
+      deliveryStatus: "received",
+      enqueued: false,
+      createdAt: new Date("2026-05-26T00:00:00.000Z")
+    };
+    const prisma = {
+      repository: {
+        findFirst: vi.fn(async () => null)
+      },
+      webhookDelivery: {
+        findUnique: vi.fn(async () => row),
+        create: vi.fn(),
+        updateMany: vi.fn()
+      }
+    };
+    const queue = {
+      add: vi.fn()
+    };
+    const app = createApp(state, {
+      prisma: prisma as never,
+      evaluationQueue: queue as never
+    });
+    const payload = {
+      action: "opened",
+      repository: { id: 1, full_name: "acme/payments", default_branch: "main" },
+      pull_request: {
+        id: 2,
+        number: 3,
+        title: "PR",
+        body: "",
+        state: "open",
+        merged: false,
+        user: { login: "sam" },
+        base: { ref: "main" },
+        head: { ref: "feature/demo", sha: "sha" }
+      }
+    };
+    const body = JSON.stringify(payload);
+    const signature = `sha256=${createHmac("sha256", "secret").update(body).digest("hex")}`;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload: body,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-received-duplicate",
+        "x-github-event": "pull_request",
+        "x-hub-signature-256": signature
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({
+      accepted: true,
+      duplicate: true,
+      enqueued: false,
+      deliveryStatus: "received"
+    });
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(prisma.webhookDelivery.updateMany).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it("replays an accepted delivery through an authenticated idempotent queue path", async () => {
     process.env.GITHUB_WEBHOOK_SECRET = "secret";
     const state = createInitialState();

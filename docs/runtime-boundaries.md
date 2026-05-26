@@ -58,7 +58,8 @@ curl -fsS "$API_BASE_URL/api/settings" \
   -H "x-agentforge-authenticated-actor: <operator-login>" \
   -H "x-agentforge-authenticated-role: platform_admin" \
   -H "x-agentforge-authenticated-organization: <organization-id>" \
-  -H "x-agentforge-authenticated-signature: <proxy-signature>"
+  -H "x-agentforge-signature-timestamp: <unix-seconds>" \
+  -H "x-agentforge-signature: <proxy-signature>"
 curl -fsS "$API_BASE_URL/metrics"
 ```
 

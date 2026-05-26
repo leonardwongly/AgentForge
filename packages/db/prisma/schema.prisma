@@ -268,7 +268,7 @@ model OverrideRecord {
 
 model CheckRun {
   id               String     @id @default(uuid())
-  evaluationId     String
+  evaluationId     String     @unique
   githubCheckRunId BigInt?
   conclusion       String
   outputTitle      String
@@ -276,8 +276,6 @@ model CheckRun {
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
   evaluation       Evaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
-
-  @@index([evaluationId])
 }
 
 model WebhookDelivery {

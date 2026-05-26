@@ -24,3 +24,6 @@ SET
 
 CREATE INDEX "WebhookDelivery_deliveryStatus_createdAt_idx"
   ON "WebhookDelivery"("deliveryStatus", "createdAt");
+
+CREATE UNIQUE INDEX "CheckRun_evaluationId_key"
+  ON "CheckRun"("evaluationId");

@@ -747,7 +747,7 @@ async function checkActiveTeamMember(input: {
     );
     const active = stringValue(recordValue(response?.data)?.state)?.toLowerCase() === "active";
     if (input.cache) {
-      await input.cache.set(cacheKey, active ? "active" : "inactive", 3600); // 1 hour TTL
+      await writeMembershipCache(input.cache, cacheKey, active ? "active" : "inactive");
     }
     return {
       status: "verified",
@@ -757,7 +757,7 @@ async function checkActiveTeamMember(input: {
   } catch (error) {
     if (githubErrorStatus(error) === 404) {
       if (input.cache) {
-        await input.cache.set(cacheKey, "inactive", 3600);
+        await writeMembershipCache(input.cache, cacheKey, "inactive");
       }
       return {
         status: "verified",
@@ -775,6 +775,18 @@ async function checkActiveTeamMember(input: {
 
 function membershipCheckKey(teamSlug: string, username: string): string {
   return `${username.toLowerCase()}:${teamSlug}`;
+}
+
+async function writeMembershipCache(
+  cache: RedisCacheManager,
+  key: string,
+  value: "active" | "inactive"
+): Promise<void> {
+  try {
+    await cache.set(key, value, 3600);
+  } catch (err) {
+    console.warn("Error writing membership cache:", err);
+  }
 }
 
 class GithubRequestTimeoutError extends Error {
