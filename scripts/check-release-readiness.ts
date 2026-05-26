@@ -136,7 +136,8 @@ function checkTrackedArtifacts(): CheckResult {
   const trackedFiles = run("git", ["ls-files"]).trim().split("\n").filter(Boolean);
   const badFiles = trackedFiles.filter(
     (file) =>
-      file !== ".env.example" && disallowedTrackedPatterns.some((pattern) => pattern.test(file))
+      !file.endsWith(".env.example") &&
+      disallowedTrackedPatterns.some((pattern) => pattern.test(file))
   );
   return {
     name: "local secrets and generated artifacts are not tracked",
