@@ -770,7 +770,7 @@ export function createApp(
     credentials: true
   });
   void app.register(rateLimit, {
-    max: 120,
+    max: config.nodeEnv === "test" ? 1_000 : 120,
     timeWindow: "1 minute"
   });
 
