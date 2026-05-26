@@ -59,6 +59,13 @@ type PersistedWorkerRecordRefs = {
   recordId: string;
 };
 
+type CheckPublicationResult = {
+  published: boolean;
+  id?: number | undefined;
+  conclusion?: CheckRunPayload["conclusion"] | undefined;
+  reused?: boolean | undefined;
+};
+
 let workerPrisma: PrismaClient | undefined;
 
 const WORKER_FAILURE_MESSAGE_LIMIT = 500;
@@ -216,14 +223,20 @@ export async function processMergeGuardEvaluationJob(
       })
     : undefined;
   const checkRun = buildCheckRunPayload(pr, result);
-  const published = await publishCheckIfConfigured({
-    data,
-    githubContext,
-    result,
-    pr,
-    detailsUrl: persistedRecord
-      ? recordDetailsUrl(config.appBaseUrl, persistedRecord.recordId)
-      : undefined
+  const published = await publishCheckOnce({
+    prisma,
+    deliveryId: data.deliveryId,
+    checkConclusion: checkRun.conclusion,
+    publish: () =>
+      publishCheckIfConfigured({
+        data,
+        githubContext,
+        result,
+        pr,
+        detailsUrl: persistedRecord
+          ? recordDetailsUrl(config.appBaseUrl, persistedRecord.recordId)
+          : undefined
+      })
   });
 
   if (prisma) {
@@ -860,7 +873,7 @@ async function publishCheckIfConfigured(input: {
   pr: PullRequestInput;
   result: PolicyResult;
   detailsUrl?: string | undefined;
-}): Promise<{ published: boolean; id?: number | undefined }> {
+}): Promise<CheckPublicationResult> {
   if (input.data.githubCheckPublisher) {
     const published = await input.data.githubCheckPublisher({
       owner: input.githubContext.owner,
@@ -869,7 +882,7 @@ async function publishCheckIfConfigured(input: {
       result: input.result,
       detailsUrl: input.detailsUrl
     });
-    return { published: true, id: published.id };
+    return { published: true, id: published.id, conclusion: published.conclusion };
   }
   if (input.githubContext.checkPublisherClient) {
     const published = await publishMergeGuardCheckWithClient({
@@ -880,9 +893,58 @@ async function publishCheckIfConfigured(input: {
       result: input.result,
       detailsUrl: input.detailsUrl
     });
-    return { published: true, id: published.id };
+    return { published: true, id: published.id, conclusion: published.conclusion };
   }
   return { published: false };
+}
+
+async function publishCheckOnce(input: {
+  prisma: PrismaClient | undefined;
+  deliveryId: string;
+  checkConclusion: CheckRunPayload["conclusion"];
+  publish: () => Promise<CheckPublicationResult>;
+}): Promise<CheckPublicationResult> {
+  const previous = input.prisma
+    ? await input.prisma.webhookDelivery.findUnique({
+        where: { deliveryId: input.deliveryId },
+        select: {
+          publishedCheckRunId: true,
+          checkConclusion: true,
+          checkPublishedAt: true
+        }
+      })
+    : undefined;
+  if (previous?.checkPublishedAt) {
+    return {
+      published: true,
+      id: previous.publishedCheckRunId ? Number(previous.publishedCheckRunId) : undefined,
+      conclusion: checkConclusionFromStoredValue(previous.checkConclusion) ?? input.checkConclusion,
+      reused: true
+    };
+  }
+
+  const published = await input.publish();
+  if (input.prisma && published.published) {
+    await input.prisma.webhookDelivery.updateMany({
+      where: { deliveryId: input.deliveryId },
+      data: {
+        publishedCheckRunId: published.id ? BigInt(published.id) : null,
+        checkConclusion: published.conclusion ?? input.checkConclusion,
+        checkPublishedAt: new Date()
+      }
+    });
+  }
+  return {
+    ...published,
+    conclusion: published.conclusion ?? input.checkConclusion,
+    reused: false
+  };
+}
+
+function checkConclusionFromStoredValue(
+  value: string | null | undefined
+): CheckRunPayload["conclusion"] | undefined {
+  return value === "success" || value === "failure" || value === "neutral" ? value : undefined;
 }
 
 function recordDetailsUrl(appBaseUrl: string, recordId: string): string {
@@ -977,11 +1039,18 @@ async function persistWorkerRecord(input: {
       deliveryId: envelope?.deliveryId
     }
   });
+  const auditId = workerAuditEventId({
+    deliveryId: envelope?.deliveryId,
+    recordId: persistedRecord.recordId,
+    headSha: record.headSha,
+    policyVersion: record.policyVersion,
+    policyPackId: record.policyPackId
+  });
   await prisma.auditEvent.upsert({
-    where: { id: audit.id },
+    where: { id: auditId },
     update: {},
     create: {
-      id: audit.id,
+      id: auditId,
       organizationId: audit.organizationId,
       repositoryId: audit.repositoryId ?? null,
       pullRequestId: audit.pullRequestId ?? null,
@@ -1135,17 +1204,35 @@ async function persistWorkerEvaluationSnapshot(input: {
   publishedCheckRunId?: number | undefined;
 }): Promise<void> {
   const policyVersion = await ensureWorkerPolicyVersionSnapshot(input);
-  const evaluation = await input.prisma.evaluation.create({
-    data: {
-      pullRequestId: input.pullRequestId,
-      policyVersionId: policyVersion.id,
-      mode: input.record.mode,
-      status: input.record.checkStatus,
-      headSha: input.record.headSha,
-      completedAt: new Date(input.record.updatedAt),
-      explanationJson: explainChangeControlRecord(input.record) as never
+  const evaluationId = workerEvaluationId({
+    pullRequestId: input.pullRequestId,
+    headSha: input.record.headSha,
+    policyVersionId: policyVersion.id,
+    policyVersion: input.record.policyVersion,
+    policyPackId: input.record.policyPackId
+  });
+  const evaluationData = {
+    pullRequestId: input.pullRequestId,
+    policyVersionId: policyVersion.id,
+    mode: input.record.mode,
+    status: input.record.checkStatus,
+    headSha: input.record.headSha,
+    completedAt: new Date(input.record.updatedAt),
+    explanationJson: explainChangeControlRecord(input.record) as never
+  };
+  const evaluation = await input.prisma.evaluation.upsert({
+    where: { id: evaluationId },
+    update: evaluationData,
+    create: {
+      id: evaluationId,
+      ...evaluationData
     }
   });
+  await Promise.all([
+    input.prisma.verifiedFactRecord.deleteMany({ where: { evaluationId: evaluation.id } }),
+    input.prisma.evidenceRequirementRecord.deleteMany({ where: { evaluationId: evaluation.id } }),
+    input.prisma.reviewerRequirementRecord.deleteMany({ where: { evaluationId: evaluation.id } })
+  ]);
   if (input.record.verifiedFindings.length > 0) {
     await input.prisma.verifiedFactRecord.createMany({
       data: input.record.verifiedFindings.map((fact) => ({
@@ -1192,16 +1279,70 @@ async function persistWorkerEvaluationSnapshot(input: {
       }))
     });
   }
-  await input.prisma.checkRun.create({
-    data: {
-      evaluationId: evaluation.id,
-      githubCheckRunId: input.publishedCheckRunId ? BigInt(input.publishedCheckRunId) : null,
-      conclusion: input.checkConclusion,
-      outputTitle: "AgentForge Merge Guard",
-      outputSummary: explainChangeControlRecord(input.record).join(" "),
-      updatedAt: new Date(input.record.updatedAt)
-    }
+  const checkRunData = {
+    evaluationId: evaluation.id,
+    githubCheckRunId: input.publishedCheckRunId ? BigInt(input.publishedCheckRunId) : null,
+    conclusion: input.checkConclusion,
+    outputTitle: "AgentForge Merge Guard",
+    outputSummary: explainChangeControlRecord(input.record).join(" "),
+    updatedAt: new Date(input.record.updatedAt)
+  };
+  const existingCheckRun = await input.prisma.checkRun.findFirst({
+    where: { evaluationId: evaluation.id },
+    select: { id: true }
   });
+  if (existingCheckRun) {
+    await input.prisma.checkRun.update({
+      where: { id: existingCheckRun.id },
+      data: checkRunData
+    });
+  } else {
+    await input.prisma.checkRun.create({
+      data: checkRunData
+    });
+  }
+}
+
+function workerEvaluationId(input: {
+  pullRequestId: string;
+  headSha: string;
+  policyVersionId: string;
+  policyVersion: string;
+  policyPackId?: string | null | undefined;
+}): string {
+  return `eval_${createHash("sha256")
+    .update(
+      [
+        input.pullRequestId,
+        input.headSha,
+        input.policyVersionId,
+        input.policyVersion,
+        input.policyPackId ?? ""
+      ].join(":")
+    )
+    .digest("hex")
+    .slice(0, 32)}`;
+}
+
+function workerAuditEventId(input: {
+  deliveryId?: string | undefined;
+  recordId: string;
+  headSha: string;
+  policyVersion: string;
+  policyPackId?: string | null | undefined;
+}): string {
+  return `audit_${createHash("sha256")
+    .update(
+      [
+        input.deliveryId ?? "manual",
+        input.recordId,
+        input.headSha,
+        input.policyVersion,
+        input.policyPackId ?? ""
+      ].join(":")
+    )
+    .digest("hex")
+    .slice(0, 32)}`;
 }
 
 async function ensureWorkerPolicyVersionSnapshot(input: {

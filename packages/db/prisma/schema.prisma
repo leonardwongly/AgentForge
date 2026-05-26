@@ -296,6 +296,9 @@ model WebhookDelivery {
   queuedAt                  DateTime?
   processingStartedAt       DateTime?
   completedAt               DateTime?
+  publishedCheckRunId       BigInt?
+  checkConclusion           String?
+  checkPublishedAt          DateTime?
   lastEnqueueFailureClass   String?
   lastEnqueueFailureMessage String?
   lastEnqueueFailedAt       DateTime?

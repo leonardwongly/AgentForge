@@ -4,6 +4,9 @@ ALTER TABLE "WebhookDelivery"
   ADD COLUMN "queuedAt" TIMESTAMP(3),
   ADD COLUMN "processingStartedAt" TIMESTAMP(3),
   ADD COLUMN "completedAt" TIMESTAMP(3),
+  ADD COLUMN "publishedCheckRunId" BIGINT,
+  ADD COLUMN "checkConclusion" TEXT,
+  ADD COLUMN "checkPublishedAt" TIMESTAMP(3),
   ADD COLUMN "lastEnqueueFailureClass" TEXT,
   ADD COLUMN "lastEnqueueFailureMessage" TEXT,
   ADD COLUMN "lastEnqueueFailedAt" TIMESTAMP(3);
