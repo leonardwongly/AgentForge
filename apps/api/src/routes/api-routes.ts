@@ -1193,11 +1193,9 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         ? record.requiredEvidence.filter((item) => item.id === body.evidenceId)
         : record.requiredEvidence.filter((item) => item.kind === body.kind);
       if (!body.evidenceId && matches.length > 1) {
-        return reply
-          .code(409)
-          .send({
-            error: "evidenceId is required when multiple requirements share the same kind."
-          });
+        return reply.code(409).send({
+          error: "evidenceId is required when multiple requirements share the same kind."
+        });
       }
       const [evidence] = matches;
       if (!evidence) {
