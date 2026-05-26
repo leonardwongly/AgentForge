@@ -12,9 +12,14 @@ export type GitHubOAuthRuntime = {
   };
 };
 
+let cachedRuntime: GitHubOAuthRuntime | undefined;
+
 export function githubOAuthRuntime(env: NodeJS.ProcessEnv = process.env): GitHubOAuthRuntime {
+  if (env === process.env && cachedRuntime) {
+    return cachedRuntime;
+  }
   const config = loadConfig(env);
-  return {
+  const runtime = {
     clientId: config.github.clientId,
     clientSecret: config.github.clientSecret,
     sessionSecret: config.sessionSecret,
@@ -25,4 +30,8 @@ export function githubOAuthRuntime(env: NodeJS.ProcessEnv = process.env): GitHub
       AGENTFORGE_GITHUB_ALLOWED_LOGINS: config.github.allowedLogins
     }
   };
+  if (env === process.env) {
+    cachedRuntime = runtime;
+  }
+  return runtime;
 }
