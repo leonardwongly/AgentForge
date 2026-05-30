@@ -30,7 +30,9 @@ import {
   exportComplianceEvidencePackageJson,
   explainChangeControlRecord,
   generatePolicyTuningReport,
-  sanitizeChangeControlRecord
+  proposePolicyTuningActions,
+  sanitizeChangeControlRecord,
+  withEvidenceDrafts
 } from "@agentforge/records";
 import { previewCodeowners } from "@agentforge/reviewers";
 import { summarizeSafeSnippet, type MetadataStoragePolicy } from "@agentforge/security";
@@ -354,7 +356,6 @@ type ResolvedApiRouteContext = {
     prisma: PrismaClient | undefined,
     input: { id: string; organizationId: string; actor: string }
   ) => Promise<GithubInstallation | undefined>;
-  repositoryIdFromFullName: (fullName: string) => string;
   repositoryOrganizationId: (
     state: AppState,
     prisma: PrismaClient | undefined,
@@ -484,6 +485,33 @@ function handleAuthzFailure(
   });
 }
 
+function requireOperationalEndpointAccess(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  config: ApiConfig,
+  endpointName: string
+): true | ReturnType<typeof handleAuthzFailure> {
+  if (config.nodeEnv !== "production") {
+    return true;
+  }
+
+  const actor = requireApiActor(request);
+  if (isAuthzFailure(actor)) {
+    return handleAuthzFailure(request, reply, actor);
+  }
+
+  const allowed = requireRole(
+    actor,
+    ["platform_admin", "engineering_manager", "auditor"],
+    endpointName
+  );
+  if (isAuthzFailure(allowed)) {
+    return handleAuthzFailure(request, reply, allowed);
+  }
+
+  return true;
+}
+
 export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext): void {
   const {
     apiCache,
@@ -543,7 +571,6 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     recordsVisibleTo,
     recomputeRequirementStatus,
     rejectGithubInstallation,
-    repositoryIdFromFullName,
     repositoryOrganizationId,
     repositoryReadinessScore,
     repositorySettingsPatchSchema,
@@ -571,17 +598,20 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
   void app.register(async function systemRoutes(app) {
     app.get("/health", async () => ({
       status: "ok",
-      database: config.databaseUrl ? "configured" : "not_configured",
-      workerQueue: config.redisUrl ? "configured" : "in_memory",
-      runtimeStore: prisma ? "postgres" : "in_memory",
-      unsignedWebhookMode:
-        !config.github.webhookSecret && config.github.allowUnsignedWebhooks
-          ? "enabled"
-          : "disabled",
       version: AGENTFORGE_VERSION
     }));
 
-    app.get("/ready", async (_request, reply) => {
+    app.get("/ready", async (request, reply) => {
+      const operationalAccess = requireOperationalEndpointAccess(
+        request,
+        reply,
+        config,
+        "Readiness inspection"
+      );
+      if (operationalAccess !== true) {
+        return operationalAccess;
+      }
+
       const queue = await queueOperationalStatus({ state, evaluationQueue });
       const ready = queue.status === "ready";
       return reply.code(ready ? 200 : 503).send({
@@ -594,7 +624,17 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       });
     });
 
-    app.get("/metrics", async (_request, reply) => {
+    app.get("/metrics", async (request, reply) => {
+      const operationalAccess = requireOperationalEndpointAccess(
+        request,
+        reply,
+        config,
+        "Metrics inspection"
+      );
+      if (operationalAccess !== true) {
+        return operationalAccess;
+      }
+
       const body = await collectPrometheusMetrics({ state, prisma, evaluationQueue, config });
       return reply.header("content-type", "text/plain; version=0.0.4; charset=utf-8").send(body);
     });
@@ -1418,19 +1458,22 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       }
       const body = parsedBody.data;
       let actor: ApiActor | undefined;
-      if (body.persist) {
+      const requiresStoredPolicyAccess = body.persist || body.contentYaml === undefined;
+      if (requiresStoredPolicyAccess) {
         const resolvedActor = requireApiActor(request);
         if (isAuthzFailure(resolvedActor)) {
           return handleAuthzFailure(request, reply, resolvedActor);
         }
         actor = resolvedActor;
-        const allowed = requireRole(
-          resolvedActor,
-          ["platform_admin", "engineering_manager"],
-          "Persisted policy preview"
-        );
-        if (!allowed.ok) {
-          return handleAuthzFailure(request, reply, allowed);
+        if (body.persist) {
+          const allowed = requireRole(
+            resolvedActor,
+            ["platform_admin", "engineering_manager"],
+            "Persisted policy preview"
+          );
+          if (!allowed.ok) {
+            return handleAuthzFailure(request, reply, allowed);
+          }
         }
       }
       if (!body.pr) {
@@ -1442,14 +1485,26 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       ) {
         return reply.code(400).send({ error: "pr.repositoryFullName is required" });
       }
-      const repositoryId = await findRepositoryIdByFullName(
-        state,
-        prisma,
-        body.pr.repositoryFullName
-      );
-      const activePolicy = await getRepositoryPolicy(
-        repositoryId ?? repositoryIdFromFullName(body.pr.repositoryFullName)
-      );
+      const repositoryId = requiresStoredPolicyAccess
+        ? await findRepositoryIdByFullName(state, prisma, body.pr.repositoryFullName)
+        : undefined;
+      const repositoryOrganization = repositoryId
+        ? await repositoryOrganizationId(state, prisma, repositoryId)
+        : undefined;
+      if (repositoryId && !repositoryOrganization) {
+        return reply.code(404).send({ error: "Repository not found" });
+      }
+      if (repositoryId && actor && repositoryOrganization) {
+        const tenantAccess = requireOrganizationAccess(
+          actor,
+          repositoryOrganization,
+          body.persist ? "Persisted policy preview" : "Stored policy preview"
+        );
+        if (!tenantAccess.ok) {
+          return handleAuthzFailure(request, reply, tenantAccess);
+        }
+      }
+      const activePolicy = repositoryId ? await getRepositoryPolicy(repositoryId) : undefined;
       const contentYaml = body.contentYaml ?? activePolicy?.contentYaml;
       if (!contentYaml) {
         return reply
@@ -1463,23 +1518,6 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         storagePolicy
       };
       if (repositoryId) {
-        if (body.persist) {
-          const repositoryOrganization = await repositoryOrganizationId(
-            state,
-            prisma,
-            repositoryId
-          );
-          if (repositoryOrganization) {
-            const tenantAccess = requireOrganizationAccess(
-              actor!,
-              repositoryOrganization,
-              "Persisted policy preview"
-            );
-            if (!tenantAccess.ok) {
-              return handleAuthzFailure(request, reply, tenantAccess);
-            }
-          }
-        }
         evaluationInput.repositoryId = repositoryId;
         const modeOverride = await getRepositoryModeOverride(state, prisma, repositoryId);
         if (modeOverride) {
@@ -1487,6 +1525,31 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         }
       }
       const output = evaluateFixturePr(evaluationInput);
+      if (!body.persist && actor && repositoryId && activePolicy && repositoryOrganization) {
+        await audit({
+          organizationId: repositoryOrganization,
+          repositoryId,
+          actor: actor.login,
+          actorRole: actor.role,
+          action: "policy_previewed",
+          targetType: "policy",
+          targetId: activePolicy.contentHash,
+          policyVersion: output.result.policyVersion,
+          policyPackId: output.result.policyPackId,
+          policyPackVersion: output.result.policyPackVersion,
+          requestId: request.id,
+          metadataJson: {
+            mode: output.result.mode,
+            status: output.result.status,
+            policyVersion: output.result.policyVersion,
+            policyPackId: output.result.policyPackId,
+            policyPackVersion: output.result.policyPackVersion,
+            repositoryFullName: body.pr.repositoryFullName,
+            previewPersisted: false,
+            actorRole: actor.role
+          }
+        });
+      }
       if (!body.persist) {
         return safe({ ...output, persisted: false });
       }
@@ -1571,7 +1634,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         return handleAuthzFailure(request, reply, tenantAccess);
       }
       return {
-        record: sanitizeChangeControlRecord(record, storagePolicy),
+        record: sanitizeChangeControlRecord(withEvidenceDrafts(record), storagePolicy),
         explanation: explainChangeControlRecord(record)
       };
     });
@@ -1592,7 +1655,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           return reply.code(404).send({ error: "Change Control Record not found" });
         }
         return {
-          record: sanitizeChangeControlRecord(record, storagePolicy),
+          record: sanitizeChangeControlRecord(withEvidenceDrafts(record), storagePolicy),
           explanation: explainChangeControlRecord(record)
         };
       }
@@ -2127,8 +2190,10 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         filterAndSortRecords(await recordsVisibleTo(actor), query.data),
         query.data
       );
+      const report = generatePolicyTuningReport(page.records);
       return {
-        ...safe(generatePolicyTuningReport(page.records)),
+        ...safe(report),
+        proposals: safe(proposePolicyTuningActions(report)),
         pageInfo: page.pageInfo
       };
     });

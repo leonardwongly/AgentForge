@@ -2,6 +2,17 @@ import { afterEach, describe, expect, it } from "vitest";
 import { apiActorHeaders } from "./api-actor-headers";
 import type { DashboardActorContext } from "./actor-context";
 
+const mutableEnvKeys = [
+  "NODE_ENV",
+  "AGENTFORGE_API_TRUST_PROXY_HEADERS",
+  "AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS",
+  "AGENTFORGE_API_PROXY_SECRET"
+] as const;
+const originalEnv = new Map<string, string | undefined>(
+  mutableEnvKeys.map((key) => [key, process.env[key]])
+);
+const mutableEnv = process.env as Record<string, string | undefined>;
+
 const sessionActor: DashboardActorContext = {
   login: "octocat",
   role: "platform_admin",
@@ -11,12 +22,26 @@ const sessionActor: DashboardActorContext = {
 
 describe("apiActorHeaders", () => {
   afterEach(() => {
-    delete process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS;
-    delete process.env.AGENTFORGE_API_PROXY_SECRET;
+    for (const key of mutableEnvKeys) {
+      const originalValue = originalEnv.get(key);
+      if (originalValue === undefined) {
+        delete mutableEnv[key];
+      } else {
+        mutableEnv[key] = originalValue;
+      }
+    }
   });
 
-  it("uses local actor headers when API proxy header trust is disabled", () => {
-    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "false";
+  it("requires explicit local API header mode before forwarding raw actor headers", () => {
+    mutableEnv.NODE_ENV = "development";
+    mutableEnv.AGENTFORGE_API_TRUST_PROXY_HEADERS = "false";
+    delete mutableEnv.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS;
+
+    expect(() => apiActorHeaders(sessionActor)).toThrow(
+      "AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=true is required"
+    );
+
+    mutableEnv.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS = "true";
 
     expect(apiActorHeaders(sessionActor)).toEqual({
       "x-agentforge-actor": "octocat",

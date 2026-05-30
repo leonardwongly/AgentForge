@@ -15,3 +15,14 @@ test-results/
 .playwright-mcp/
 .DS_Store
 packages/db/prisma/generated/
+
+# Mobile local/generated outputs
+apps/android/.gradle/
+apps/android/**/build/
+apps/android/local.properties
+*.apk
+*.aab
+apps/ios/**/DerivedData/
+apps/ios/**/*.xcuserdata/
+apps/ios/**/*.xcuserstate
+artifacts/

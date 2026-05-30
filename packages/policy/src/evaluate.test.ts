@@ -244,4 +244,36 @@ sensitive_paths:
     expect(result.findings.map((finding) => finding.type)).toContain("sensitive_path_changed");
     expect(result.requiredEvidence.map((item) => item.kind)).toContain("rollback_plan");
   });
+
+  it("only blocks under blocking modes for the same unresolved blocking rule", async () => {
+    const policyFor = (mode: string) => `
+version: 1
+agentforge:
+  mode: ${mode}
+  apply_to:
+    - all_pull_requests
+sensitive_paths:
+  billing:
+    paths:
+      - "src/billing/**"
+    action: block
+    required_reviewers:
+      - "billing-owner"
+    required_evidence:
+      - "rollback_plan"
+`;
+    const pr = await load("billing-path.json");
+    const statusByMode: Record<string, string> = {
+      observe: "pass",
+      warn: "warn",
+      enforce: "block",
+      optimize: "block"
+    };
+    for (const [mode, expectedStatus] of Object.entries(statusByMode)) {
+      const parsed = parsePolicyYaml(policyFor(mode));
+      const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(parsed.config));
+      const result = evaluateMergeGuard(pr, facts, parsed.config);
+      expect(result.status).toBe(expectedStatus);
+    }
+  });
 });

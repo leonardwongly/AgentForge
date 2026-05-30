@@ -26,7 +26,7 @@ Include:
 - Configure `SESSION_SECRET`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_CLIENT_SECRET`, and `AGENTFORGE_API_PROXY_SECRET` through a secret manager or protected environment variables.
 - Use trusted proxy identity headers only behind ingress that strips spoofable client-supplied identity headers.
 - Rotate GitHub App keys and OAuth credentials after suspected exposure.
-- Run `pnpm audit --audit-level high`, `pnpm lint`, `pnpm typecheck`, and `pnpm test` before release.
+- Run `pnpm audit --audit-level moderate`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, and `gitleaks detect --source . --redact --config .gitleaks.toml` before release.
 
 ## Scope
 

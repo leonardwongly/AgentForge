@@ -10,6 +10,7 @@ import type {
   PullRequestInput
 } from "@agentforge/core";
 import {
+  generateAiDraftForEvidence,
   redactObject,
   sanitizeForMetadataStorage,
   summarizeSafeSnippet,
@@ -65,6 +66,25 @@ export type PolicyTuningReport = {
   insights: PolicyTuningInsight[];
 };
 
+// A human-gated proposal derived from a tuning insight. The literal
+// `applied: false` and `requiresApproval: true` types encode the roadmap rule
+// that tuning never auto-mutates policy; acting on a proposal requires an
+// explicit, authorized approval step (handled outside this pure primitive).
+export type PolicyTuningProposal = {
+  insightId: string;
+  category: PolicyTuningInsight["category"];
+  severity: PolicyTuningInsight["severity"];
+  title: string;
+  recommendation: string;
+  rationale: string;
+  citations: PolicyTuningCitation[];
+  guardrail: string;
+  status: "proposed";
+  requiresApproval: true;
+  applied: false;
+  proposedAt: string;
+};
+
 export type ComplianceEvidencePackageFilters = {
   repositoryId?: string | undefined;
   policyPackId?: string | undefined;
@@ -115,6 +135,12 @@ export type ComplianceControlMapping = {
   findingTypes: string[];
   evidenceKinds: string[];
   reviewerRequirements: string[];
+  frameworks: ComplianceFrameworkReference[];
+};
+
+export type ComplianceFrameworkReference = {
+  framework: string;
+  controls: string[];
 };
 
 export type ComplianceRecordSummary = {
@@ -351,6 +377,40 @@ export function sanitizeChangeControlRecord(
   return sanitizeForMetadataStorage(redactObject(record), storagePolicy);
 }
 
+// Populate advisory, no-egress AI drafts on evidence requirements that still
+// need to be satisfied, giving reviewers a starting point. Drafts are advisory
+// only and never change the check status or decision.
+export function withEvidenceDrafts(record: ChangeControlRecord): ChangeControlRecord {
+  const pr: PullRequestInput = {
+    repositoryFullName: record.repositoryFullName,
+    pullRequestNumber: record.pullRequestNumber,
+    title: `PR #${record.pullRequestNumber}`,
+    authorLogin: "",
+    baseBranch: record.baseBranch,
+    headBranch: "",
+    headSha: record.headSha,
+    changedFiles: []
+  };
+  return {
+    ...record,
+    requiredEvidence: record.requiredEvidence.map((evidence) => {
+      if (evidence.status === "approved" || evidence.aiDraft) {
+        return evidence;
+      }
+      const finding = record.verifiedFindings.find(
+        (fact) => fact.id === evidence.requiredByFindingId
+      );
+      if (!finding) {
+        return evidence;
+      }
+      return {
+        ...evidence,
+        aiDraft: generateAiDraftForEvidence({ kind: evidence.kind, finding, pr })
+      };
+    })
+  };
+}
+
 export function generatePolicyTuningReport(
   records: ChangeControlRecord[],
   now = new Date().toISOString()
@@ -401,6 +461,34 @@ export function generatePolicyTuningReport(
       .filter((insight): insight is PolicyTuningInsight => Boolean(insight))
       .sort((a, b) => severityRank(a.severity) - severityRank(b.severity))
   };
+}
+
+// Convert a read-only tuning report into explicit, unapplied proposals a
+// platform admin can later approve. This never mutates policy; it only proposes.
+export function proposePolicyTuningActions(
+  report: PolicyTuningReport,
+  options: { minSeverity?: PolicyTuningInsight["severity"]; now?: string } = {}
+): PolicyTuningProposal[] {
+  const threshold = severityRank(options.minSeverity ?? "low");
+  const proposedAt = options.now ?? new Date().toISOString();
+  return report.insights
+    .filter((insight) => severityRank(insight.severity) <= threshold)
+    .map(
+      (insight): PolicyTuningProposal => ({
+        insightId: insight.id,
+        category: insight.category,
+        severity: insight.severity,
+        title: insight.title,
+        recommendation: insight.recommendation,
+        rationale: insight.rationale,
+        citations: insight.citations,
+        guardrail: insight.guardrail,
+        status: "proposed",
+        requiresApproval: true,
+        applied: false,
+        proposedAt
+      })
+    );
 }
 
 export function exportChangeControlRecordsJson(
@@ -682,6 +770,7 @@ export function requiredAuditMetadataFields(action: AuditEventAction): string[] 
   const common = ["schemaVersion", "actorRole", "source"];
   const fieldsByAction: Record<AuditEventAction, string[]> = {
     policy_changed: ["contentHash", "policyVersion"],
+    policy_previewed: ["mode", "status", "policyVersion"],
     override_created: ["reason", "scope", "policyVersion", "recordId"],
     evidence_provided: ["kind", "recordId"],
     evidence_approved: ["kind", "recordId"],
@@ -719,6 +808,7 @@ function auditEventBelongsToRecord(event: AuditEventRecord, record: ChangeContro
 function isRepositoryLifecycleAuditEvent(event: AuditEventRecord): boolean {
   return (
     event.action === "policy_changed" ||
+    event.action === "policy_previewed" ||
     event.action === "repository_settings_changed" ||
     event.action === "retention_changed" ||
     event.action === "owner_mapping_changed"
@@ -792,6 +882,7 @@ function complianceControlsForRecords(records: ChangeControlRecord[]): Complianc
         controlFamily,
         title: complianceControlTitle(controlFamily),
         rationale: complianceControlRationale(controlFamily),
+        frameworks: complianceFrameworkReferences(controlFamily),
         recordIds: uniqueAffectedRecords.map((record) => record.id),
         repositoryFullNames: [
           ...new Set(uniqueAffectedRecords.map((record) => record.repositoryFullName))
@@ -918,6 +1009,52 @@ function complianceControlRationale(controlFamily: string): string {
       "Every evaluated pull request is a governed production change candidate."
   };
   return rationales[controlFamily] ?? "Mapped from deterministic AgentForge record metadata.";
+}
+
+// External framework references for each internal control family. These are
+// deterministic mapping aids (see manifest limitations) and still require human
+// auditor review; they are not a compliance certification.
+function complianceFrameworkReferences(controlFamily: string): ComplianceFrameworkReference[] {
+  const references: Record<string, ComplianceFrameworkReference[]> = {
+    DEPLOYMENT_ROLLBACK_READINESS: [
+      { framework: "SOC 2", controls: ["A1.2", "CC8.1"] },
+      { framework: "ISO/IEC 27001:2022", controls: ["A.8.13", "A.8.32"] }
+    ],
+    EXCEPTION_MANAGEMENT: [
+      { framework: "SOC 2", controls: ["CC8.1"] },
+      { framework: "ISO/IEC 27001:2022", controls: ["A.5.4", "A.8.32"] }
+    ],
+    HUMAN_APPROVAL_GOVERNANCE: [
+      { framework: "SOC 2", controls: ["CC1.1", "CC8.1"] },
+      { framework: "ISO/IEC 27001:2022", controls: ["A.5.4", "A.8.32"] }
+    ],
+    PCI_DSS_6_SECURE_DEVELOPMENT: [
+      { framework: "SOC 2", controls: ["CC8.1"] },
+      { framework: "ISO/IEC 27001:2022", controls: ["A.8.25", "A.8.28"] },
+      { framework: "PCI DSS v4.0", controls: ["6.2", "6.3"] }
+    ],
+    REGULATED_WORKLOAD_GOVERNANCE: [
+      { framework: "SOC 2", controls: ["CC3.1"] },
+      { framework: "ISO/IEC 27001:2022", controls: ["A.5.31", "A.5.36"] }
+    ],
+    SDLC_TESTING_ASSURANCE: [
+      { framework: "SOC 2", controls: ["CC8.1"] },
+      { framework: "ISO/IEC 27001:2022", controls: ["A.8.29", "A.8.31"] }
+    ],
+    SOC2_CC6_ACCESS_CONTROL: [
+      { framework: "SOC 2", controls: ["CC6.1", "CC6.3"] },
+      { framework: "ISO/IEC 27001:2022", controls: ["A.5.15", "A.8.3"] }
+    ],
+    SOC2_CC7_SECURITY_MONITORING: [
+      { framework: "SOC 2", controls: ["CC7.2", "CC7.3"] },
+      { framework: "ISO/IEC 27001:2022", controls: ["A.5.25", "A.8.16"] }
+    ],
+    SOC2_CC8_CHANGE_MANAGEMENT: [
+      { framework: "SOC 2", controls: ["CC8.1"] },
+      { framework: "ISO/IEC 27001:2022", controls: ["A.8.32"] }
+    ]
+  };
+  return references[controlFamily] ?? [];
 }
 
 function complianceTimelineForRecords(

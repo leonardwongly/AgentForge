@@ -44,12 +44,13 @@ const requiredServices: ServiceCheck[] = [
 ];
 
 export async function runDevPreflight(): Promise<CheckResult[]> {
-  const [envResult, dockerResult, ...serviceResults] = await Promise.all([
+  const [envResult, localActorResult, dockerResult, ...serviceResults] = await Promise.all([
     checkEnvFile(),
+    checkLocalActorExposure(),
     checkDockerCli(),
     ...requiredServices.map(checkService)
   ]);
-  return [envResult, dockerResult, ...serviceResults];
+  return [envResult, localActorResult, dockerResult, ...serviceResults];
 }
 
 export function formatPreflightReport(results: CheckResult[]): string {
@@ -88,6 +89,50 @@ async function checkEnvFile(): Promise<CheckResult> {
   }
 }
 
+export function checkLocalActorExposure(
+  env: Record<string, string | undefined> = process.env
+): CheckResult {
+  const localActorEnabled =
+    env.AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR === "true" ||
+    env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS === "true";
+  if (!localActorEnabled) {
+    return {
+      name: "Local actor exposure",
+      ok: true,
+      required: true,
+      detail: "local actor fallback is disabled"
+    };
+  }
+
+  const configuredUrls = [
+    ["APP_BASE_URL", env.APP_BASE_URL ?? "http://localhost:3000"],
+    ["NEXT_PUBLIC_APP_URL", env.NEXT_PUBLIC_APP_URL],
+    ["API_BASE_URL", env.API_BASE_URL ?? "http://localhost:4000"]
+  ] as const;
+  const unsafeUrls = configuredUrls.filter(
+    ([, value]) => value !== undefined && !isLoopbackUrl(value)
+  );
+  if (unsafeUrls.length === 0) {
+    return {
+      name: "Local actor exposure",
+      ok: true,
+      required: true,
+      detail: "local actor fallback is enabled only for loopback URLs"
+    };
+  }
+
+  return {
+    name: "Local actor exposure",
+    ok: false,
+    required: true,
+    detail: `local actor fallback is enabled with non-local URL(s): ${unsafeUrls
+      .map(([name, value]) => `${name}=${value}`)
+      .join(", ")}`,
+    remediation:
+      "Disable local actor fallback/header mode or set APP_BASE_URL, NEXT_PUBLIC_APP_URL, and API_BASE_URL to localhost, 127.0.0.1, or [::1]."
+  };
+}
+
 function checkDockerCli(): CheckResult {
   const result = spawnSync("docker", ["info", "--format", "{{.ServerVersion}}"], {
     encoding: "utf8",
@@ -110,6 +155,15 @@ function checkDockerCli(): CheckResult {
     remediation:
       "Start Docker Desktop or another Docker-compatible runtime, then run `docker compose up -d postgres redis minio`."
   };
+}
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
 }
 
 async function checkService(service: ServiceCheck): Promise<CheckResult> {

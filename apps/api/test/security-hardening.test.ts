@@ -207,6 +207,94 @@ describe("security and audit hardening", () => {
     await app.close();
   });
 
+  it("requires actor and tenant scope before policy preview reads stored repository state", async () => {
+    const state = createInitialState();
+    const { app } = await createPreviewRecord({ state, organizationId: "org-a" });
+    const repositoryId = state.records[0]!.repositoryId;
+
+    const savedPolicy = await app.inject({
+      method: "PUT",
+      url: `/api/repositories/${repositoryId}/policy`,
+      payload: JSON.stringify({ contentYaml: policyYaml }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("alex", "platform_admin", "org-a")
+      }
+    });
+    expect(savedPolicy.statusCode).toBe(200);
+
+    const modeOverride = await app.inject({
+      method: "PATCH",
+      url: `/api/repositories/${repositoryId}/settings`,
+      payload: JSON.stringify({ mode: "observe" }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("alex", "platform_admin", "org-a")
+      }
+    });
+    expect(modeOverride.statusCode).toBe(200);
+
+    const unauthenticatedStoredPreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ pr: sensitivePr() }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(unauthenticatedStoredPreview.statusCode).toBe(401);
+
+    const unauthenticatedFixturePreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr() }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(unauthenticatedFixturePreview.statusCode).toBe(200);
+    expect(unauthenticatedFixturePreview.json().result.mode).toBe("enforce");
+    expect(unauthenticatedFixturePreview.json().persisted).toBe(false);
+
+    const crossTenantStoredPreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ pr: sensitivePr() }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("brenda", "auditor", "org-b")
+      }
+    });
+    expect(crossTenantStoredPreview.statusCode).toBe(403);
+
+    const storedPreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ pr: sensitivePr() }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("auditor-a", "auditor", "org-a")
+      }
+    });
+    expect(storedPreview.statusCode).toBe(200);
+    expect(storedPreview.json().result.mode).toBe("observe");
+    expect(storedPreview.json().persisted).toBe(false);
+    expect(state.auditEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "policy_previewed",
+          organizationId: "org-a",
+          repositoryId,
+          actor: "auditor-a",
+          actorRole: "auditor",
+          metadataJson: expect.objectContaining({
+            repositoryFullName: "acme/payments",
+            previewPersisted: false,
+            mode: "observe"
+          })
+        })
+      ])
+    );
+
+    await app.close();
+  });
+
   it("rejects invalid GitHub webhook signatures", async () => {
     process.env.GITHUB_WEBHOOK_SECRET = "secret";
     const app = createApp(createInitialState());
@@ -1130,12 +1218,9 @@ describe("security and audit hardening", () => {
     const ready = await app.inject({ method: "GET", url: "/ready" });
 
     expect(health.statusCode).toBe(200);
-    expect(health.json()).toEqual(
-      expect.objectContaining({
-        status: "ok",
-        workerQueue: "configured"
-      })
-    );
+    expect(health.json()).toEqual({ status: "ok", version: "1.0.0" });
+    expect(health.body).not.toContain("workerQueue");
+    expect(health.body).not.toContain("database");
     expect(ready.statusCode).toBe(503);
     expect(ready.json()).toEqual(
       expect.objectContaining({
@@ -1151,6 +1236,54 @@ describe("security and audit hardening", () => {
         })
       })
     );
+
+    await app.close();
+  });
+
+  it("protects readiness and metrics details in production", async () => {
+    setProductionProxyAuthEnv();
+    const app = createApp(createInitialState());
+
+    const health = await app.inject({ method: "GET", url: "/health" });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toEqual({ status: "ok", version: "1.0.0" });
+
+    const unauthenticatedReady = await app.inject({ method: "GET", url: "/ready" });
+    expect(unauthenticatedReady.statusCode).toBe(401);
+    expect(unauthenticatedReady.body).not.toContain("runtimeStore");
+
+    const unauthenticatedMetrics = await app.inject({ method: "GET", url: "/metrics" });
+    expect(unauthenticatedMetrics.statusCode).toBe(401);
+    expect(unauthenticatedMetrics.body).not.toContain("agentforge_runtime_store");
+
+    const developerReady = await app.inject({
+      method: "GET",
+      url: "/ready",
+      headers: authenticatedActorHeaders("sam", "developer")
+    });
+    expect(developerReady.statusCode).toBe(403);
+
+    const operatorReady = await app.inject({
+      method: "GET",
+      url: "/ready",
+      headers: authenticatedActorHeaders("ops", "auditor")
+    });
+    expect(operatorReady.statusCode).toBe(200);
+    expect(operatorReady.json()).toEqual(
+      expect.objectContaining({
+        status: "ready",
+        runtimeStore: "in_memory",
+        workerQueue: "in_memory"
+      })
+    );
+
+    const operatorMetrics = await app.inject({
+      method: "GET",
+      url: "/metrics",
+      headers: authenticatedActorHeaders("ops", "platform_admin")
+    });
+    expect(operatorMetrics.statusCode).toBe(200);
+    expect(operatorMetrics.body).toContain('agentforge_runtime_store{backend="in_memory"} 1');
 
     await app.close();
   });
@@ -1248,6 +1381,14 @@ describe("security and audit hardening", () => {
       expect(event.requestId).toMatch(/^req-/u);
     }
     expect(JSON.stringify(audit.json())).not.toContain(rawGithubToken);
+    const metrics = await app.inject({
+      method: "GET",
+      url: "/metrics"
+    });
+    expect(metrics.statusCode).toBe(200);
+    expect(metrics.body).toContain('agentforge_audit_events_total{action="record_exported"} 1');
+    expect(metrics.body).toContain('agentforge_audit_events_total{action="evidence_provided"} 1');
+    expect(metrics.body).not.toContain(rawGithubToken);
     await app.close();
   });
 });

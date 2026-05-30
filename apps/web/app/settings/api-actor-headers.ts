@@ -3,6 +3,14 @@ import type { DashboardActorContext } from "./actor-context";
 
 export function apiActorHeaders(actor: DashboardActorContext): Record<string, string> {
   if (process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS !== "true") {
+    if (
+      process.env.NODE_ENV !== "test" &&
+      process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS !== "true"
+    ) {
+      throw new Error(
+        "AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=true is required before forwarding raw local actor headers to the API."
+      );
+    }
     return {
       "x-agentforge-actor": actor.login,
       "x-agentforge-role": actor.role,

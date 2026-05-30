@@ -62,6 +62,14 @@ import {
 } from "./auth.js";
 import { evaluateFixturePr } from "./evaluation.js";
 import { registerApiRoutes } from "./routes/api-routes.js";
+import {
+  countBy,
+  groupBy,
+  headerValue,
+  metricLine,
+  percent,
+  prometheusLabelValue
+} from "./pure.js";
 
 type QueuedEvaluation = {
   id: string;
@@ -850,7 +858,6 @@ export function createApp(
     recordsVisibleTo,
     recomputeRequirementStatus,
     rejectGithubInstallation,
-    repositoryIdFromFullName,
     repositoryOrganizationId,
     repositoryReadinessScore,
     repositorySettingsPatchSchema,
@@ -2545,6 +2552,15 @@ async function collectPrometheusMetrics(input: {
     "# TYPE agentforge_exports_total gauge",
     metricLine("agentforge_exports_total", {}, domainCounts.exports)
   );
+  lines.push(
+    "# HELP agentforge_audit_events_total Audit events by security-relevant action.",
+    "# TYPE agentforge_audit_events_total gauge"
+  );
+  for (const [action, count] of Object.entries(domainCounts.auditEventsByAction).sort(
+    ([left], [right]) => left.localeCompare(right)
+  )) {
+    lines.push(metricLine("agentforge_audit_events_total", { action }, count));
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -2556,6 +2572,7 @@ async function domainMetricCounts(
   recordsByStatus: Record<string, number>;
   checkRuns: number;
   exports: number;
+  auditEventsByAction: Record<string, number>;
 }> {
   if (!prisma) {
     return {
@@ -2564,15 +2581,17 @@ async function domainMetricCounts(
       },
       recordsByStatus: countBy(state.records, (record) => record.checkStatus),
       checkRuns: 0,
-      exports: state.exports.length
+      exports: state.exports.length,
+      auditEventsByAction: countBy(state.auditEvents, (event) => event.action)
     };
   }
 
-  const [webhookGroups, recordGroups, checkRuns, exports] = await Promise.all([
+  const [webhookGroups, recordGroups, checkRuns, exports, auditEventGroups] = await Promise.all([
     prisma.webhookDelivery.groupBy({ by: ["deliveryStatus"], _count: { _all: true } }),
     prisma.changeControlRecord.groupBy({ by: ["checkStatus"], _count: { _all: true } }),
     prisma.checkRun.count(),
-    prisma.exportJob.count()
+    prisma.exportJob.count(),
+    prisma.auditEvent.groupBy({ by: ["action"], _count: { _all: true } })
   ]);
   return {
     webhookDeliveriesByStatus: Object.fromEntries(
@@ -2582,32 +2601,11 @@ async function domainMetricCounts(
       recordGroups.map((group) => [String(group.checkStatus), group._count._all])
     ),
     checkRuns,
-    exports
+    exports,
+    auditEventsByAction: Object.fromEntries(
+      auditEventGroups.map((group) => [group.action, group._count._all])
+    )
   };
-}
-
-function countBy<T>(items: T[], keyFor: (item: T) => string): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const item of items) {
-    const key = keyFor(item);
-    counts[key] = (counts[key] ?? 0) + 1;
-  }
-  return counts;
-}
-
-function metricLine(name: string, labels: Record<string, string>, value: number): string {
-  const entries = Object.entries(labels);
-  if (entries.length === 0) {
-    return `${name} ${value}`;
-  }
-  const labelText = entries
-    .map(([key, labelValue]) => `${key}="${prometheusLabelValue(labelValue)}"`)
-    .join(",");
-  return `${name}{${labelText}} ${value}`;
-}
-
-function prometheusLabelValue(value: string): string {
-  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
 }
 
 function runtimeCapabilities(input: { postgres: boolean; redisQueue: boolean }): {
@@ -3732,13 +3730,6 @@ function readinessRecommendation(
   return "stay_observe";
 }
 
-function percent(part: number, total: number): number {
-  if (total <= 0) {
-    return 0;
-  }
-  return Math.round((part / total) * 100);
-}
-
 function dashboardSummary(records: ChangeControlRecord[]) {
   const evidence = records.flatMap((record) => record.requiredEvidence);
   const complete = evidence.filter((item) => item.status === "approved").length;
@@ -3801,16 +3792,4 @@ function recomputeRequirementStatus(
     },
     updatedAt: now
   };
-}
-
-function groupBy<T>(items: T[], getKey: (item: T) => string): Record<string, number> {
-  return items.reduce<Record<string, number>>((accumulator, item) => {
-    const key = getKey(item);
-    accumulator[key] = (accumulator[key] ?? 0) + 1;
-    return accumulator;
-  }, {});
-}
-
-function headerValue(value: string | string[] | undefined): string | undefined {
-  return Array.isArray(value) ? value[0] : value;
 }

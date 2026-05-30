@@ -144,8 +144,29 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConf
       organizationId: parsed.AGENTFORGE_DASHBOARD_ORGANIZATION
     }
   };
+  validateLocalActorExposure(config);
   validateProductionConfig(config);
   return config;
+}
+
+function validateLocalActorExposure(config: AgentForgeConfig): void {
+  if (!config.auth.apiAllowLocalActorHeaders && !config.auth.dashboardAllowLocalActor) {
+    return;
+  }
+  const errors: string[] = [];
+  for (const [name, value] of [
+    ["APP_BASE_URL", config.appBaseUrl],
+    ["API_BASE_URL", config.apiBaseUrl]
+  ] as const) {
+    if (!isLoopbackUrl(value)) {
+      errors.push(
+        `${name} must use localhost, 127.0.0.1, or [::1] when local actor mode is enabled.`
+      );
+    }
+  }
+  if (errors.length > 0) {
+    throw new Error(`Unsafe AgentForge local actor configuration: ${errors.join(" ")}`);
+  }
 }
 
 function validateProductionConfig(config: AgentForgeConfig): void {
@@ -213,6 +234,15 @@ function validateProductionConfig(config: AgentForgeConfig): void {
   }
   if (errors.length > 0) {
     throw new Error(`Unsafe AgentForge production configuration: ${errors.join(" ")}`);
+  }
+}
+
+function isLoopbackUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+  } catch {
+    return false;
   }
 }
 

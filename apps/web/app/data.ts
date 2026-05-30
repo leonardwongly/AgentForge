@@ -51,6 +51,7 @@ export type PolicyTuningData = {
     observeOrWarnOpenRequirementCount: number;
   };
   insights: PolicyTuningInsight[];
+  proposals?: PolicyTuningProposal[] | undefined;
   pageInfo?: PageInfo | undefined;
   source: DashboardDataSource;
   message: string;
@@ -76,6 +77,20 @@ export type PolicyTuningInsight = {
     findingTypes: string[];
   }>;
   guardrail: string;
+};
+
+export type PolicyTuningProposal = {
+  insightId: string;
+  category: string;
+  severity: "high" | "medium" | "low";
+  title: string;
+  recommendation: string;
+  rationale: string;
+  guardrail: string;
+  status: "proposed";
+  requiresApproval: boolean;
+  applied: boolean;
+  proposedAt: string;
 };
 
 export type PageInfo = {

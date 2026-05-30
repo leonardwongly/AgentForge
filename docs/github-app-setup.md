@@ -85,6 +85,7 @@ GITHUB_INSTALLATION_ID=<numeric-installation-id-for-smoke>
 SESSION_SECRET=<random-session-secret>
 AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=true
 AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR=true
+AGENTFORGE_DASHBOARD_ROLE=platform_admin
 ```
 
 Install the app on a disposable repository first. The callback records the

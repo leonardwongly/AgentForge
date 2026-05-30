@@ -52,9 +52,9 @@ Deploy the dashboard/API behind an authenticated ingress. The ingress must strip
 
 Map organization membership and roles in the ingress or identity layer before injecting headers. The organization header must be a server-side organization id, not a client-selected tenant claim. Keep the mapping default-deny: unauthenticated users, users without organization membership, and users without an AgentForge role should receive no AgentForge identity headers.
 
-Set `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true` only after the ingress is verified to strip spoofed `x-agentforge-*` and `x-agentforge-authenticated-*` headers. Do not use `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR` in production.
+Set `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true` only after the ingress is verified to strip spoofed `x-agentforge-*` and `x-agentforge-authenticated-*` headers. `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR` is explicit-only for localhost development, defaults to a non-admin `developer` role unless `AGENTFORGE_DASHBOARD_ROLE` is set, and must not be used in production or shared staging.
 
-Set `AGENTFORGE_API_TRUST_PROXY_HEADERS=true` for deployed API traffic after the same ingress stripping check passes. Keep `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=false` on deployed environments and set `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS=true` only after the stripping check is verified.
+Set `AGENTFORGE_API_TRUST_PROXY_HEADERS=true` for deployed API traffic after the same ingress stripping check passes. Keep `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=false` on deployed environments and set `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS=true` only after the stripping check is verified. Startup and dev preflight checks reject local actor modes when `APP_BASE_URL`, `NEXT_PUBLIC_APP_URL`, or `API_BASE_URL` point outside `localhost`, `127.0.0.1`, or `[::1]`.
 
 ## Migration Order
 
@@ -65,7 +65,8 @@ Set `AGENTFORGE_API_TRUST_PROXY_HEADERS=true` for deployed API traffic after the
 5. Run `pnpm db:seed` when built-in policy packs changed.
 6. Start API and web.
 7. Start worker.
-8. Verify `/health` reports configured database and worker queue.
+8. Verify `/health` returns only liveness, then verify authenticated `/ready`
+   reports configured database and worker queue.
 
 Rollback rule: if a migration was applied, roll back with a database restore or a reviewed backward migration. Do not manually edit Prisma migration history.
 
@@ -124,11 +125,18 @@ pnpm prisma:validate
 pnpm db:generate
 pnpm build
 pnpm test:e2e
-pnpm audit --audit-level high
+pnpm audit --audit-level moderate
+gitleaks detect --source . --redact --config .gitleaks.toml
 pnpm fixtures:run
 pnpm policy:validate fixtures/policies/fintech.yaml
 pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.json
 curl -fsS "$API_BASE_URL/health"
+curl -fsS "$API_BASE_URL/ready" \
+  -H "x-agentforge-authenticated-actor: <operator-login>" \
+  -H "x-agentforge-authenticated-role: auditor" \
+  -H "x-agentforge-authenticated-organization: <organization-id>" \
+  -H "x-agentforge-signature-timestamp: <unix-seconds>" \
+  -H "x-agentforge-signature: <proxy-signature>"
 ```
 
 Run the GitHub App read-only smoke test against a test PR before sending real webhooks:
@@ -154,6 +162,14 @@ Then create a test PR that changes a sensitive path and confirm:
 - `/health` stays lightweight and safe for load balancers. `/ready` performs a
   worker-queue probe; if `REDIS_URL` is configured but Redis or BullMQ is not
   reachable, `/ready` returns `not_ready` while `/health` remains `ok`.
+- In production, `/ready` and `/metrics` require signed proxy actor headers from
+  an operator role (`platform_admin`, `engineering_manager`, or `auditor`).
+  Treat unauthenticated access to those endpoints as expected to fail with
+  `401`; do not expose them through an unauthenticated public route.
+- Scrape `agentforge_audit_events_total{action=...}` alongside queue, webhook,
+  record, check-run, and export gauges. Alert on unexpected spikes in
+  `record_exported`, `webhook_replayed`, `policy_changed`, `retention_changed`,
+  or repeated readiness/metrics authorization failures in ingress logs.
 - `GET /api/admin/queue` requires `platform_admin`, `engineering_manager`, or
   `auditor`. It returns queue counts, bounded retry settings, and sanitized
   failure summaries only. It must not include webhook payloads, source patches,

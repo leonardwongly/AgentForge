@@ -18,6 +18,8 @@ const requiredFiles = [
   "CONTRIBUTING.md",
   "CODE_OF_CONDUCT.md",
   "SECURITY.md",
+  ".gitleaks.toml",
+  "docker-compose.yml",
   "docs/auth.md",
   "docs/github-app-setup.md",
   "docs/release-checklist.md",
@@ -40,11 +42,22 @@ const disallowedTrackedPatterns = [
   /(^|\/)test-results\//,
   /(^|\/)coverage\//,
   /(^|\/)\.turbo\//,
-  /(^|\/)\.playwright-mcp\//
+  /(^|\/)\.playwright-mcp\//,
+  /(^|\/)\.gradle\//,
+  /(^|\/)local\.properties$/,
+  /^apps\/android\/.*\/build\//,
+  /^apps\/ios\/.*\/DerivedData\//,
+  /^apps\/ios\/.*\.xcuserdata\//,
+  /^artifacts\//,
+  /(^|\/).+\.(pem|key|p12|pfx)$/,
+  /(^|\/).+\.(apk|aab)$/,
+  /(^|\/).*\.env\.backup[^/]*$/
 ];
 
 const secretPatterns = [
   { name: "GitHub token", pattern: /ghp_[A-Za-z0-9_]{20,}/u },
+  { name: "GitHub fine-grained token", pattern: /github_pat_[A-Za-z0-9_]{20,}/u },
+  { name: "npm token", pattern: /npm_[A-Za-z0-9]{20,}/u },
   { name: "AWS access key", pattern: /AKIA[0-9A-Z]{16}/u },
   { name: "Private key block", pattern: new RegExp("-----BEGIN .*PRIVATE " + "KEY-----", "u") }
 ];
@@ -62,6 +75,8 @@ function main(): void {
     checkPackageVersions(),
     checkTrackedArtifacts(),
     checkSecretPatterns(),
+    checkLocalComposeBindings(),
+    checkSupplyChainWorkflowCoverage(),
     checkReleaseDocsMentionVersion(),
     checkMainWorkflowCoverage(),
     checkPullRequestWorkflowCoverage(),
@@ -79,6 +94,65 @@ function main(): void {
       `Release readiness check failed: ${failures.map((item) => item.name).join(", ")}`
     );
   }
+}
+
+function checkLocalComposeBindings(): CheckResult {
+  const compose = readText("docker-compose.yml");
+  const requiredBindings = [
+    "127.0.0.1:15432:5432",
+    "127.0.0.1:6379:6379",
+    "127.0.0.1:9000:9000",
+    "127.0.0.1:9001:9001"
+  ];
+  const unsafeBindings = ['"15432:5432"', '"6379:6379"', '"9000:9000"', '"9001:9001"'].filter(
+    (binding) => compose.includes(binding)
+  );
+  const missingBindings = requiredBindings.filter((binding) => !compose.includes(binding));
+  const missingLocalWarning =
+    !compose.includes("Local development only") ||
+    !compose.includes("Do not reuse these credentials");
+
+  const failures = [
+    ...missingBindings.map((binding) => `missing ${binding}`),
+    ...unsafeBindings.map((binding) => `unsafe ${binding}`),
+    ...(missingLocalWarning ? ["missing local credential warning"] : [])
+  ];
+
+  return {
+    name: "local compose services are loopback-bound",
+    ok: failures.length === 0,
+    detail: failures.length > 0 ? failures.join(", ") : undefined
+  };
+}
+
+function checkSupplyChainWorkflowCoverage(): CheckResult {
+  const securityWorkflow = readText(".github/workflows/security.yml");
+  const dependencyReviewWorkflow = readText(".github/workflows/dependency-review.yml");
+  const required = [
+    { name: "Gitleaks scan", ok: securityWorkflow.includes("gitleaks detect") },
+    {
+      name: "Gitleaks config",
+      ok: securityWorkflow.includes("--config .gitleaks.toml") && existsSync(".gitleaks.toml")
+    },
+    {
+      name: "moderate audit threshold",
+      ok: securityWorkflow.includes("pnpm audit --audit-level moderate")
+    },
+    {
+      name: "blocking dependency review",
+      ok: !dependencyReviewWorkflow.includes("continue-on-error")
+    },
+    {
+      name: "dependency license check",
+      ok: dependencyReviewWorkflow.includes("license-check: true")
+    }
+  ];
+  const missing = required.filter((item) => !item.ok).map((item) => item.name);
+  return {
+    name: "secret and dependency review gates are blocking",
+    ok: missing.length === 0,
+    detail: missing.length > 0 ? `missing ${missing.join(", ")}` : undefined
+  };
 }
 
 function checkRequiredFiles(): CheckResult {
