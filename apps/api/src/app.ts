@@ -61,6 +61,14 @@ import {
   type ApiActor
 } from "./auth.js";
 import { evaluateFixturePr } from "./evaluation.js";
+import {
+  createInMemoryPersistencePort,
+  filterAndSortRecords,
+  pageInfo,
+  paginateRecords,
+  recordRequiresAction,
+  type PersistencePort
+} from "./ports.js";
 import { registerApiRoutes } from "./routes/api-routes.js";
 import {
   countBy,
@@ -669,10 +677,14 @@ export function createApp(
           connection: queueConnection
         })
       : undefined;
-  const listRecords = () => listChangeControlRecords(state, prisma);
-  const getRecord = (id: string) => getChangeControlRecord(state, prisma, id);
+  const persistence = prisma
+    ? createPrismaPersistencePort(state, prisma)
+    : createInMemoryPersistencePort(state);
+  const listRecords = (filter?: { organizationId?: string }) =>
+    listChangeControlRecords(persistence, filter);
+  const getRecord = (id: string) => getChangeControlRecord(persistence, id);
   const saveRecord = (record: ChangeControlRecord, pr?: PullRequestInput) =>
-    saveChangeControlRecord(state, prisma, record, pr);
+    saveChangeControlRecord(persistence, record, pr);
   const listRepositories = (organizationId?: string) =>
     listRepositorySummaries(state, prisma, config.defaultPolicyMode, organizationId);
   const getRepositoryPolicy = (id: string) => getActiveRepositoryPolicy(state, prisma, id);
@@ -765,7 +777,7 @@ export function createApp(
     return actor;
   };
   const recordsVisibleTo = async (actor: ApiActor) =>
-    (await listRecords()).filter((record) => record.organizationId === actor.organizationId);
+    listRecords({ organizationId: actor.organizationId });
   const app = Fastify({
     logger: {
       level: config.nodeEnv === "test" ? "silent" : "info",
@@ -1435,232 +1447,196 @@ function ownerMappingForApi(mapping: OwnerMappingState) {
 }
 
 async function listChangeControlRecords(
-  state: AppState,
-  prisma: PrismaClient | undefined
+  persistence: PersistencePort,
+  filter?: { organizationId?: string }
 ): Promise<ChangeControlRecord[]> {
-  if (!prisma) {
-    return state.records;
-  }
-  const rows = await prisma.changeControlRecord.findMany({
-    include: {
-      pullRequest: {
-        select: { repositoryId: true, repository: { select: { organizationId: true } } }
-      }
-    },
-    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
-  });
-  return rows.map(changeControlRecordFromRow);
+  return persistence.records.list(filter);
 }
 
 async function listChangeControlRecordPage(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   query: RecordPageQuery
 ): Promise<RecordPage> {
-  if (!prisma) {
-    return paginateRecords(filterAndSortRecords(state.records, query), query);
-  }
-  if (query.queue) {
-    return paginateRecords(
-      filterAndSortRecords(await listChangeControlRecords(state, prisma), query),
-      query
-    );
-  }
-
-  const where = {
-    ...(query.status ? { checkStatus: query.status } : {}),
-    ...(query.lifecycle ? { lifecycle: query.lifecycle } : {}),
-    ...(query.mode ? { mode: query.mode } : {}),
-    ...(query.policyVersion ? { policyVersion: query.policyVersion } : {}),
-    ...(query.repositoryId ? { pullRequest: { repositoryId: query.repositoryId } } : {})
-  };
-  const orderBy =
-    query.sort === "created_asc"
-      ? [{ createdAt: "asc" as const }]
-      : query.sort === "created_desc"
-        ? [{ createdAt: "desc" as const }]
-        : query.sort === "updated_asc"
-          ? [{ updatedAt: "asc" as const }]
-          : query.sort === "pr_asc"
-            ? [{ pullRequestNumber: "asc" as const }]
-            : query.sort === "pr_desc"
-              ? [{ pullRequestNumber: "desc" as const }]
-              : [{ updatedAt: "desc" as const }, { createdAt: "desc" as const }];
-  const [total, rows] = await prisma.$transaction([
-    prisma.changeControlRecord.count({ where }),
-    prisma.changeControlRecord.findMany({
-      where,
-      include: {
-        pullRequest: {
-          select: { repositoryId: true, repository: { select: { organizationId: true } } }
-        }
-      },
-      orderBy,
-      skip: query.offset,
-      take: query.limit
-    })
-  ]);
-
-  return {
-    records: rows.map(changeControlRecordFromRow),
-    pageInfo: pageInfo(total, query)
-  };
-}
-
-function filterAndSortRecords(
-  records: ChangeControlRecord[],
-  query: RecordPageQuery
-): ChangeControlRecord[] {
-  return [...records]
-    .filter(
-      (record) =>
-        (!query.repositoryId || record.repositoryId === query.repositoryId) &&
-        (!query.status || record.checkStatus === query.status) &&
-        (!query.lifecycle || record.lifecycle === query.lifecycle) &&
-        (!query.mode || record.mode === query.mode) &&
-        (!query.policyVersion || record.policyVersion === query.policyVersion) &&
-        (!query.queue || recordRequiresAction(record))
-    )
-    .sort((a, b) => compareRecords(a, b, query.sort));
-}
-
-function recordRequiresAction(record: ChangeControlRecord): boolean {
-  return (
-    record.checkStatus === "block" ||
-    record.requiredEvidence.some((item) => item.status !== "approved") ||
-    record.requiredReviewers.some((item) => item.tier === "required" && !item.approved)
-  );
-}
-
-function paginateRecords(records: ChangeControlRecord[], query: RecordPageQuery): RecordPage {
-  return {
-    records: records.slice(query.offset, query.offset + query.limit),
-    pageInfo: pageInfo(records.length, query)
-  };
-}
-
-function pageInfo(total: number, query: RecordPageQuery): PageInfo {
-  const nextOffset = query.offset + query.limit;
-  const hasMore = nextOffset < total;
-  return {
-    limit: query.limit,
-    offset: query.offset,
-    total,
-    ...(hasMore ? { nextOffset } : {}),
-    hasMore
-  };
-}
-
-function compareRecords(
-  a: ChangeControlRecord,
-  b: ChangeControlRecord,
-  sort: RecordPageQuery["sort"]
-): number {
-  if (sort === "created_asc") {
-    return a.createdAt.localeCompare(b.createdAt);
-  }
-  if (sort === "created_desc") {
-    return b.createdAt.localeCompare(a.createdAt);
-  }
-  if (sort === "updated_asc") {
-    return a.updatedAt.localeCompare(b.updatedAt);
-  }
-  if (sort === "pr_asc") {
-    return a.pullRequestNumber - b.pullRequestNumber;
-  }
-  if (sort === "pr_desc") {
-    return b.pullRequestNumber - a.pullRequestNumber;
-  }
-  return b.updatedAt.localeCompare(a.updatedAt) || b.createdAt.localeCompare(a.createdAt);
+  return persistence.records.page(query);
 }
 
 async function getChangeControlRecord(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   id: string
 ): Promise<ChangeControlRecord | undefined> {
-  if (!prisma) {
-    return state.records.find((item) => item.id === id);
-  }
-  const row = await prisma.changeControlRecord.findUnique({
-    where: { id },
-    include: {
-      pullRequest: {
-        select: { repositoryId: true, repository: { select: { organizationId: true } } }
-      }
-    }
-  });
-  return row ? changeControlRecordFromRow(row) : state.records.find((item) => item.id === id);
+  return persistence.records.get(id);
 }
 
 async function saveChangeControlRecord(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   record: ChangeControlRecord,
   pr?: PullRequestInput
 ): Promise<ChangeControlRecord> {
-  if (!prisma) {
-    rememberRecord(state, record);
-    return record;
-  }
+  return persistence.records.save(record, pr);
+}
 
-  const organization = await ensureOrganization(prisma, record.organizationId);
-  const repository = await ensureRepository(prisma, {
-    organizationId: organization.id,
-    repositoryId: record.repositoryId,
-    fullName: record.repositoryFullName,
-    defaultBranch: record.baseBranch
-  });
-  const pullRequest = await prisma.pullRequest.upsert({
-    where: {
-      repositoryId_number: {
-        repositoryId: repository.id,
-        number: record.pullRequestNumber
+function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): PersistencePort {
+  const inMemoryAuditEvents = createInMemoryPersistencePort(state).auditEvents;
+  return {
+    records: {
+      async get(id) {
+        const row = await prisma.changeControlRecord.findUnique({
+          where: { id },
+          include: {
+            pullRequest: {
+              select: { repositoryId: true, repository: { select: { organizationId: true } } }
+            }
+          }
+        });
+        return row ? changeControlRecordFromRow(row) : state.records.find((item) => item.id === id);
+      },
+      async save(record, pr) {
+        const organization = await ensureOrganization(prisma, record.organizationId);
+        const repository = await ensureRepository(prisma, {
+          organizationId: organization.id,
+          repositoryId: record.repositoryId,
+          fullName: record.repositoryFullName,
+          defaultBranch: record.baseBranch
+        });
+        const pullRequest = await prisma.pullRequest.upsert({
+          where: {
+            repositoryId_number: {
+              repositoryId: repository.id,
+              number: record.pullRequestNumber
+            }
+          },
+          update: {
+            title: pr?.title ?? `PR #${record.pullRequestNumber}`,
+            authorLogin: pr?.authorLogin ?? "unknown",
+            baseBranch: record.baseBranch,
+            headBranch: pr?.headBranch ?? "unknown",
+            headSha: record.headSha,
+            state: "open"
+          },
+          create: {
+            id: `pr_${record.id}`,
+            repositoryId: repository.id,
+            githubPullRequestId: stableBigInt(
+              `${record.repositoryFullName}#${record.pullRequestNumber}`
+            ),
+            number: record.pullRequestNumber,
+            title: pr?.title ?? `PR #${record.pullRequestNumber}`,
+            authorLogin: pr?.authorLogin ?? "unknown",
+            baseBranch: record.baseBranch,
+            headBranch: pr?.headBranch ?? "unknown",
+            headSha: record.headSha,
+            state: "open"
+          }
+        });
+
+        const persisted = await prisma.changeControlRecord.upsert({
+          where: { pullRequestId: pullRequest.id },
+          update: changeControlRecordData(record),
+          create: {
+            id: record.id,
+            pullRequestId: pullRequest.id,
+            ...changeControlRecordData(record)
+          }
+        });
+        await persistEvaluationSnapshot(prisma, {
+          organizationId: organization.id,
+          repositoryId: repository.id,
+          pullRequestId: pullRequest.id,
+          record
+        });
+        const savedRecord = changeControlRecordFromRow({
+          ...persisted,
+          pullRequest: {
+            repositoryId: repository.id,
+            repository: { organizationId: organization.id }
+          }
+        });
+        rememberRecord(state, savedRecord);
+        return savedRecord;
+      },
+      async list(filter) {
+        const rows = await prisma.changeControlRecord.findMany({
+          ...(filter?.organizationId
+            ? {
+                where: {
+                  pullRequest: { repository: { organizationId: filter.organizationId } }
+                }
+              }
+            : {}),
+          include: {
+            pullRequest: {
+              select: { repositoryId: true, repository: { select: { organizationId: true } } }
+            }
+          },
+          orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+        });
+        return rows.map(changeControlRecordFromRow);
+      },
+      async page(query) {
+        const pullRequestWhere = {
+          ...(query.repositoryId ? { repositoryId: query.repositoryId } : {}),
+          ...(query.organizationId ? { repository: { organizationId: query.organizationId } } : {})
+        };
+        if (query.queue) {
+          const rows = await prisma.changeControlRecord.findMany({
+            ...(Object.keys(pullRequestWhere).length > 0
+              ? { where: { pullRequest: pullRequestWhere } }
+              : {}),
+            include: {
+              pullRequest: {
+                select: { repositoryId: true, repository: { select: { organizationId: true } } }
+              }
+            },
+            orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+          });
+          return paginateRecords(
+            filterAndSortRecords(rows.map(changeControlRecordFromRow), query),
+            query
+          );
+        }
+
+        const where = {
+          ...(query.status ? { checkStatus: query.status } : {}),
+          ...(query.lifecycle ? { lifecycle: query.lifecycle } : {}),
+          ...(query.mode ? { mode: query.mode } : {}),
+          ...(query.policyVersion ? { policyVersion: query.policyVersion } : {}),
+          ...(Object.keys(pullRequestWhere).length > 0 ? { pullRequest: pullRequestWhere } : {})
+        };
+        const orderBy =
+          query.sort === "created_asc"
+            ? [{ createdAt: "asc" as const }]
+            : query.sort === "created_desc"
+              ? [{ createdAt: "desc" as const }]
+              : query.sort === "updated_asc"
+                ? [{ updatedAt: "asc" as const }]
+                : query.sort === "pr_asc"
+                  ? [{ pullRequestNumber: "asc" as const }]
+                  : query.sort === "pr_desc"
+                    ? [{ pullRequestNumber: "desc" as const }]
+                    : [{ updatedAt: "desc" as const }, { createdAt: "desc" as const }];
+        const [total, rows] = await prisma.$transaction([
+          prisma.changeControlRecord.count({ where }),
+          prisma.changeControlRecord.findMany({
+            where,
+            include: {
+              pullRequest: {
+                select: { repositoryId: true, repository: { select: { organizationId: true } } }
+              }
+            },
+            orderBy,
+            skip: query.offset,
+            take: query.limit
+          })
+        ]);
+
+        return {
+          records: rows.map(changeControlRecordFromRow),
+          pageInfo: pageInfo(total, query)
+        };
       }
     },
-    update: {
-      title: pr?.title ?? `PR #${record.pullRequestNumber}`,
-      authorLogin: pr?.authorLogin ?? "unknown",
-      baseBranch: record.baseBranch,
-      headBranch: pr?.headBranch ?? "unknown",
-      headSha: record.headSha,
-      state: "open"
-    },
-    create: {
-      id: `pr_${record.id}`,
-      repositoryId: repository.id,
-      githubPullRequestId: stableBigInt(`${record.repositoryFullName}#${record.pullRequestNumber}`),
-      number: record.pullRequestNumber,
-      title: pr?.title ?? `PR #${record.pullRequestNumber}`,
-      authorLogin: pr?.authorLogin ?? "unknown",
-      baseBranch: record.baseBranch,
-      headBranch: pr?.headBranch ?? "unknown",
-      headSha: record.headSha,
-      state: "open"
-    }
-  });
-
-  const persisted = await prisma.changeControlRecord.upsert({
-    where: { pullRequestId: pullRequest.id },
-    update: changeControlRecordData(record),
-    create: {
-      id: record.id,
-      pullRequestId: pullRequest.id,
-      ...changeControlRecordData(record)
-    }
-  });
-  await persistEvaluationSnapshot(prisma, {
-    organizationId: organization.id,
-    repositoryId: repository.id,
-    pullRequestId: pullRequest.id,
-    record
-  });
-  const savedRecord = changeControlRecordFromRow({
-    ...persisted,
-    pullRequest: { repositoryId: repository.id, repository: { organizationId: organization.id } }
-  });
-  rememberRecord(state, savedRecord);
-  return savedRecord;
+    auditEvents: inMemoryAuditEvents
+  };
 }
 
 async function persistEvaluationSnapshot(
