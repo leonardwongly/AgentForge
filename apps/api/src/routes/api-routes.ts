@@ -49,6 +49,7 @@ import {
 import { evaluateFixturePr } from "../evaluation.js";
 import type { AppState, ExportJob, RepositoryPolicyState } from "../app.js";
 import type { loadConfig } from "@agentforge/config";
+import type { ReplayableDelivery, WebhookDeliveryStatus, WebhookReplayTarget } from "../ports.js";
 
 type RawBodyRequest = {
   rawBody?: Buffer;
@@ -75,13 +76,6 @@ type MergeGuardEvaluationJobPayload = {
 };
 type EvaluationQueue = Queue<MergeGuardEvaluationJobPayload> | undefined;
 type QueueBackend = "redis" | "in_memory";
-type WebhookDeliveryStatus =
-  | "received"
-  | "queued"
-  | "processing"
-  | "completed"
-  | "enqueue_failed"
-  | "failed";
 type QueueEnqueueResult = {
   jobId: string;
   deliveryId: string;
@@ -164,28 +158,7 @@ type PageInfo = {
   hasNextPage: boolean;
 };
 type PaginatedRecords = { records: ChangeControlRecord[]; pageInfo: PageInfo };
-type QueueReplayTarget = {
-  deliveryId?: string | undefined;
-  repositoryFullName?: string | undefined;
-  pullRequestNumber?: number | undefined;
-};
-type ReplayableDelivery = {
-  envelope: GithubWebhookEnvelope;
-  delivery: {
-    deliveryId: string;
-    event: string;
-    action: string | null;
-    organizationId: string | null;
-    repositoryId: string | null;
-    repositoryFullName: string | null;
-    pullRequestNumber: number | null;
-    headSha: string | null;
-    enqueued: boolean;
-    deliveryStatus: string;
-    payloadJson: unknown;
-    createdAt: Date | string;
-  };
-};
+type QueueReplayTarget = WebhookReplayTarget;
 type GithubInstallationVerifyInput = {
   githubInstallationId: string;
   accountLogin?: string | undefined;
@@ -253,8 +226,6 @@ type ResolvedApiRouteContext = {
     githubInstallationId: string
   ) => Promise<{ accountLogin: string; accountType: "Organization" | "User" } | undefined>;
   findReplayableDelivery: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
     target: QueueReplayTarget,
     organizationId?: string
   ) => Promise<ReplayableDelivery | undefined>;
@@ -301,32 +272,13 @@ type ResolvedApiRouteContext = {
   listOwnerMappings: () => Promise<OwnerMapping[]>;
   listRecords: () => Promise<ChangeControlRecord[]>;
   listRecentWebhookDeliveryFailures: (
-    prisma: PrismaClient | undefined,
     organizationId?: string
   ) => Promise<Array<Record<string, unknown>>>;
   listRepositories: (organizationId?: string) => Promise<RepositorySummary[]>;
-  markWebhookDeliveryCompleted: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    deliveryId: string
-  ) => Promise<void>;
-  markWebhookDeliveryEnqueueFailed: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    deliveryId: string,
-    error: unknown
-  ) => Promise<void>;
-  markWebhookDeliveryQueued: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    deliveryId: string,
-    queueJobId: string
-  ) => Promise<void>;
-  markWebhookDeliveryReplayed: (
-    prisma: PrismaClient | undefined,
-    deliveryId: string,
-    actor: string
-  ) => Promise<void>;
+  markWebhookDeliveryCompleted: (deliveryId: string) => Promise<void>;
+  markWebhookDeliveryEnqueueFailed: (deliveryId: string, error: unknown) => Promise<void>;
+  markWebhookDeliveryQueued: (deliveryId: string, queueJobId: string) => Promise<void>;
+  markWebhookDeliveryReplayed: (deliveryId: string, actor: string) => Promise<void>;
   onboardingStepsFromRuntime: (input: {
     repositories: RepositorySummary[];
     records: ChangeControlRecord[];
@@ -421,11 +373,7 @@ type ResolvedApiRouteContext = {
     prisma: PrismaClient | undefined,
     input: GithubInstallationVerifyInput & { organizationId: string }
   ) => Promise<GithubInstallation | undefined>;
-  recordWebhookDeliveryReceived: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    envelope: GithubWebhookEnvelope
-  ) => Promise<{
+  recordWebhookDeliveryReceived: (envelope: GithubWebhookEnvelope) => Promise<{
     duplicate: boolean;
     status: WebhookDeliveryStatus;
   }>;
@@ -700,11 +648,11 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         payload: request.body as Record<string, unknown>
       });
       const shouldQueue = shouldEnqueueEvaluation(envelope);
-      const delivery = await recordWebhookDeliveryReceived(state, prisma, envelope);
+      const delivery = await recordWebhookDeliveryReceived(envelope);
       await processGithubInstallationWebhook(state, prisma, envelope, config);
 
       if (!shouldQueue) {
-        await markWebhookDeliveryCompleted(state, prisma, deliveryId);
+        await markWebhookDeliveryCompleted(deliveryId);
         return reply.code(202).send({
           accepted: true,
           duplicate: delivery.duplicate,
@@ -729,9 +677,9 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           deliveryId,
           envelope
         });
-        await markWebhookDeliveryQueued(state, prisma, deliveryId, queued.jobId);
+        await markWebhookDeliveryQueued(deliveryId, queued.jobId);
       } catch (error) {
-        await markWebhookDeliveryEnqueueFailed(state, prisma, deliveryId, error);
+        await markWebhookDeliveryEnqueueFailed(deliveryId, error);
         app.log.error(
           {
             deliveryId,
@@ -770,10 +718,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       }
 
       const queue = await queueOperationalStatus({ state, evaluationQueue });
-      const deliveryFailures = await listRecentWebhookDeliveryFailures(
-        prisma,
-        actor.organizationId
-      );
+      const deliveryFailures = await listRecentWebhookDeliveryFailures(actor.organizationId);
       return {
         queue: safe(queue),
         deliveryFailures: safe(deliveryFailures),
@@ -797,12 +742,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           .send({ error: parsed.error.issues[0]?.message ?? "Invalid replay request" });
       }
 
-      const replayable = await findReplayableDelivery(
-        state,
-        prisma,
-        parsed.data,
-        actor.organizationId
-      );
+      const replayable = await findReplayableDelivery(parsed.data, actor.organizationId);
       if (!replayable) {
         return reply.code(404).send({ error: "Replayable webhook delivery was not found." });
       }
@@ -834,19 +774,9 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           envelope: replayable.envelope,
           jobId: replayJobId
         });
-        await markWebhookDeliveryQueued(
-          state,
-          prisma,
-          replayable.envelope.deliveryId,
-          queued.jobId
-        );
+        await markWebhookDeliveryQueued(replayable.envelope.deliveryId, queued.jobId);
       } catch (error) {
-        await markWebhookDeliveryEnqueueFailed(
-          state,
-          prisma,
-          replayable.envelope.deliveryId,
-          error
-        );
+        await markWebhookDeliveryEnqueueFailed(replayable.envelope.deliveryId, error);
         const summary = safeErrorSummary(error);
         request.log.error(
           {
@@ -880,7 +810,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           error: "Webhook replay enqueue failed."
         });
       }
-      await markWebhookDeliveryReplayed(prisma, replayable.envelope.deliveryId, actor.login);
+      await markWebhookDeliveryReplayed(replayable.envelope.deliveryId, actor.login);
       await audit({
         organizationId: replayOrganizationId,
         repositoryId: replayable.delivery.repositoryId ?? undefined,
