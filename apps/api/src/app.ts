@@ -279,6 +279,7 @@ export type AppState = {
   records: ChangeControlRecord[];
   auditEvents: AuditEventRecord[];
   exports: ExportJob[];
+  overrides: OverrideRecord[];
   repositoryPolicies: Map<string, RepositoryPolicyState>;
   repositorySettings: Map<string, RepositorySettingsState>;
   ownerMappings: OwnerMappingState[];
@@ -867,7 +868,7 @@ export function createApp(
     saveAuditEvent: (event: AuditEventRecord) => saveAuditEvent(persistence, event),
     saveExportJob: (job: ExportJob, actor: string, actorRole: string) =>
       saveExportJob(persistence, job, actor, actorRole),
-    saveOverrideRecord,
+    saveOverrideRecord: (override: OverrideRecord) => saveOverrideRecord(persistence, override),
     saveRecord,
     saveRepositoryPolicy,
     saveRepositorySettings,
@@ -892,6 +893,7 @@ export function createInitialState(): AppState {
     records: [],
     auditEvents: [],
     exports: [],
+    overrides: [],
     repositoryPolicies: new Map(),
     repositorySettings: new Map(),
     ownerMappings: []
@@ -1705,6 +1707,34 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
               createdAt: row.createdAt.toISOString()
             }
           : state.exports.find((item) => item.id === id);
+      }
+    },
+    overrides: {
+      async save(override) {
+        const record = await prisma.changeControlRecord.findUnique({
+          where: { id: override.pullRequestId },
+          select: { pullRequestId: true }
+        });
+        if (!record) {
+          return;
+        }
+        await prisma.overrideRecord.upsert({
+          where: { id: override.id },
+          update: {},
+          create: {
+            id: override.id,
+            pullRequestId: record.pullRequestId,
+            evaluationId: null,
+            actor: override.actor,
+            actorRole: override.actorRole,
+            reason: override.reason,
+            scope: override.scope,
+            visibleInPr: override.visibleInPr,
+            policyVersion: override.policyVersion,
+            createdAt: new Date(override.createdAt)
+          }
+        });
+        state.overrides = [override, ...state.overrides.filter((item) => item.id !== override.id)];
       }
     },
     webhookDeliveries: {
@@ -3004,35 +3034,10 @@ export const testInternals = {
 };
 
 async function saveOverrideRecord(
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   override: OverrideRecord
 ): Promise<void> {
-  if (!prisma) {
-    return;
-  }
-  const record = await prisma.changeControlRecord.findUnique({
-    where: { id: override.pullRequestId },
-    select: { pullRequestId: true }
-  });
-  if (!record) {
-    return;
-  }
-  await prisma.overrideRecord.upsert({
-    where: { id: override.id },
-    update: {},
-    create: {
-      id: override.id,
-      pullRequestId: record.pullRequestId,
-      evaluationId: null,
-      actor: override.actor,
-      actorRole: override.actorRole,
-      reason: override.reason,
-      scope: override.scope,
-      visibleInPr: override.visibleInPr,
-      policyVersion: override.policyVersion,
-      createdAt: new Date(override.createdAt)
-    }
-  });
+  await persistence.overrides.save(override);
 }
 
 async function ensureOrganization(prisma: PrismaClient, id: string) {

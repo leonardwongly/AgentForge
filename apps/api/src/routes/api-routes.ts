@@ -334,7 +334,7 @@ type ResolvedApiRouteContext = {
   safeErrorSummary: (error: unknown) => { errorClass: string; message: string };
   saveAuditEvent: (event: AuditEventRecord) => Promise<void>;
   saveExportJob: (job: ExportJob, actor: string, actorRole: string) => Promise<void>;
-  saveOverrideRecord: (prisma: PrismaClient | undefined, record: OverrideRecord) => Promise<void>;
+  saveOverrideRecord: (record: OverrideRecord) => Promise<void>;
   saveRecord: (record: ChangeControlRecord, pr?: PullRequestInput) => Promise<ChangeControlRecord>;
   saveRepositoryPolicy: (
     repositoryId: string,
@@ -1963,7 +1963,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           pullRequestId: record.id
         });
         const savedRecord = await saveRecord(output.record);
-        await saveOverrideRecord(prisma, output.overrideRecord);
+        await saveOverrideRecord(output.overrideRecord);
         if (output.auditEvent) {
           output.auditEvent.requestId = request.id;
           output.auditEvent.metadataJson = {
