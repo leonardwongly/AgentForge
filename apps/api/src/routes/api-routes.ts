@@ -41,6 +41,7 @@ import {
   requireApiActor,
   requireOrganizationAccess,
   requireRole,
+  resolveApiActor,
   type ApiActor,
   type AuthzFailure
 } from "../auth.js";
@@ -601,43 +602,65 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       version: AGENTFORGE_VERSION
     }));
 
-    app.get("/ready", async (request, reply) => {
-      const operationalAccess = requireOperationalEndpointAccess(
-        request,
-        reply,
-        config,
-        "Readiness inspection"
-      );
-      if (operationalAccess !== true) {
-        return operationalAccess;
+    app.get(
+      "/ready",
+      {
+        config: {
+          rateLimit: {
+            max: config.nodeEnv === "test" ? 1_000 : 60,
+            timeWindow: "1 minute"
+          }
+        }
+      },
+      async (request, reply) => {
+        const operationalAccess = requireOperationalEndpointAccess(
+          request,
+          reply,
+          config,
+          "Readiness inspection"
+        );
+        if (operationalAccess !== true) {
+          return operationalAccess;
+        }
+
+        const queue = await queueOperationalStatus({ state, evaluationQueue });
+        const ready = queue.status === "ready";
+        return reply.code(ready ? 200 : 503).send({
+          status: ready ? "ready" : "not_ready",
+          database: config.databaseUrl ? "configured" : "not_configured",
+          workerQueue: config.redisUrl ? "configured" : "in_memory",
+          runtimeStore: prisma ? "postgres" : "in_memory",
+          queue,
+          version: AGENTFORGE_VERSION
+        });
       }
+    );
 
-      const queue = await queueOperationalStatus({ state, evaluationQueue });
-      const ready = queue.status === "ready";
-      return reply.code(ready ? 200 : 503).send({
-        status: ready ? "ready" : "not_ready",
-        database: config.databaseUrl ? "configured" : "not_configured",
-        workerQueue: config.redisUrl ? "configured" : "in_memory",
-        runtimeStore: prisma ? "postgres" : "in_memory",
-        queue,
-        version: AGENTFORGE_VERSION
-      });
-    });
+    app.get(
+      "/metrics",
+      {
+        config: {
+          rateLimit: {
+            max: config.nodeEnv === "test" ? 1_000 : 60,
+            timeWindow: "1 minute"
+          }
+        }
+      },
+      async (request, reply) => {
+        const operationalAccess = requireOperationalEndpointAccess(
+          request,
+          reply,
+          config,
+          "Metrics inspection"
+        );
+        if (operationalAccess !== true) {
+          return operationalAccess;
+        }
 
-    app.get("/metrics", async (request, reply) => {
-      const operationalAccess = requireOperationalEndpointAccess(
-        request,
-        reply,
-        config,
-        "Metrics inspection"
-      );
-      if (operationalAccess !== true) {
-        return operationalAccess;
+        const body = await collectPrometheusMetrics({ state, prisma, evaluationQueue, config });
+        return reply.header("content-type", "text/plain; version=0.0.4; charset=utf-8").send(body);
       }
-
-      const body = await collectPrometheusMetrics({ state, prisma, evaluationQueue, config });
-      return reply.header("content-type", "text/plain; version=0.0.4; charset=utf-8").send(body);
-    });
+    );
   });
 
   void app.register(async function githubWebhookRoutes(app) {
@@ -1445,152 +1468,171 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       return validatePolicyYaml(parsedBody.data.contentYaml);
     });
 
-    app.post("/api/policies/preview", async (request, reply) => {
-      const parsedBody = policyPreviewSchema.safeParse(request.body ?? {});
-      if (!parsedBody.success) {
-        return reply.code(400).send({
-          error: "Invalid policy preview input",
-          details: parsedBody.error.issues.map((issue) => ({
-            path: issue.path.join("."),
-            message: issue.message
-          }))
-        });
-      }
-      const body = parsedBody.data;
-      let actor: ApiActor | undefined;
-      const requiresStoredPolicyAccess = body.persist || body.contentYaml === undefined;
-      if (requiresStoredPolicyAccess) {
-        const resolvedActor = requireApiActor(request);
-        if (isAuthzFailure(resolvedActor)) {
-          return handleAuthzFailure(request, reply, resolvedActor);
-        }
-        actor = resolvedActor;
-        if (body.persist) {
-          const allowed = requireRole(
-            resolvedActor,
-            ["platform_admin", "engineering_manager"],
-            "Persisted policy preview"
-          );
-          if (!allowed.ok) {
-            return handleAuthzFailure(request, reply, allowed);
+    app.post(
+      "/api/policies/preview",
+      {
+        config: {
+          rateLimit: {
+            max: config.nodeEnv === "test" ? 1_000 : 60,
+            timeWindow: "1 minute"
           }
         }
-      }
-      if (!body.pr) {
-        return reply.code(400).send({ error: "pull request input is required" });
-      }
-      if (
-        typeof body.pr.repositoryFullName !== "string" ||
-        body.pr.repositoryFullName.trim().length === 0
-      ) {
-        return reply.code(400).send({ error: "pr.repositoryFullName is required" });
-      }
-      const repositoryId = requiresStoredPolicyAccess
-        ? await findRepositoryIdByFullName(state, prisma, body.pr.repositoryFullName)
-        : undefined;
-      const repositoryOrganization = repositoryId
-        ? await repositoryOrganizationId(state, prisma, repositoryId)
-        : undefined;
-      if (repositoryId && !repositoryOrganization) {
-        return reply.code(404).send({ error: "Repository not found" });
-      }
-      if (repositoryId && actor && repositoryOrganization) {
-        const tenantAccess = requireOrganizationAccess(
-          actor,
-          repositoryOrganization,
-          body.persist ? "Persisted policy preview" : "Stored policy preview"
+      },
+      async (request, reply) => {
+        const parsedBody = policyPreviewSchema.safeParse(request.body ?? {});
+        if (!parsedBody.success) {
+          return reply.code(400).send({
+            error: "Invalid policy preview input",
+            details: parsedBody.error.issues.map((issue) => ({
+              path: issue.path.join("."),
+              message: issue.message
+            }))
+          });
+        }
+        const body = parsedBody.data;
+        let actor: ApiActor | undefined;
+        const requiresStoredPolicyAccess = body.persist || body.contentYaml === undefined;
+        if (requiresStoredPolicyAccess) {
+          const resolvedActor = requireApiActor(request);
+          if (isAuthzFailure(resolvedActor)) {
+            return handleAuthzFailure(request, reply, resolvedActor);
+          }
+          actor = resolvedActor;
+          if (body.persist) {
+            const allowed = requireRole(
+              resolvedActor,
+              ["platform_admin", "engineering_manager"],
+              "Persisted policy preview"
+            );
+            if (!allowed.ok) {
+              return handleAuthzFailure(request, reply, allowed);
+            }
+          }
+        } else {
+          actor = resolveApiActor(request);
+        }
+        if (!body.pr) {
+          return reply.code(400).send({ error: "pull request input is required" });
+        }
+        if (
+          typeof body.pr.repositoryFullName !== "string" ||
+          body.pr.repositoryFullName.trim().length === 0
+        ) {
+          return reply.code(400).send({ error: "pr.repositoryFullName is required" });
+        }
+        const repositoryId =
+          requiresStoredPolicyAccess || actor
+            ? await findRepositoryIdByFullName(state, prisma, body.pr.repositoryFullName)
+            : undefined;
+        const repositoryOrganization = repositoryId
+          ? await repositoryOrganizationId(state, prisma, repositoryId)
+          : undefined;
+        if (repositoryId && !repositoryOrganization) {
+          return reply.code(404).send({ error: "Repository not found" });
+        }
+        if (body.persist && !repositoryId && config.nodeEnv === "production" && prisma) {
+          return reply
+            .code(404)
+            .send({ error: "Repository must be registered before persisted policy preview" });
+        }
+        if (repositoryId && actor && repositoryOrganization) {
+          const tenantAccess = requireOrganizationAccess(
+            actor,
+            repositoryOrganization,
+            body.persist ? "Persisted policy preview" : "Stored policy preview"
+          );
+          if (!tenantAccess.ok) {
+            return handleAuthzFailure(request, reply, tenantAccess);
+          }
+        }
+        const activePolicy = repositoryId ? await getRepositoryPolicy(repositoryId) : undefined;
+        const contentYaml = body.contentYaml ?? activePolicy?.contentYaml;
+        if (!contentYaml) {
+          return reply
+            .code(400)
+            .send({ error: "contentYaml is required when the repository has no active policy" });
+        }
+        const evaluationInput: Parameters<typeof evaluateFixturePr>[0] = {
+          pr: body.pr,
+          policyYaml: contentYaml,
+          organizationId: actor?.organizationId ?? "org_local",
+          storagePolicy
+        };
+        if (repositoryId) {
+          evaluationInput.repositoryId = repositoryId;
+          const modeOverride = await getRepositoryModeOverride(state, prisma, repositoryId);
+          if (modeOverride) {
+            evaluationInput.modeOverride = modeOverride;
+          }
+        }
+        const output = evaluateFixturePr(evaluationInput);
+        if (!body.persist && actor && repositoryId && activePolicy && repositoryOrganization) {
+          await audit({
+            organizationId: repositoryOrganization,
+            repositoryId,
+            actor: actor.login,
+            actorRole: actor.role,
+            action: "policy_previewed",
+            targetType: "policy",
+            targetId: activePolicy.contentHash,
+            policyVersion: output.result.policyVersion,
+            policyPackId: output.result.policyPackId,
+            policyPackVersion: output.result.policyPackVersion,
+            requestId: request.id,
+            metadataJson: {
+              mode: output.result.mode,
+              status: output.result.status,
+              policyVersion: output.result.policyVersion,
+              policyPackId: output.result.policyPackId,
+              policyPackVersion: output.result.policyPackVersion,
+              repositoryFullName: body.pr.repositoryFullName,
+              previewPersisted: false,
+              actorRole: actor.role
+            }
+          });
+        }
+        if (!body.persist) {
+          return safe({ ...output, persisted: false });
+        }
+
+        if (!actor) {
+          const resolvedActor = requireApiActor(request);
+          if (isAuthzFailure(resolvedActor)) {
+            return handleAuthzFailure(request, reply, resolvedActor);
+          }
+          actor = resolvedActor;
+        }
+        const record = await saveRecord(
+          sanitizeChangeControlRecord(output.record, storagePolicy),
+          body.pr
         );
-        if (!tenantAccess.ok) {
-          return handleAuthzFailure(request, reply, tenantAccess);
-        }
-      }
-      const activePolicy = repositoryId ? await getRepositoryPolicy(repositoryId) : undefined;
-      const contentYaml = body.contentYaml ?? activePolicy?.contentYaml;
-      if (!contentYaml) {
-        return reply
-          .code(400)
-          .send({ error: "contentYaml is required when the repository has no active policy" });
-      }
-      const evaluationInput: Parameters<typeof evaluateFixturePr>[0] = {
-        pr: body.pr,
-        policyYaml: contentYaml,
-        organizationId: actor?.organizationId ?? "org_local",
-        storagePolicy
-      };
-      if (repositoryId) {
-        evaluationInput.repositoryId = repositoryId;
-        const modeOverride = await getRepositoryModeOverride(state, prisma, repositoryId);
-        if (modeOverride) {
-          evaluationInput.modeOverride = modeOverride;
-        }
-      }
-      const output = evaluateFixturePr(evaluationInput);
-      if (!body.persist && actor && repositoryId && activePolicy && repositoryOrganization) {
         await audit({
-          organizationId: repositoryOrganization,
-          repositoryId,
+          organizationId: record.organizationId,
+          repositoryId: record.repositoryId,
+          pullRequestId: record.id,
           actor: actor.login,
           actorRole: actor.role,
-          action: "policy_previewed",
-          targetType: "policy",
-          targetId: activePolicy.contentHash,
+          action: "check_published",
+          targetType: "change_control_record",
+          targetId: record.id,
           policyVersion: output.result.policyVersion,
           policyPackId: output.result.policyPackId,
           policyPackVersion: output.result.policyPackVersion,
           requestId: request.id,
           metadataJson: {
-            mode: output.result.mode,
+            conclusion: output.checkRun.conclusion,
             status: output.result.status,
+            mode: output.result.mode,
             policyVersion: output.result.policyVersion,
             policyPackId: output.result.policyPackId,
             policyPackVersion: output.result.policyPackVersion,
-            repositoryFullName: body.pr.repositoryFullName,
-            previewPersisted: false,
+            previewPersisted: true,
             actorRole: actor.role
           }
         });
+        return safe({ ...output, record, persisted: true });
       }
-      if (!body.persist) {
-        return safe({ ...output, persisted: false });
-      }
-
-      if (!actor) {
-        const resolvedActor = requireApiActor(request);
-        if (isAuthzFailure(resolvedActor)) {
-          return handleAuthzFailure(request, reply, resolvedActor);
-        }
-        actor = resolvedActor;
-      }
-      const record = await saveRecord(
-        sanitizeChangeControlRecord(output.record, storagePolicy),
-        body.pr
-      );
-      await audit({
-        organizationId: record.organizationId,
-        repositoryId: record.repositoryId,
-        pullRequestId: record.id,
-        actor: actor.login,
-        actorRole: actor.role,
-        action: "check_published",
-        targetType: "change_control_record",
-        targetId: record.id,
-        policyVersion: output.result.policyVersion,
-        policyPackId: output.result.policyPackId,
-        policyPackVersion: output.result.policyPackVersion,
-        requestId: request.id,
-        metadataJson: {
-          conclusion: output.checkRun.conclusion,
-          status: output.result.status,
-          mode: output.result.mode,
-          policyVersion: output.result.policyVersion,
-          policyPackId: output.result.policyPackId,
-          policyPackVersion: output.result.policyPackVersion,
-          previewPersisted: true,
-          actorRole: actor.role
-        }
-      });
-      return safe({ ...output, record, persisted: true });
-    });
+    );
   });
 
   void app.register(async function recordEvidenceReviewerRoutes(app) {

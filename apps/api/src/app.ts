@@ -135,6 +135,36 @@ type ReplayableDelivery = {
   envelope: GithubWebhookEnvelope;
 };
 
+type RepositoryInstallationRow = {
+  fullName: string;
+  githubRepositoryId: bigint;
+};
+
+type CountGroup<Key extends string> = Record<Key, string | null> & {
+  _count: { _all: number };
+};
+
+type WebhookFailureRow = {
+  deliveryId: string;
+  deliveryStatus: string | null;
+  queueJobId: string | null;
+  repositoryFullName: string | null;
+  pullRequestNumber: number | null;
+  headSha: string | null;
+  evaluationAttemptsMade: number;
+  evaluationTerminalFailure: boolean;
+  lastEnqueueFailureClass: string | null;
+  lastEnqueueFailureMessage: string | null;
+  lastEnqueueFailedAt: Date | string | null;
+  lastFailureClass: string | null;
+  lastFailureMessage: string | null;
+  lastFailureCorrelationId: string | null;
+  lastFailedAt: Date | string | null;
+  replayCount: number;
+  lastReplayedAt: Date | string | null;
+  lastReplayedBy: string | null;
+};
+
 type AppDependencyOverrides = {
   prisma?: PrismaClient | undefined;
   evaluationQueue?: Queue<MergeGuardEvaluationJobPayload> | undefined;
@@ -2193,15 +2223,14 @@ async function syncRepositoriesFromCurrentGithubInstallation(
     repositories.map((repository) => githubRepositoryBigInt(repository).toString())
   );
   const currentNames = new Set(repositories.map((repository) => repository.fullName));
-  const staleRepositories = (
-    await prisma.repository.findMany({
-      where: {
-        organizationId: input.organizationId,
-        fullName: { startsWith: `${input.accountLogin}/` }
-      },
-      select: { fullName: true, githubRepositoryId: true }
-    })
-  )
+  const existingRepositories = (await prisma.repository.findMany({
+    where: {
+      organizationId: input.organizationId,
+      fullName: { startsWith: `${input.accountLogin}/` }
+    },
+    select: { fullName: true, githubRepositoryId: true }
+  })) as RepositoryInstallationRow[];
+  const staleRepositories = existingRepositories
     .filter(
       (repository) =>
         !currentRepositoryIds.has(repository.githubRepositoryId.toString()) &&
@@ -2586,13 +2615,19 @@ async function domainMetricCounts(
     };
   }
 
-  const [webhookGroups, recordGroups, checkRuns, exports, auditEventGroups] = await Promise.all([
+  const [webhookGroups, recordGroups, checkRuns, exports, auditEventGroups] = (await Promise.all([
     prisma.webhookDelivery.groupBy({ by: ["deliveryStatus"], _count: { _all: true } }),
     prisma.changeControlRecord.groupBy({ by: ["checkStatus"], _count: { _all: true } }),
     prisma.checkRun.count(),
     prisma.exportJob.count(),
     prisma.auditEvent.groupBy({ by: ["action"], _count: { _all: true } })
-  ]);
+  ])) as [
+    Array<CountGroup<"deliveryStatus">>,
+    Array<CountGroup<"checkStatus">>,
+    number,
+    number,
+    Array<CountGroup<"action">>
+  ];
   return {
     webhookDeliveriesByStatus: Object.fromEntries(
       webhookGroups.map((group) => [group.deliveryStatus, group._count._all])
@@ -2751,7 +2786,7 @@ async function listRecentWebhookDeliveryFailures(
   if (!prisma) {
     return [];
   }
-  const deliveries = await prisma.webhookDelivery.findMany({
+  const deliveries = (await prisma.webhookDelivery.findMany({
     where: {
       OR: [{ lastFailedAt: { not: null } }, { lastEnqueueFailedAt: { not: null } }],
       ...(organizationId ? { organizationId } : {})
@@ -2761,7 +2796,7 @@ async function listRecentWebhookDeliveryFailures(
       { lastFailedAt: { sort: "desc", nulls: "last" } }
     ],
     take: QUEUE_FAILED_JOB_LIMIT
-  });
+  })) as WebhookFailureRow[];
   return deliveries.map((delivery) => ({
     deliveryId: delivery.deliveryId,
     deliveryStatus: delivery.deliveryStatus,
