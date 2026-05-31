@@ -69,8 +69,15 @@ import {
   paginateRecords,
   recordRequiresAction,
   type ExportJob,
+  type OwnerMappingState,
   type PersistencePort,
   type ReplayableDelivery,
+  type RepositoryDataHandlingState,
+  type RepositoryPolicyState,
+  type RepositorySettingsPatch,
+  type RepositorySettingsResult,
+  type RepositorySettingsState,
+  type RepositorySummary,
   type StoredWebhookDelivery,
   type WebhookDeliveryStatus
 } from "./ports.js";
@@ -139,6 +146,11 @@ type AppDependencyOverrides = {
   evaluationQueue?: Queue<MergeGuardEvaluationJobPayload> | undefined;
 };
 
+type PrismaTransactionClient = Pick<
+  PrismaClient,
+  "ownerMapping" | "policyVersion" | "repository" | "repositorySetting"
+>;
+
 type PageInfo = {
   limit: number;
   offset: number;
@@ -152,26 +164,6 @@ type RecordPageQuery = z.infer<typeof recordPageQuerySchema>;
 type RecordPage = {
   records: ChangeControlRecord[];
   pageInfo: PageInfo;
-};
-
-export type RepositoryPolicyState = {
-  repositoryId: string;
-  version: string;
-  mode: ChangeControlRecord["mode"];
-  contentYaml: string;
-  contentHash: string;
-  createdBy: string;
-  createdAt: string;
-  policyPackId?: string | undefined;
-  policyPackVersion?: string | undefined;
-};
-
-type RepositoryDataHandlingState = {
-  sourceCodeStorage: boolean;
-  fullDiffRetention: "disabled" | "7d" | "30d" | "custom";
-  redactSecrets: boolean;
-  llmFeatures: boolean;
-  auditRecordRetentionDays: number;
 };
 
 type GithubRepositoryRef = {
@@ -251,26 +243,6 @@ type AuditEventRow = {
   policyPackVersion: string | null;
   metadataJson: unknown;
   createdAt: Date;
-};
-
-type RepositorySettingsState = {
-  repositoryId: string;
-  organizationId?: string | undefined;
-  enabled: boolean;
-  mode?: ChangeControlRecord["mode"] | undefined;
-  dataHandling?: RepositoryDataHandlingState | undefined;
-  updatedAt: string;
-};
-
-type OwnerMappingState = {
-  id: string;
-  organizationId: string;
-  repositoryId?: string | undefined;
-  ownerKey: string;
-  reviewer: string;
-  reviewerType: "user" | "team";
-  createdAt: string;
-  updatedAt: string;
 };
 
 export type AppState = {
@@ -636,8 +608,10 @@ export function createApp(
   const saveRecord = (record: ChangeControlRecord, pr?: PullRequestInput) =>
     saveChangeControlRecord(persistence, record, pr);
   const listRepositories = (organizationId?: string) =>
-    listRepositorySummaries(state, prisma, config.defaultPolicyMode, organizationId);
-  const getRepositoryPolicy = (id: string) => getActiveRepositoryPolicy(state, prisma, id);
+    listRepositorySummaries(persistence, config.defaultPolicyMode, organizationId);
+  const getRepositoryOrganizationId = (repositoryId: string) =>
+    repositoryOrganizationId(persistence, repositoryId);
+  const getRepositoryPolicy = (id: string) => getActiveRepositoryPolicy(persistence, id);
   const getRecordPolicyConfig = async (record: ChangeControlRecord) => {
     const activePolicy = await getRepositoryPolicy(record.repositoryId);
     const contentYaml =
@@ -658,12 +632,12 @@ export function createApp(
     contentYaml: string,
     actor: string,
     parsed: ReturnType<typeof parsePolicyYaml>
-  ) => saveActiveRepositoryPolicy(state, prisma, repositoryId, contentYaml, actor, parsed);
-  const listOwnerMappings = () => listConfiguredOwnerMappings(state, prisma);
+  ) => saveActiveRepositoryPolicy(persistence, repositoryId, contentYaml, actor, parsed);
+  const listOwnerMappings = () => listConfiguredOwnerMappings(persistence);
   const saveRepositorySettings = (
     repositoryId: string,
     body: z.infer<typeof repositorySettingsPatchSchema>
-  ) => updateRepositorySettings(state, prisma, repositoryId, body, config);
+  ) => updateRepositorySettings(persistence, repositoryId, body, config);
   const audit = (input: Parameters<typeof createAuditEvent>[0]) =>
     recordAuditEvent(persistence, input);
   const auditReevaluation = (
@@ -857,7 +831,7 @@ export function createApp(
     recordsVisibleTo,
     recomputeRequirementStatus,
     rejectGithubInstallation,
-    repositoryOrganizationId,
+    repositoryOrganizationId: getRepositoryOrganizationId,
     repositoryReadinessScore,
     repositorySettingsPatchSchema,
     requireReadActor,
@@ -901,176 +875,29 @@ export function createInitialState(): AppState {
 }
 
 async function repositoryOrganizationId(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   repositoryId: string
 ): Promise<string | undefined> {
-  if (prisma) {
-    const repository = await prisma.repository.findUnique({
-      where: { id: repositoryId },
-      select: { organizationId: true }
-    });
-    return repository?.organizationId;
-  }
-  return (
-    state.repositorySettings.get(repositoryId)?.organizationId ??
-    state.records.find((record) => record.repositoryId === repositoryId)?.organizationId
-  );
+  return persistence.repositories.organizationId(repositoryId);
 }
 
 async function listRepositorySummaries(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   defaultMode: ChangeControlRecord["mode"],
   organizationId?: string
 ) {
-  if (prisma) {
-    const rows = await prisma.repository.findMany({
-      ...(organizationId ? { where: { organizationId } } : {}),
-      include: { currentPolicyVersion: true, settings: true },
-      orderBy: { fullName: "asc" }
-    });
-    return rows.map((row: RepositorySummaryRow) => {
-      const parsedPolicy = row.currentPolicyVersion
-        ? parsePolicyYaml(row.currentPolicyVersion.contentYaml)
-        : undefined;
-      return {
-        id: row.id,
-        organizationId: row.organizationId,
-        fullName: row.fullName,
-        enabled: row.enabled,
-        mode: effectiveRepositoryMode(row.mode, row.currentPolicyVersion?.mode, defaultMode),
-        currentPolicyPack: parsedPolicy?.config.policy_pack_id,
-        currentPolicyVersion: row.currentPolicyVersion?.version,
-        protected: row.protected,
-        defaultBranch: row.defaultBranch,
-        archivedAt: row.archivedAt?.toISOString(),
-        archiveReason: row.archiveReason ?? undefined,
-        dataHandling: row.settings ? dataHandlingFromRepositorySetting(row.settings) : undefined
-      };
-    });
-  }
-
-  const repositories = new Map<
-    string,
-    {
-      id: string;
-      organizationId?: string | undefined;
-      fullName: string;
-      enabled: boolean;
-      mode: ChangeControlRecord["mode"];
-      currentPolicyPack?: string | undefined;
-      currentPolicyVersion?: string | undefined;
-      protected: boolean;
-      defaultBranch: string;
-      dataHandling?: RepositoryDataHandlingState | undefined;
-      archivedAt?: string | undefined;
-      archiveReason?: string | undefined;
-    }
-  >();
-
-  for (const record of state.records) {
-    if (organizationId && record.organizationId !== organizationId) {
-      continue;
-    }
-    const policy = state.repositoryPolicies.get(record.repositoryId);
-    const settings = state.repositorySettings.get(record.repositoryId);
-    repositories.set(record.repositoryId, {
-      id: record.repositoryId,
-      organizationId: record.organizationId,
-      fullName: record.repositoryFullName,
-      enabled: settings?.enabled ?? true,
-      mode: settings?.mode ?? policy?.mode ?? record.mode,
-      currentPolicyPack: policy?.policyPackId ?? record.policyPackId,
-      currentPolicyVersion: policy?.version ?? record.policyVersion,
-      protected: false,
-      defaultBranch: record.baseBranch,
-      dataHandling: settings?.dataHandling
-    });
-  }
-
-  for (const policy of state.repositoryPolicies.values()) {
-    const settings = state.repositorySettings.get(policy.repositoryId);
-    const policyOrganizationId =
-      settings?.organizationId ??
-      state.records.find((record) => record.repositoryId === policy.repositoryId)?.organizationId;
-    if (organizationId && policyOrganizationId !== organizationId) {
-      continue;
-    }
-    if (!repositories.has(policy.repositoryId)) {
-      repositories.set(policy.repositoryId, {
-        id: policy.repositoryId,
-        ...(policyOrganizationId ? { organizationId: policyOrganizationId } : {}),
-        fullName: policy.repositoryId,
-        enabled: settings?.enabled ?? true,
-        mode: settings?.mode ?? policy.mode,
-        currentPolicyPack: policy.policyPackId,
-        currentPolicyVersion: policy.version,
-        protected: false,
-        defaultBranch: "main",
-        dataHandling: settings?.dataHandling
-      });
-    }
-  }
-
-  for (const settings of state.repositorySettings.values()) {
-    if (organizationId && settings.organizationId !== organizationId) {
-      continue;
-    }
-    if (!repositories.has(settings.repositoryId)) {
-      repositories.set(settings.repositoryId, {
-        id: settings.repositoryId,
-        organizationId: settings.organizationId,
-        fullName: settings.repositoryId,
-        enabled: settings.enabled,
-        mode: settings.mode ?? defaultMode,
-        protected: false,
-        defaultBranch: "main",
-        dataHandling: settings.dataHandling
-      });
-    }
-  }
-
-  return [...repositories.values()].sort((a, b) => a.fullName.localeCompare(b.fullName));
+  return persistence.repositories.listSummaries(defaultMode, organizationId);
 }
 
 async function getActiveRepositoryPolicy(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   repositoryId: string
 ): Promise<RepositoryPolicyState | undefined> {
-  const cached = state.repositoryPolicies.get(repositoryId);
-  if (cached) {
-    return cached;
-  }
-  if (!prisma) {
-    return undefined;
-  }
-  const repository = await prisma.repository.findUnique({
-    where: { id: repositoryId },
-    include: { currentPolicyVersion: true }
-  });
-  const version = repository?.currentPolicyVersion;
-  if (!version) {
-    return undefined;
-  }
-  const parsed = parsePolicyYaml(version.contentYaml);
-  return {
-    repositoryId,
-    version: version.version,
-    mode: version.mode,
-    contentYaml: version.contentYaml,
-    contentHash: version.contentHash,
-    createdBy: version.createdBy,
-    createdAt: version.createdAt.toISOString(),
-    policyPackId: parsed.config.policy_pack_id,
-    policyPackVersion: parsed.config.policy_pack_version
-  };
+  return persistence.repositories.getActivePolicy(repositoryId);
 }
 
 async function saveActiveRepositoryPolicy(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   repositoryId: string,
   contentYaml: string,
   actor: string,
@@ -1087,223 +914,28 @@ async function saveActiveRepositoryPolicy(
     policyPackId: parsed.config.policy_pack_id,
     policyPackVersion: parsed.config.policy_pack_version
   };
-  state.repositoryPolicies.set(repositoryId, policy);
-
-  if (!prisma) {
-    return policy;
-  }
-
-  const repository = await prisma.repository.findUnique({
-    where: { id: repositoryId },
-    select: { id: true, organizationId: true }
-  });
-  if (!repository) {
-    throw new Error("Repository must exist before assigning an active policy.");
-  }
-  const row = await prisma.policyVersion.create({
-    data: {
-      organizationId: repository.organizationId,
-      repositoryId: repository.id,
-      version: policy.version,
-      mode: policy.mode,
-      contentYaml: policy.contentYaml,
-      contentHash: policy.contentHash,
-      createdBy: actor
-    }
-  });
-  await prisma.repository.update({
-    where: { id: repository.id },
-    data: {
-      currentPolicyVersionId: row.id,
-      mode: policy.mode
-    }
-  });
-
-  return {
-    ...policy,
-    version: row.version,
-    createdAt: row.createdAt.toISOString()
-  };
+  return persistence.repositories.saveActivePolicy(policy);
 }
 
 async function updateRepositorySettings(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   repositoryId: string,
   patch: z.infer<typeof repositorySettingsPatchSchema>,
   config: ReturnType<typeof loadConfig>
-): Promise<{
-  organizationId: string;
-  repository: {
-    id: string;
-    enabled: boolean;
-    mode: ChangeControlRecord["mode"];
-    dataHandling: RepositoryDataHandlingState;
-  };
-  ownerMappings: OwnerMappingState[];
-}> {
-  const dataHandlingPatch = extractDataHandlingPatch(patch);
-  if (prisma) {
-    const repository = await prisma.repository.findUnique({
-      where: { id: repositoryId },
-      include: { currentPolicyVersion: true, settings: true }
-    });
-    if (!repository) {
-      throw new Error("Repository must exist before updating settings.");
-    }
-    let policyVersionId: string | null | undefined;
-    let policyMode: ChangeControlRecord["mode"] | undefined;
-    if (patch.policyVersion) {
-      const version = await prisma.policyVersion.findFirst({
-        where: {
-          repositoryId: repository.id,
-          version: patch.policyVersion
-        },
-        select: { id: true, mode: true }
-      });
-      if (!version) {
-        throw new Error("Requested policy version is not available for this repository.");
-      }
-      policyVersionId = version.id;
-      policyMode = version.mode;
-    }
-    const updatedRepository = await prisma.repository.update({
-      where: { id: repository.id },
-      data: {
-        enabled: patch.enabled ?? repository.enabled,
-        mode: patch.mode ?? policyMode ?? repository.mode,
-        ...(policyVersionId ? { currentPolicyVersionId: policyVersionId } : {})
-      }
-    });
-    let dataHandling = repository.settings
-      ? dataHandlingFromRepositorySetting(repository.settings)
-      : dataHandlingDefaults(config);
-    if (dataHandlingPatch) {
-      const savedSetting = await prisma.repositorySetting.upsert({
-        where: { repositoryId: repository.id },
-        update: dataHandlingPatch,
-        create: {
-          repositoryId: repository.id,
-          ...dataHandlingDefaults(config),
-          ...dataHandlingPatch
-        }
-      });
-      dataHandling = dataHandlingFromRepositorySetting(savedSetting);
-    }
-    if (patch.ownerMappings) {
-      await prisma.ownerMapping.deleteMany({ where: { repositoryId: repository.id } });
-      if (patch.ownerMappings.length > 0) {
-        await prisma.ownerMapping.createMany({
-          data: patch.ownerMappings.map((mapping) => ({
-            organizationId: repository.organizationId,
-            repositoryId: repository.id,
-            ownerKey: mapping.ownerKey,
-            reviewer: mapping.reviewer,
-            reviewerType: mapping.reviewerType
-          }))
-        });
-      }
-    }
-    const ownerMappings = await listConfiguredOwnerMappings(state, prisma, repository.id);
-    return {
-      organizationId: repository.organizationId,
-      repository: {
-        id: repository.id,
-        enabled: updatedRepository.enabled,
-        mode:
-          updatedRepository.mode ??
-          repository.currentPolicyVersion?.mode ??
-          config.defaultPolicyMode,
-        dataHandling
-      },
-      ownerMappings
-    };
-  }
-
-  const existingRecord = state.records.find((record) => record.repositoryId === repositoryId);
-  const existingPolicy = state.repositoryPolicies.get(repositoryId);
-  const existingSettings = state.repositorySettings.get(repositoryId);
-  if (!existingRecord && !existingPolicy && !existingSettings) {
-    throw new Error("Repository must exist before updating settings.");
-  }
-  if (patch.policyVersion && existingPolicy?.version !== patch.policyVersion) {
-    throw new Error("Requested policy version is not available for this repository.");
-  }
-  const dataHandling = {
-    ...(existingSettings?.dataHandling ?? dataHandlingDefaults(config)),
-    ...(dataHandlingPatch ?? {})
-  };
-  const nextSettings: RepositorySettingsState = {
+): Promise<RepositorySettingsResult> {
+  return persistence.repositories.updateSettings({
     repositoryId,
-    organizationId: existingRecord?.organizationId ?? existingSettings?.organizationId,
-    enabled: patch.enabled ?? existingSettings?.enabled ?? true,
-    mode: patch.mode ?? existingSettings?.mode ?? existingPolicy?.mode ?? existingRecord?.mode,
-    dataHandling,
-    updatedAt: new Date().toISOString()
-  };
-  state.repositorySettings.set(repositoryId, nextSettings);
-  if (patch.ownerMappings) {
-    state.ownerMappings = [
-      ...state.ownerMappings.filter((mapping) => mapping.repositoryId !== repositoryId),
-      ...patch.ownerMappings.map((mapping) => {
-        const now = new Date().toISOString();
-        return {
-          id: `owner_mapping:${repositoryId}:${mapping.ownerKey}`,
-          organizationId: existingRecord?.organizationId ?? "org_local",
-          repositoryId,
-          ownerKey: mapping.ownerKey,
-          reviewer: mapping.reviewer,
-          reviewerType: mapping.reviewerType,
-          createdAt: now,
-          updatedAt: now
-        } satisfies OwnerMappingState;
-      })
-    ];
-  }
-  const ownerMappings = await listConfiguredOwnerMappings(state, prisma, repositoryId);
-  return {
-    organizationId: existingRecord?.organizationId ?? "org_local",
-    repository: {
-      id: repositoryId,
-      enabled: nextSettings.enabled,
-      mode: nextSettings.mode ?? config.defaultPolicyMode,
-      dataHandling
-    },
-    ownerMappings
-  };
+    patch,
+    defaultDataHandling: dataHandlingDefaults(config),
+    defaultMode: config.defaultPolicyMode
+  });
 }
 
 async function listConfiguredOwnerMappings(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   repositoryId?: string
 ): Promise<OwnerMappingState[]> {
-  if (prisma) {
-    const rows = await prisma.ownerMapping.findMany({
-      ...(repositoryId ? { where: { repositoryId } } : {}),
-      orderBy: [{ repositoryId: "asc" }, { ownerKey: "asc" }]
-    });
-    return rows.map((row: OwnerMappingRow) => {
-      const output: OwnerMappingState = {
-        id: row.id,
-        organizationId: row.organizationId,
-        ownerKey: row.ownerKey,
-        reviewer: row.reviewer,
-        reviewerType: row.reviewerType === "user" ? "user" : "team",
-        createdAt: row.createdAt.toISOString(),
-        updatedAt: row.updatedAt.toISOString()
-      };
-      if (row.repositoryId) {
-        output.repositoryId = row.repositoryId;
-      }
-      return output;
-    });
-  }
-  return state.ownerMappings
-    .filter((mapping) => !repositoryId || mapping.repositoryId === repositoryId)
-    .sort((a, b) =>
-      `${a.repositoryId ?? ""}:${a.ownerKey}`.localeCompare(`${b.repositoryId ?? ""}:${b.ownerKey}`)
-    );
+  return persistence.repositories.listOwnerMappings(repositoryId);
 }
 
 async function defaultDataHandlingSettings(
@@ -1594,6 +1226,223 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         };
       }
     },
+    repositories: {
+      async organizationId(repositoryId) {
+        const repository = await prisma.repository.findUnique({
+          where: { id: repositoryId },
+          select: { organizationId: true }
+        });
+        return repository?.organizationId;
+      },
+      async listSummaries(defaultMode, organizationId) {
+        const rows = await prisma.repository.findMany({
+          ...(organizationId ? { where: { organizationId } } : {}),
+          include: { currentPolicyVersion: true, settings: true },
+          orderBy: { fullName: "asc" }
+        });
+        return rows.map((row: RepositorySummaryRow) => {
+          const parsedPolicy = row.currentPolicyVersion
+            ? parsePolicyYaml(row.currentPolicyVersion.contentYaml)
+            : undefined;
+          return {
+            id: row.id,
+            organizationId: row.organizationId,
+            fullName: row.fullName,
+            enabled: row.enabled,
+            mode: effectiveRepositoryMode(row.mode, row.currentPolicyVersion?.mode, defaultMode),
+            currentPolicyPack: parsedPolicy?.config.policy_pack_id,
+            currentPolicyVersion: row.currentPolicyVersion?.version,
+            protected: row.protected,
+            defaultBranch: row.defaultBranch,
+            archivedAt: row.archivedAt?.toISOString(),
+            archiveReason: row.archiveReason ?? undefined,
+            dataHandling: row.settings ? dataHandlingFromRepositorySetting(row.settings) : undefined
+          };
+        });
+      },
+      async getActivePolicy(repositoryId) {
+        const cached = state.repositoryPolicies.get(repositoryId);
+        if (cached) {
+          return cached;
+        }
+        const repository = await prisma.repository.findUnique({
+          where: { id: repositoryId },
+          include: { currentPolicyVersion: true }
+        });
+        const version = repository?.currentPolicyVersion;
+        if (!version) {
+          return undefined;
+        }
+        const parsed = parsePolicyYaml(version.contentYaml);
+        return {
+          repositoryId,
+          version: version.version,
+          mode: version.mode,
+          contentYaml: version.contentYaml,
+          contentHash: version.contentHash,
+          createdBy: version.createdBy,
+          createdAt: version.createdAt.toISOString(),
+          policyPackId: parsed.config.policy_pack_id,
+          policyPackVersion: parsed.config.policy_pack_version
+        };
+      },
+      async saveActivePolicy(policy) {
+        const repository = await prisma.repository.findUnique({
+          where: { id: policy.repositoryId },
+          select: { id: true, organizationId: true }
+        });
+        if (!repository) {
+          throw new Error("Repository must exist before assigning an active policy.");
+        }
+        const row = await prisma.$transaction(async (tx: PrismaTransactionClient) => {
+          const createdRow = await tx.policyVersion.create({
+            data: {
+              organizationId: repository.organizationId,
+              repositoryId: repository.id,
+              version: policy.version,
+              mode: policy.mode,
+              contentYaml: policy.contentYaml,
+              contentHash: policy.contentHash,
+              createdBy: policy.createdBy
+            }
+          });
+          await tx.repository.update({
+            where: { id: repository.id },
+            data: {
+              currentPolicyVersionId: createdRow.id,
+              mode: policy.mode
+            }
+          });
+          return createdRow;
+        });
+
+        const finalizedPolicy = {
+          ...policy,
+          version: row.version,
+          createdAt: row.createdAt.toISOString()
+        };
+        state.repositoryPolicies.set(policy.repositoryId, finalizedPolicy);
+        return finalizedPolicy;
+      },
+      async updateSettings({ repositoryId, patch, defaultDataHandling, defaultMode }) {
+        const dataHandlingPatch = extractDataHandlingPatch(patch);
+        const repository = await prisma.repository.findUnique({
+          where: { id: repositoryId },
+          include: { currentPolicyVersion: true, settings: true }
+        });
+        if (!repository) {
+          throw new Error("Repository must exist before updating settings.");
+        }
+        const [updatedRepository, dataHandling, ownerMappings] = await prisma.$transaction(
+          async (tx: PrismaTransactionClient) => {
+            let policyVersionId: string | null | undefined;
+            let policyMode: ChangeControlRecord["mode"] | undefined;
+            if (patch.policyVersion) {
+              const version = await tx.policyVersion.findFirst({
+                where: {
+                  repositoryId: repository.id,
+                  version: patch.policyVersion
+                },
+                select: { id: true, mode: true }
+              });
+              if (!version) {
+                throw new Error("Requested policy version is not available for this repository.");
+              }
+              policyVersionId = version.id;
+              policyMode = version.mode;
+            }
+            const updated = await tx.repository.update({
+              where: { id: repository.id },
+              data: {
+                enabled: patch.enabled ?? repository.enabled,
+                mode: patch.mode ?? policyMode ?? repository.mode,
+                ...(policyVersionId ? { currentPolicyVersionId: policyVersionId } : {})
+              }
+            });
+            let currentDataHandling = repository.settings
+              ? dataHandlingFromRepositorySetting(repository.settings)
+              : defaultDataHandling;
+            if (dataHandlingPatch) {
+              const savedSetting = await tx.repositorySetting.upsert({
+                where: { repositoryId: repository.id },
+                update: dataHandlingPatch,
+                create: {
+                  repositoryId: repository.id,
+                  ...defaultDataHandling,
+                  ...dataHandlingPatch
+                }
+              });
+              currentDataHandling = dataHandlingFromRepositorySetting(savedSetting);
+            }
+            if (patch.ownerMappings) {
+              await tx.ownerMapping.deleteMany({ where: { repositoryId: repository.id } });
+              if (patch.ownerMappings.length > 0) {
+                await tx.ownerMapping.createMany({
+                  data: patch.ownerMappings.map((mapping) => ({
+                    organizationId: repository.organizationId,
+                    repositoryId: repository.id,
+                    ownerKey: mapping.ownerKey,
+                    reviewer: mapping.reviewer,
+                    reviewerType: mapping.reviewerType
+                  }))
+                });
+              }
+            }
+            const ownerMappingRows = await tx.ownerMapping.findMany({
+              where: { repositoryId: repository.id },
+              orderBy: [{ repositoryId: "asc" }, { ownerKey: "asc" }]
+            });
+            const mappedOwners = ownerMappingRows.map((row: OwnerMappingRow) => {
+              const output: OwnerMappingState = {
+                id: row.id,
+                organizationId: row.organizationId,
+                ownerKey: row.ownerKey,
+                reviewer: row.reviewer,
+                reviewerType: row.reviewerType === "user" ? "user" : "team",
+                createdAt: row.createdAt.toISOString(),
+                updatedAt: row.updatedAt.toISOString()
+              };
+              if (row.repositoryId) {
+                output.repositoryId = row.repositoryId;
+              }
+              return output;
+            });
+            return [updated, currentDataHandling, mappedOwners] as const;
+          }
+        );
+        return {
+          organizationId: repository.organizationId,
+          repository: {
+            id: repository.id,
+            enabled: updatedRepository.enabled,
+            mode: updatedRepository.mode ?? repository.currentPolicyVersion?.mode ?? defaultMode,
+            dataHandling
+          },
+          ownerMappings
+        };
+      },
+      async listOwnerMappings(repositoryId) {
+        const rows = await prisma.ownerMapping.findMany({
+          ...(repositoryId ? { where: { repositoryId } } : {}),
+          orderBy: [{ repositoryId: "asc" }, { ownerKey: "asc" }]
+        });
+        return rows.map((row: OwnerMappingRow) => {
+          const output: OwnerMappingState = {
+            id: row.id,
+            organizationId: row.organizationId,
+            ownerKey: row.ownerKey,
+            reviewer: row.reviewer,
+            reviewerType: row.reviewerType === "user" ? "user" : "team",
+            createdAt: row.createdAt.toISOString(),
+            updatedAt: row.updatedAt.toISOString()
+          };
+          if (row.repositoryId) {
+            output.repositoryId = row.repositoryId;
+          }
+          return output;
+        });
+      }
+    },
     auditEvents: {
       async append(event) {
         state.auditEvents.push(event);
@@ -1744,10 +1593,16 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         const repositoryId = repositoryFullName
           ? await findRepositoryIdByFullName(state, prisma, repositoryFullName)
           : undefined;
-        const organizationId = repositoryId
-          ? await repositoryOrganizationId(state, prisma, repositoryId)
-          : state.records.find((record) => record.repositoryFullName === repositoryFullName)
-              ?.organizationId;
+        const repository = repositoryId
+          ? await prisma.repository.findUnique({
+              where: { id: repositoryId },
+              select: { organizationId: true }
+            })
+          : undefined;
+        const organizationId =
+          repository?.organizationId ??
+          state.records.find((record) => record.repositoryFullName === repositoryFullName)
+            ?.organizationId;
         const payloadJson = {
           installationId: envelope.installationId,
           repository: envelope.repository,

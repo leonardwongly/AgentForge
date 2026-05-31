@@ -47,11 +47,12 @@ import {
   type AuthzFailure
 } from "../auth.js";
 import { evaluateFixturePr } from "../evaluation.js";
-import type { AppState, RepositoryPolicyState } from "../app.js";
+import type { AppState } from "../app.js";
 import type { loadConfig } from "@agentforge/config";
 import type {
   ExportJob,
   ReplayableDelivery,
+  RepositoryPolicyState,
   WebhookDeliveryStatus,
   WebhookReplayTarget
 } from "../ports.js";
@@ -303,11 +304,7 @@ type ResolvedApiRouteContext = {
     prisma: PrismaClient | undefined,
     input: { id: string; organizationId: string; actor: string }
   ) => Promise<GithubInstallation | undefined>;
-  repositoryOrganizationId: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    repositoryId: string
-  ) => Promise<string | undefined>;
+  repositoryOrganizationId: (repositoryId: string) => Promise<string | undefined>;
   repositoryReadinessScore: (input: {
     repositories: RepositorySummary[];
     records: ChangeControlRecord[];
@@ -744,7 +741,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       const replayOrganizationId =
         replayable.delivery.organizationId ??
         (replayable.delivery.repositoryId
-          ? await repositoryOrganizationId(state, prisma, replayable.delivery.repositoryId)
+          ? await repositoryOrganizationId(replayable.delivery.repositoryId)
           : undefined);
       if (!replayOrganizationId) {
         return reply
@@ -1100,7 +1097,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         return handleAuthzFailure(request, reply, allowed);
       }
       const repositoryId = (request.params as { id: string }).id;
-      const organizationId = await repositoryOrganizationId(state, prisma, repositoryId);
+      const organizationId = await repositoryOrganizationId(repositoryId);
       if (!organizationId) {
         return reply.code(404).send({ error: "Repository not found" });
       }
@@ -1264,7 +1261,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         return;
       }
       const repositoryId = (request.params as { id: string }).id;
-      const organizationId = await repositoryOrganizationId(state, prisma, repositoryId);
+      const organizationId = await repositoryOrganizationId(repositoryId);
       if (!organizationId) {
         return reply.code(404).send({ error: "Repository not found" });
       }
@@ -1303,7 +1300,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         return handleAuthzFailure(request, reply, allowed);
       }
       const repositoryId = (request.params as { id: string }).id;
-      const organizationId = await repositoryOrganizationId(state, prisma, repositoryId);
+      const organizationId = await repositoryOrganizationId(repositoryId);
       if (!organizationId) {
         return reply.code(404).send({ error: "Repository not found" });
       }
@@ -1439,7 +1436,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
             ? await findRepositoryIdByFullName(state, prisma, body.pr.repositoryFullName)
             : undefined;
         const repositoryOrganization = repositoryId
-          ? await repositoryOrganizationId(state, prisma, repositoryId)
+          ? await repositoryOrganizationId(repositoryId)
           : undefined;
         if (repositoryId && !repositoryOrganization) {
           return reply.code(404).send({ error: "Repository not found" });
