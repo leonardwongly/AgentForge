@@ -48,19 +48,21 @@ function envelope(deliveryId: string): GithubWebhookEnvelope {
     repository: {
       id: 456,
       fullName: "acme/app",
-      defaultBranch: "main",
-      private: true
+      owner: "acme",
+      name: "app",
+      defaultBranch: "main"
     },
     pullRequest: {
       id: 789,
       number: 1,
       title: "Change",
-      state: "open",
-      author: "sam",
-      baseRef: "main",
-      headRef: "feature",
+      authorLogin: "sam",
+      baseBranch: "main",
+      headBranch: "feature",
       headSha: "sha",
-      htmlUrl: "https://github.com/acme/app/pull/1"
+      body: "",
+      state: "open",
+      merged: false
     },
     receivedAt: "2026-05-12T00:00:00.000Z"
   };
