@@ -74,7 +74,6 @@ Example with Caddy:
 
 ```caddy
 api.example.com {
-	@stripped header_regexp X-Agentforge .*
 	request_header -X-Agentforge-Actor
 	request_header -X-Agentforge-Role
 	request_header -X-Agentforge-Organization
