@@ -37,6 +37,18 @@ export interface WebhookDeliveryStore {
   listRecentFailures(organizationId?: string): Promise<Array<Record<string, unknown>>>;
 }
 
+export interface GitHubInstallationStore {
+  upsertPending(input: GitHubInstallationVerifyInput): Promise<GitHubInstallationState | undefined>;
+  approve(input: GitHubInstallationDecision): Promise<GitHubInstallationState | undefined>;
+  reject(input: GitHubInstallationDecision): Promise<GitHubInstallationState | undefined>;
+  list(organizationId: string): Promise<GitHubInstallationState[]>;
+  summary(organizationId: string): Promise<GitHubInstallationSummaryState>;
+  recordWebhook(envelope: GithubWebhookEnvelope): Promise<GitHubInstallationState | undefined>;
+  listStoredInstallationEvents(
+    githubInstallationId: string
+  ): Promise<Array<NonNullable<GithubWebhookEnvelope["installation"]>>>;
+}
+
 export interface ExportJobStore {
   save(job: ExportJob, actor: ExportJobActor): Promise<void>;
   get(id: string): Promise<ExportJob | undefined>;
@@ -61,6 +73,18 @@ export interface RepositoryStore {
     defaultMode: ChangeControlRecord["mode"];
   }): Promise<RepositorySettingsResult>;
   listOwnerMappings(repositoryId?: string): Promise<OwnerMappingState[]>;
+  listGithubInstallationRepositories(input: {
+    organizationId: string;
+    accountLogin: string;
+  }): Promise<GithubInstallationRepositoryState[]>;
+  syncGithubInstallation(input: {
+    organizationId: string;
+    installation: NonNullable<GithubWebhookEnvelope["installation"]>;
+  }): Promise<void>;
+  archiveGithubRepositories(input: {
+    organizationId: string;
+    repositoriesRemoved: GithubRepositoryRef[];
+  }): Promise<void>;
 }
 
 export interface EvaluationSnapshotStore {
@@ -72,6 +96,7 @@ export interface PersistencePort {
   records: ChangeControlRecordStore;
   auditEvents: AuditEventStore;
   webhookDeliveries: WebhookDeliveryStore;
+  githubInstallations: GitHubInstallationStore;
   exportJobs: ExportJobStore;
   overrides: OverrideStore;
   repositories: RepositoryStore;
@@ -154,6 +179,59 @@ export type ExportJob = {
 export type ExportJobActor = {
   actor: string;
   actorRole: string;
+};
+
+export type GithubRepositoryRef = {
+  id: number;
+  fullName: string;
+  githubRepositoryId?: bigint | undefined;
+};
+
+export type GithubInstallationStatus =
+  | "pending_approval"
+  | "approved"
+  | "rejected"
+  | "archived"
+  | string;
+
+export type GitHubInstallationState = {
+  id: string;
+  organizationId?: string | undefined;
+  githubInstallationId: string;
+  accountLogin: string;
+  accountType: string;
+  status: GithubInstallationStatus;
+  approvedBy?: string | undefined;
+  approvedAt?: string | undefined;
+  rejectedBy?: string | undefined;
+  rejectedAt?: string | undefined;
+  archivedAt?: string | undefined;
+  lastWebhookAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type GitHubInstallationVerifyInput = {
+  githubInstallationId: string;
+  accountLogin?: string | undefined;
+  accountType?: "Organization" | "User" | undefined;
+  organizationId: string;
+};
+
+export type GitHubInstallationDecision = {
+  id: string;
+  organizationId: string;
+  actor: string;
+};
+
+export type GitHubInstallationSummaryState = {
+  installation?: GitHubInstallationState | undefined;
+  pendingApprovalCount: number;
+};
+
+export type GithubInstallationRepositoryState = {
+  fullName: string;
+  githubRepositoryId: string;
 };
 
 export type RepositoryDataHandlingState = {
@@ -341,6 +419,14 @@ type InMemoryPersistenceState = {
     envelope: GithubWebhookEnvelope;
     queuedAt: string;
   }>;
+  githubInstallations?: GitHubInstallationState[] | undefined;
+  githubInstallationEvents?:
+    | Array<{
+        githubInstallationId: string;
+        installation: NonNullable<GithubWebhookEnvelope["installation"]>;
+        createdAt: string;
+      }>
+    | undefined;
 };
 
 // The C2 test double: a single in-memory adapter behind the port so domain
@@ -356,6 +442,12 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
   const policyVersionSnapshots = new Map<string, PolicyVersionSnapshotState>();
   let evaluationSnapshots: EvaluationSnapshotState[] = [];
   let ownerMappings: OwnerMappingState[] = [];
+  let githubInstallations: GitHubInstallationState[] = [];
+  let githubInstallationEvents: Array<{
+    githubInstallationId: string;
+    installation: NonNullable<GithubWebhookEnvelope["installation"]>;
+    createdAt: string;
+  }> = [];
   const listRecords = () => state?.records ?? [...records.values()];
   const listAuditEvents = () => state?.auditEvents ?? auditEvents;
   const policyMap = () => state?.repositoryPolicies ?? repositoryPolicies;
@@ -363,6 +455,29 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
   const listOwnerMappings = () => state?.ownerMappings ?? ownerMappings;
   const policySnapshotMap = () => state?.policyVersionSnapshots ?? policyVersionSnapshots;
   const listEvaluationSnapshots = () => state?.evaluationSnapshots ?? evaluationSnapshots;
+  const listGithubInstallations = () => state?.githubInstallations ?? githubInstallations;
+  const listGithubInstallationEvents = () =>
+    state?.githubInstallationEvents ?? githubInstallationEvents;
+  const saveGithubInstallations = (items: GitHubInstallationState[]) => {
+    if (state) {
+      state.githubInstallations = items;
+    } else {
+      githubInstallations = items;
+    }
+  };
+  const saveGithubInstallationEvents = (
+    items: Array<{
+      githubInstallationId: string;
+      installation: NonNullable<GithubWebhookEnvelope["installation"]>;
+      createdAt: string;
+    }>
+  ) => {
+    if (state) {
+      state.githubInstallationEvents = items;
+    } else {
+      githubInstallationEvents = items;
+    }
+  };
   const policySnapshotKey = (input: PolicyVersionSnapshotInput) =>
     `${input.organizationId}:${input.repositoryId}:${input.record.policyVersion}`;
   const ensurePolicyVersionSnapshot = (
@@ -610,6 +725,63 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
               `${b.repositoryId ?? ""}:${b.ownerKey}`
             )
           );
+      },
+      async listGithubInstallationRepositories({ organizationId, accountLogin }) {
+        return [...settingsMap().values()]
+          .filter(
+            (settings) =>
+              settings.organizationId === organizationId &&
+              settings.repositoryId.startsWith(`${accountLogin}/`)
+          )
+          .map((settings) => ({
+            fullName: settings.repositoryId,
+            githubRepositoryId: stableInMemoryGithubRepositoryId(settings.repositoryId).toString()
+          }));
+      },
+      async syncGithubInstallation({ organizationId, installation }) {
+        const now = new Date().toISOString();
+        for (const repo of installation.repositoriesAdded) {
+          if (!repo.fullName) {
+            continue;
+          }
+          settingsMap().set(repo.fullName, {
+            repositoryId: repo.fullName,
+            organizationId,
+            enabled: true,
+            updatedAt: now
+          });
+        }
+        for (const repo of installation.repositoriesRemoved) {
+          if (!repo.fullName) {
+            continue;
+          }
+          const existing = settingsMap().get(repo.fullName);
+          settingsMap().set(repo.fullName, {
+            repositoryId: repo.fullName,
+            organizationId,
+            enabled: false,
+            mode: existing?.mode,
+            dataHandling: existing?.dataHandling,
+            updatedAt: now
+          });
+        }
+      },
+      async archiveGithubRepositories({ organizationId, repositoriesRemoved }) {
+        const now = new Date().toISOString();
+        for (const repo of repositoriesRemoved) {
+          if (!repo.fullName) {
+            continue;
+          }
+          const existing = settingsMap().get(repo.fullName);
+          settingsMap().set(repo.fullName, {
+            repositoryId: repo.fullName,
+            organizationId,
+            enabled: false,
+            mode: existing?.mode,
+            dataHandling: existing?.dataHandling,
+            updatedAt: now
+          });
+        }
       }
     },
     evaluationSnapshots: {
@@ -718,6 +890,181 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
       async listRecentFailures() {
         return [];
       }
+    },
+    githubInstallations: {
+      async upsertPending(input) {
+        const existing = listGithubInstallations().find(
+          (row) => row.githubInstallationId === input.githubInstallationId
+        );
+        if (existing?.organizationId && existing.organizationId !== input.organizationId) {
+          return undefined;
+        }
+        if (!existing && !input.accountLogin) {
+          return undefined;
+        }
+        const now = new Date().toISOString();
+        const status = existing?.status === "approved" ? "approved" : "pending_approval";
+        const row: GitHubInstallationState = {
+          id: existing?.id ?? `github_installation:${input.githubInstallationId}`,
+          organizationId: input.organizationId,
+          githubInstallationId: input.githubInstallationId,
+          accountLogin:
+            input.accountLogin ??
+            existing?.accountLogin ??
+            `installation-${input.githubInstallationId}`,
+          accountType: input.accountType ?? existing?.accountType ?? "Organization",
+          status,
+          ...(status === "approved" && existing?.approvedBy
+            ? { approvedBy: existing.approvedBy }
+            : {}),
+          ...(status === "approved" && existing?.approvedAt
+            ? { approvedAt: existing.approvedAt }
+            : {}),
+          lastWebhookAt: now,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now
+        };
+        saveGithubInstallations([
+          row,
+          ...listGithubInstallations().filter((item) => item.id !== row.id)
+        ]);
+        return row;
+      },
+      async approve(input) {
+        const existing = listGithubInstallations().find(
+          (row) => row.id === input.id && row.organizationId === input.organizationId
+        );
+        if (!existing) {
+          return undefined;
+        }
+        const now = new Date().toISOString();
+        const row: GitHubInstallationState = {
+          id: existing.id,
+          organizationId: input.organizationId,
+          githubInstallationId: existing.githubInstallationId,
+          accountLogin: existing.accountLogin,
+          accountType: existing.accountType,
+          status: "approved",
+          approvedBy: input.actor,
+          approvedAt: now,
+          lastWebhookAt: existing.lastWebhookAt,
+          createdAt: existing.createdAt,
+          updatedAt: now
+        };
+        saveGithubInstallations([
+          row,
+          ...listGithubInstallations().filter((item) => item.id !== row.id)
+        ]);
+        return row;
+      },
+      async reject(input) {
+        const existing = listGithubInstallations().find(
+          (row) => row.id === input.id && row.organizationId === input.organizationId
+        );
+        if (!existing) {
+          return undefined;
+        }
+        const now = new Date().toISOString();
+        const row: GitHubInstallationState = {
+          id: existing.id,
+          ...(existing.organizationId ? { organizationId: existing.organizationId } : {}),
+          githubInstallationId: existing.githubInstallationId,
+          accountLogin: existing.accountLogin,
+          accountType: existing.accountType,
+          status: "rejected",
+          rejectedBy: input.actor,
+          rejectedAt: now,
+          archivedAt: now,
+          lastWebhookAt: existing.lastWebhookAt,
+          createdAt: existing.createdAt,
+          updatedAt: now
+        };
+        saveGithubInstallations([
+          row,
+          ...listGithubInstallations().filter((item) => item.id !== row.id)
+        ]);
+        return row;
+      },
+      async list(organizationId) {
+        return listGithubInstallations()
+          .filter((row) => row.organizationId === organizationId)
+          .sort(
+            (left, right) =>
+              left.status.localeCompare(right.status) ||
+              right.updatedAt.localeCompare(left.updatedAt)
+          );
+      },
+      async summary(organizationId) {
+        const rows = listGithubInstallations().filter(
+          (row) => row.organizationId === organizationId && !row.archivedAt
+        );
+        return {
+          installation: rows
+            .filter((row) => row.status === "approved")
+            .sort((left, right) =>
+              (right.approvedAt ?? "").localeCompare(left.approvedAt ?? "")
+            )[0],
+          pendingApprovalCount: rows.filter((row) => row.status === "pending_approval").length
+        };
+      },
+      async recordWebhook(envelope) {
+        const installation = envelope.installation;
+        if (!installation) {
+          return undefined;
+        }
+        const existing = listGithubInstallations().find(
+          (row) => row.githubInstallationId === String(installation.id)
+        );
+        const now = new Date().toISOString();
+        const archiveAction =
+          envelope.event === "installation" &&
+          (envelope.action === "deleted" || envelope.action === "suspend");
+        const status = archiveAction
+          ? "archived"
+          : existing?.status === "approved"
+            ? "approved"
+            : "pending_approval";
+        const row: GitHubInstallationState = {
+          id: existing?.id ?? `github_installation:${installation.id}`,
+          ...(existing?.organizationId ? { organizationId: existing.organizationId } : {}),
+          githubInstallationId: String(installation.id),
+          accountLogin:
+            installation.accountLogin ||
+            existing?.accountLogin ||
+            `installation-${installation.id}`,
+          accountType: installation.accountType || existing?.accountType || "Organization",
+          status,
+          ...(status === "approved" && existing?.approvedBy
+            ? { approvedBy: existing.approvedBy }
+            : {}),
+          ...(status === "approved" && existing?.approvedAt
+            ? { approvedAt: existing.approvedAt }
+            : {}),
+          ...(archiveAction ? { archivedAt: now } : {}),
+          lastWebhookAt: now,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now
+        };
+        saveGithubInstallations([
+          row,
+          ...listGithubInstallations().filter((item) => item.id !== row.id)
+        ]);
+        saveGithubInstallationEvents([
+          ...listGithubInstallationEvents(),
+          {
+            githubInstallationId: row.githubInstallationId,
+            installation,
+            createdAt: now
+          }
+        ]);
+        return row;
+      },
+      async listStoredInstallationEvents(githubInstallationId) {
+        return listGithubInstallationEvents()
+          .filter((event) => event.githubInstallationId === githubInstallationId)
+          .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+          .map((event) => event.installation);
+      }
     }
   };
 }
@@ -738,6 +1085,14 @@ export function auditEventsForRecordExport(
       ((event.targetType === "change_control_record" && recordIds.has(event.targetId)) ||
         (event.repositoryId ? repositoryIds.has(event.repositoryId) : false))
   );
+}
+
+function stableInMemoryGithubRepositoryId(value: string): bigint {
+  let hash = 0n;
+  for (const char of value) {
+    hash = (hash * 31n + BigInt(char.charCodeAt(0))) % 9_007_199_254_740_991n;
+  }
+  return hash || 1n;
 }
 
 function repositoryDataHandlingPatch(

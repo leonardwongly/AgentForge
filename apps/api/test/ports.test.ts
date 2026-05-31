@@ -68,6 +68,26 @@ function envelope(deliveryId: string): GithubWebhookEnvelope {
   };
 }
 
+function installationEnvelope(
+  deliveryId: string,
+  installationId: number,
+  repositoriesAdded: Array<{ id: number; fullName: string }> = []
+): GithubWebhookEnvelope {
+  return {
+    deliveryId,
+    event: "installation",
+    action: "created",
+    installation: {
+      id: installationId,
+      accountLogin: "acme",
+      accountType: "Organization",
+      repositoriesAdded,
+      repositoriesRemoved: []
+    },
+    receivedAt: "2026-05-12T00:00:00.000Z"
+  };
+}
+
 describe("in-memory persistence port", () => {
   it("saves, gets, and lists records with tenant filtering", async () => {
     const port = createInMemoryPersistencePort();
@@ -423,5 +443,92 @@ describe("in-memory persistence port", () => {
       requiredEvidence: [{ id: "evidence-1" }],
       requiredReviewers: [{ id: "reviewer-1" }]
     });
+  });
+
+  it("manages GitHub installation lifecycle with tenant scoping", async () => {
+    const port = createInMemoryPersistencePort();
+
+    await expect(
+      port.githubInstallations.upsertPending({
+        githubInstallationId: "12345",
+        organizationId: "org_a"
+      })
+    ).resolves.toBeUndefined();
+
+    await expect(
+      port.githubInstallations.recordWebhook(installationEnvelope("delivery-1", 12345))
+    ).resolves.toMatchObject({
+      githubInstallationId: "12345",
+      accountLogin: "acme",
+      status: "pending_approval"
+    });
+
+    const pending = await port.githubInstallations.upsertPending({
+      githubInstallationId: "12345",
+      organizationId: "org_a"
+    });
+
+    expect(pending).toMatchObject({
+      organizationId: "org_a",
+      githubInstallationId: "12345",
+      accountLogin: "acme",
+      status: "pending_approval"
+    });
+    await expect(
+      port.githubInstallations.upsertPending({
+        githubInstallationId: "12345",
+        accountLogin: "acme",
+        organizationId: "org_b"
+      })
+    ).resolves.toBeUndefined();
+
+    const approved = await port.githubInstallations.approve({
+      id: pending!.id,
+      organizationId: "org_a",
+      actor: "admin-a"
+    });
+
+    expect(approved).toMatchObject({
+      status: "approved",
+      approvedBy: "admin-a"
+    });
+    await expect(port.githubInstallations.summary("org_a")).resolves.toMatchObject({
+      installation: { id: pending!.id, status: "approved" },
+      pendingApprovalCount: 0
+    });
+    await expect(port.githubInstallations.list("org_a")).resolves.toEqual([
+      expect.objectContaining({ id: pending!.id, organizationId: "org_a" })
+    ]);
+
+    const rejected = await port.githubInstallations.reject({
+      id: pending!.id,
+      organizationId: "org_a",
+      actor: "admin-b"
+    });
+
+    expect(rejected).toMatchObject({
+      status: "rejected",
+      rejectedBy: "admin-b"
+    });
+    expect(rejected).not.toHaveProperty("approvedBy");
+    expect(rejected).not.toHaveProperty("approvedAt");
+  });
+
+  it("stores GitHub installation webhook events for repository replay", async () => {
+    const port = createInMemoryPersistencePort();
+
+    await port.githubInstallations.recordWebhook(
+      installationEnvelope("delivery-1", 12345, [{ id: 1, fullName: "acme/app" }])
+    );
+    await port.githubInstallations.recordWebhook(
+      installationEnvelope("delivery-2", 67890, [{ id: 2, fullName: "acme/other" }])
+    );
+
+    await expect(port.githubInstallations.listStoredInstallationEvents("12345")).resolves.toEqual([
+      expect.objectContaining({
+        id: 12345,
+        repositoriesAdded: [{ id: 1, fullName: "acme/app" }]
+      })
+    ]);
   });
 });

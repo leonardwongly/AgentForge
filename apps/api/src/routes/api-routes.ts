@@ -204,10 +204,11 @@ type ResolvedApiRouteContext = {
     previousStatus: ChangeControlRecord["checkStatus"],
     requestId?: string
   ) => Promise<unknown>;
-  approveGithubInstallation: (
-    prisma: PrismaClient | undefined,
-    input: { id: string; organizationId: string; actor: string }
-  ) => Promise<GithubInstallation | undefined>;
+  approveGithubInstallation: (input: {
+    id: string;
+    organizationId: string;
+    actor: string;
+  }) => Promise<GithubInstallation | undefined>;
   collectPrometheusMetrics: (input: {
     state: AppState;
     prisma: PrismaClient | undefined;
@@ -257,20 +258,13 @@ type ResolvedApiRouteContext = {
   ) => Promise<ChangeControlRecord["mode"] | undefined>;
   getRepositoryPolicy: (repositoryId: string) => Promise<RepositoryPolicyState | undefined>;
   githubCredentialsConfigured: (config: ApiConfig) => boolean;
-  githubInstallationSummary: (
-    prisma: PrismaClient | undefined,
-    config: ApiConfig,
-    organizationId: string
-  ) => Promise<GithubInstallationSummary>;
+  githubInstallationSummary: (organizationId: string) => Promise<GithubInstallationSummary>;
   githubInstallUrl: (config: ApiConfig) => string | undefined;
   headerValue: (value: string | string[] | undefined) => string | undefined;
   isRecoverableWebhookDeliveryForEnqueue: (status: WebhookDeliveryStatus) => boolean;
   listAuditEvents: (organizationId?: string) => Promise<AuditEventRecord[]>;
   listAuditEventsForRecordExport: (records: ChangeControlRecord[]) => Promise<AuditEventRecord[]>;
-  listGithubInstallations: (
-    prisma: PrismaClient | undefined,
-    organizationId: string
-  ) => Promise<GithubInstallation[]>;
+  listGithubInstallations: (organizationId: string) => Promise<GithubInstallation[]>;
   listOwnerMappings: () => Promise<OwnerMapping[]>;
   listRecords: () => Promise<ChangeControlRecord[]>;
   listRecentWebhookDeliveryFailures: (
@@ -289,21 +283,17 @@ type ResolvedApiRouteContext = {
   }) => unknown;
   ownerMappingForApi: (mapping: OwnerMapping) => Record<string, unknown>;
   prisma: PrismaClient | undefined;
-  processGithubInstallationWebhook: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    envelope: GithubWebhookEnvelope,
-    config: ApiConfig
-  ) => Promise<void>;
+  processGithubInstallationWebhook: (envelope: GithubWebhookEnvelope) => Promise<void>;
   queueOperationalStatus: (input: {
     state: AppState;
     evaluationQueue: EvaluationQueue;
   }) => Promise<QueueStatus>;
   recomputeRequirementStatus: (record: ChangeControlRecord) => ChangeControlRecord;
-  rejectGithubInstallation: (
-    prisma: PrismaClient | undefined,
-    input: { id: string; organizationId: string; actor: string }
-  ) => Promise<GithubInstallation | undefined>;
+  rejectGithubInstallation: (input: {
+    id: string;
+    organizationId: string;
+    actor: string;
+  }) => Promise<GithubInstallation | undefined>;
   repositoryOrganizationId: (repositoryId: string) => Promise<string | undefined>;
   repositoryReadinessScore: (input: {
     repositories: RepositorySummary[];
@@ -345,24 +335,16 @@ type ResolvedApiRouteContext = {
   ) => Promise<RepositorySettingsResult>;
   state: AppState;
   storagePolicy: MetadataStoragePolicy;
-  syncRepositoriesFromCurrentGithubInstallation: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    config: ApiConfig,
-    installation: {
-      organizationId?: string | undefined;
-      githubInstallationId: string;
-      accountLogin?: string | undefined;
-      accountType?: string | undefined;
-    }
-  ) => Promise<unknown>;
+  syncRepositoriesFromCurrentGithubInstallation: (installation: {
+    organizationId?: string | undefined;
+    githubInstallationId: string;
+    accountLogin?: string | undefined;
+    accountType?: string | undefined;
+  }) => Promise<unknown>;
   syncRepositoriesFromStoredInstallationEvents: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
     installation: GithubInstallation
   ) => Promise<unknown>;
   upsertPendingGithubInstallation: (
-    prisma: PrismaClient | undefined,
     input: GithubInstallationVerifyInput & { organizationId: string }
   ) => Promise<GithubInstallation | undefined>;
   recordWebhookDeliveryReceived: (envelope: GithubWebhookEnvelope) => Promise<{
@@ -641,7 +623,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       });
       const shouldQueue = shouldEnqueueEvaluation(envelope);
       const delivery = await recordWebhookDeliveryReceived(envelope);
-      await processGithubInstallationWebhook(state, prisma, envelope, config);
+      await processGithubInstallationWebhook(envelope);
 
       if (!shouldQueue) {
         await markWebhookDeliveryCompleted(deliveryId);
@@ -855,11 +837,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       const ownerMappings = (await listOwnerMappings()).filter(
         (mapping) => mapping.organizationId === actor.organizationId
       );
-      const githubInstallation = await githubInstallationSummary(
-        prisma,
-        config,
-        actor.organizationId
-      );
+      const githubInstallation = await githubInstallationSummary(actor.organizationId);
       return safe({
         runtimeStore: prisma ? "postgres" : "in_memory",
         githubInstallation,
@@ -898,7 +876,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       const repositories = await listRepositories(actor.organizationId);
       const records = await recordsVisibleTo(actor);
       const settings = {
-        githubInstallation: await githubInstallationSummary(prisma, config, actor.organizationId),
+        githubInstallation: await githubInstallationSummary(actor.organizationId),
         ownerMappings: (await listOwnerMappings()).filter(
           (mapping) => mapping.organizationId === actor.organizationId
         )
@@ -933,7 +911,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         return handleAuthzFailure(request, reply, allowed);
       }
       return safe({
-        installations: await listGithubInstallations(prisma, actor.organizationId),
+        installations: await listGithubInstallations(actor.organizationId),
         installUrl: githubInstallUrl(config),
         credentialsConfigured: githubCredentialsConfigured(config)
       });
@@ -958,16 +936,10 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           }))
         });
       }
-      if (!prisma) {
-        return reply.code(409).send({
-          error:
-            "Manual GitHub installation verification requires the Postgres runtime store. Start Postgres, run migrations, and use the Postgres-backed API before recording or approving installations."
-        });
-      }
       const githubAccount = parsed.data.accountLogin
         ? undefined
         : await fetchGithubInstallationAccount(config, parsed.data.githubInstallationId);
-      const installation = await upsertPendingGithubInstallation(prisma, {
+      const installation = await upsertPendingGithubInstallation({
         ...parsed.data,
         accountLogin: parsed.data.accountLogin ?? githubAccount?.accountLogin,
         accountType: githubAccount?.accountType ?? parsed.data.accountType,
@@ -1011,7 +983,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (!parsed.success) {
         return reply.code(400).send({ error: "Invalid GitHub installation approval request" });
       }
-      const installation = await approveGithubInstallation(prisma, {
+      const installation = await approveGithubInstallation({
         id: (request.params as { id: string }).id,
         organizationId: actor.organizationId,
         actor: actor.login
@@ -1019,8 +991,8 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (!installation) {
         return reply.code(404).send({ error: "GitHub installation was not found." });
       }
-      await syncRepositoriesFromStoredInstallationEvents(state, prisma, installation);
-      await syncRepositoriesFromCurrentGithubInstallation(state, prisma, config, {
+      await syncRepositoriesFromStoredInstallationEvents(installation);
+      await syncRepositoriesFromCurrentGithubInstallation({
         organizationId: installation.organizationId,
         githubInstallationId: installation.githubInstallationId,
         accountLogin: installation.accountLogin,
@@ -1057,7 +1029,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (!parsed.success) {
         return reply.code(400).send({ error: "Invalid GitHub installation rejection request" });
       }
-      const installation = await rejectGithubInstallation(prisma, {
+      const installation = await rejectGithubInstallation({
         id: (request.params as { id: string }).id,
         organizationId: actor.organizationId,
         actor: actor.login
