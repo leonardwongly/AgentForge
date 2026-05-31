@@ -63,6 +63,11 @@ export interface RepositoryStore {
   listOwnerMappings(repositoryId?: string): Promise<OwnerMappingState[]>;
 }
 
+export interface EvaluationSnapshotStore {
+  ensurePolicyVersion(input: PolicyVersionSnapshotInput): Promise<PolicyVersionSnapshotState>;
+  persist(input: EvaluationSnapshotInput): Promise<void>;
+}
+
 export interface PersistencePort {
   records: ChangeControlRecordStore;
   auditEvents: AuditEventStore;
@@ -70,6 +75,7 @@ export interface PersistencePort {
   exportJobs: ExportJobStore;
   overrides: OverrideStore;
   repositories: RepositoryStore;
+  evaluationSnapshots: EvaluationSnapshotStore;
 }
 
 export type WebhookDeliveryStatus =
@@ -249,6 +255,50 @@ export type RepositorySettingsResult = {
   ownerMappings: OwnerMappingState[];
 };
 
+export type PolicyVersionSnapshotInput = {
+  organizationId: string;
+  repositoryId: string;
+  record: ChangeControlRecord;
+};
+
+export type PolicyVersionSnapshotState = {
+  id: string;
+  organizationId: string;
+  repositoryId: string;
+  policyPackId?: string | undefined;
+  version: string;
+  mode: ChangeControlRecord["mode"];
+  contentYaml: string;
+  contentHash: string;
+  createdBy: string;
+};
+
+export type EvaluationSnapshotInput = PolicyVersionSnapshotInput & {
+  pullRequestId: string;
+};
+
+export type EvaluationSnapshotState = {
+  id: string;
+  organizationId: string;
+  repositoryId: string;
+  pullRequestId: string;
+  policyVersionId: string;
+  mode: ChangeControlRecord["mode"];
+  status: ChangeControlRecord["checkStatus"];
+  headSha: string;
+  completedAt: string;
+  explanation: string[];
+  verifiedFindings: ChangeControlRecord["verifiedFindings"];
+  requiredEvidence: ChangeControlRecord["requiredEvidence"];
+  requiredReviewers: ChangeControlRecord["requiredReviewers"];
+  checkRun: {
+    conclusion: "success" | "neutral" | "failure";
+    outputTitle: string;
+    outputSummary: string;
+    updatedAt: string;
+  };
+};
+
 export type RecordPageQuery = {
   limit: number;
   offset: number;
@@ -283,6 +333,8 @@ type InMemoryPersistenceState = {
   repositoryPolicies: Map<string, RepositoryPolicyState>;
   repositorySettings: Map<string, RepositorySettingsState>;
   ownerMappings: OwnerMappingState[];
+  policyVersionSnapshots: Map<string, PolicyVersionSnapshotState>;
+  evaluationSnapshots: EvaluationSnapshotState[];
   deliveries: Set<string>;
   queuedEvaluations: Array<{
     deliveryId: string;
@@ -301,12 +353,40 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
   const overrides = new Map<string, OverrideRecord>();
   const repositoryPolicies = new Map<string, RepositoryPolicyState>();
   const repositorySettings = new Map<string, RepositorySettingsState>();
+  const policyVersionSnapshots = new Map<string, PolicyVersionSnapshotState>();
+  let evaluationSnapshots: EvaluationSnapshotState[] = [];
   let ownerMappings: OwnerMappingState[] = [];
   const listRecords = () => state?.records ?? [...records.values()];
   const listAuditEvents = () => state?.auditEvents ?? auditEvents;
   const policyMap = () => state?.repositoryPolicies ?? repositoryPolicies;
   const settingsMap = () => state?.repositorySettings ?? repositorySettings;
   const listOwnerMappings = () => state?.ownerMappings ?? ownerMappings;
+  const policySnapshotMap = () => state?.policyVersionSnapshots ?? policyVersionSnapshots;
+  const listEvaluationSnapshots = () => state?.evaluationSnapshots ?? evaluationSnapshots;
+  const policySnapshotKey = (input: PolicyVersionSnapshotInput) =>
+    `${input.organizationId}:${input.repositoryId}:${input.record.policyVersion}`;
+  const ensurePolicyVersionSnapshot = (
+    input: PolicyVersionSnapshotInput
+  ): PolicyVersionSnapshotState => {
+    const key = policySnapshotKey(input);
+    const existing = policySnapshotMap().get(key);
+    if (existing) {
+      return existing;
+    }
+    const snapshot: PolicyVersionSnapshotState = {
+      id: `policy_version:${key}`,
+      organizationId: input.organizationId,
+      repositoryId: input.repositoryId,
+      policyPackId: input.record.policyPackId,
+      version: input.record.policyVersion,
+      mode: input.record.mode,
+      contentYaml: `# Runtime policy snapshot for ${input.record.repositoryFullName}#${input.record.pullRequestNumber}\n# Full policy content was not attached to this evaluation snapshot.`,
+      contentHash: `${input.record.policyVersion}:${input.record.policyPackId ?? ""}`,
+      createdBy: "system"
+    };
+    policySnapshotMap().set(key, snapshot);
+    return snapshot;
+  };
   const byOrg = <T extends { organizationId: string }>(items: T[], organizationId?: string): T[] =>
     organizationId ? items.filter((item) => item.organizationId === organizationId) : items;
 
@@ -532,6 +612,44 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
           );
       }
     },
+    evaluationSnapshots: {
+      async ensurePolicyVersion(input) {
+        return ensurePolicyVersionSnapshot(input);
+      },
+      async persist(input) {
+        const policyVersion = ensurePolicyVersionSnapshot(input);
+        const explanation = [
+          `${input.record.checkStatus}:${input.record.lifecycle}`,
+          ...input.record.verifiedFindings.map((finding) => finding.evidence)
+        ];
+        const snapshot: EvaluationSnapshotState = {
+          id: `evaluation:${input.record.id}:${listEvaluationSnapshots().length + 1}`,
+          organizationId: input.organizationId,
+          repositoryId: input.repositoryId,
+          pullRequestId: input.pullRequestId,
+          policyVersionId: policyVersion.id,
+          mode: input.record.mode,
+          status: input.record.checkStatus,
+          headSha: input.record.headSha,
+          completedAt: input.record.updatedAt,
+          explanation,
+          verifiedFindings: input.record.verifiedFindings,
+          requiredEvidence: input.record.requiredEvidence,
+          requiredReviewers: input.record.requiredReviewers,
+          checkRun: {
+            conclusion: checkConclusionForRecord(input.record),
+            outputTitle: "AgentForge Merge Guard",
+            outputSummary: explanation.join(" "),
+            updatedAt: input.record.updatedAt
+          }
+        };
+        if (state) {
+          state.evaluationSnapshots = [...state.evaluationSnapshots, snapshot];
+        } else {
+          evaluationSnapshots = [...evaluationSnapshots, snapshot];
+        }
+      }
+    },
     webhookDeliveries: {
       async recordReceived(envelope) {
         if (!state) {
@@ -661,6 +779,18 @@ function repositoryDataHandlingPatch(
     output.auditRecordRetentionDays = patch.auditRecordRetentionDays;
   }
   return Object.keys(output).length > 0 ? output : undefined;
+}
+
+export function checkConclusionForRecord(
+  record: Pick<ChangeControlRecord, "mode" | "checkStatus">
+): "success" | "neutral" | "failure" {
+  if (record.mode === "observe") {
+    return "success";
+  }
+  if (record.mode === "warn") {
+    return "neutral";
+  }
+  return record.checkStatus === "block" ? "failure" : "success";
 }
 
 export function filterAndSortRecords(

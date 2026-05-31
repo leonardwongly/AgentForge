@@ -136,6 +136,8 @@ describe("in-memory persistence port", () => {
       repositoryPolicies: new Map(),
       repositorySettings: new Map(),
       ownerMappings: [],
+      policyVersionSnapshots: new Map(),
+      evaluationSnapshots: [],
       deliveries: new Set<string>(),
       queuedEvaluations: [
         {
@@ -210,6 +212,8 @@ describe("in-memory persistence port", () => {
       repositoryPolicies: new Map(),
       repositorySettings: new Map(),
       ownerMappings: [],
+      policyVersionSnapshots: new Map(),
+      evaluationSnapshots: [],
       deliveries: new Set<string>(),
       queuedEvaluations: []
     };
@@ -240,6 +244,8 @@ describe("in-memory persistence port", () => {
       repositoryPolicies: new Map(),
       repositorySettings: new Map(),
       ownerMappings: [],
+      policyVersionSnapshots: new Map(),
+      evaluationSnapshots: [],
       deliveries: new Set<string>(),
       queuedEvaluations: []
     };
@@ -330,5 +336,92 @@ describe("in-memory persistence port", () => {
     await expect(port.repositories.listOwnerMappings("repo")).resolves.toMatchObject([
       { repositoryId: "repo", ownerKey: "src/payments" }
     ]);
+  });
+
+  it("persists policy version and evaluation snapshots through the port", async () => {
+    const state = {
+      records: [],
+      auditEvents: [],
+      exports: [],
+      overrides: [],
+      repositoryPolicies: new Map(),
+      repositorySettings: new Map(),
+      ownerMappings: [],
+      policyVersionSnapshots: new Map(),
+      evaluationSnapshots: [],
+      deliveries: new Set<string>(),
+      queuedEvaluations: []
+    };
+    const port = createInMemoryPersistencePort(state);
+    const evaluated = {
+      ...record("r1", "org_a"),
+      verifiedFindings: [
+        {
+          id: "finding-1",
+          type: "dependency_bumped",
+          source: "manifest_parser",
+          evidence: "Critical package update required.",
+          confidence: "verified",
+          severity: "critical"
+        }
+      ],
+      requiredEvidence: [
+        {
+          id: "evidence-1",
+          kind: "security_note",
+          status: "missing",
+          source: "manual_attestation",
+          requiredByFindingId: "finding-1"
+        }
+      ],
+      requiredReviewers: [
+        {
+          id: "reviewer-1",
+          reviewer: "security-team",
+          reviewerType: "team",
+          tier: "required",
+          reason: "Critical dependency finding",
+          triggeredByFindingId: "finding-1",
+          approved: false
+        }
+      ]
+    } satisfies ChangeControlRecord;
+
+    await expect(
+      port.evaluationSnapshots.ensurePolicyVersion({
+        organizationId: "org_a",
+        repositoryId: "repo",
+        record: evaluated
+      })
+    ).resolves.toMatchObject({
+      organizationId: "org_a",
+      repositoryId: "repo",
+      version: "fintech@1.0.0",
+      mode: "warn",
+      createdBy: "system"
+    });
+
+    await port.evaluationSnapshots.persist({
+      organizationId: "org_a",
+      repositoryId: "repo",
+      pullRequestId: "pr_1",
+      record: evaluated
+    });
+
+    expect(state.policyVersionSnapshots.size).toBe(1);
+    expect(state.evaluationSnapshots).toHaveLength(1);
+    expect(state.evaluationSnapshots[0]).toMatchObject({
+      organizationId: "org_a",
+      repositoryId: "repo",
+      pullRequestId: "pr_1",
+      status: "pass",
+      checkRun: {
+        conclusion: "neutral",
+        outputTitle: "AgentForge Merge Guard"
+      },
+      verifiedFindings: [{ id: "finding-1" }],
+      requiredEvidence: [{ id: "evidence-1" }],
+      requiredReviewers: [{ id: "reviewer-1" }]
+    });
   });
 });
