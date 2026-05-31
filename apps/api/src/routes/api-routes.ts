@@ -47,9 +47,14 @@ import {
   type AuthzFailure
 } from "../auth.js";
 import { evaluateFixturePr } from "../evaluation.js";
-import type { AppState, ExportJob, RepositoryPolicyState } from "../app.js";
+import type { AppState, RepositoryPolicyState } from "../app.js";
 import type { loadConfig } from "@agentforge/config";
-import type { ReplayableDelivery, WebhookDeliveryStatus, WebhookReplayTarget } from "../ports.js";
+import type {
+  ExportJob,
+  ReplayableDelivery,
+  WebhookDeliveryStatus,
+  WebhookReplayTarget
+} from "../ports.js";
 
 type RawBodyRequest = {
   rawBody?: Buffer;
@@ -234,11 +239,7 @@ type ResolvedApiRouteContext = {
     prisma: PrismaClient | undefined,
     fullName: string
   ) => Promise<string | undefined>;
-  getExportJob: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    id: string
-  ) => Promise<ExportJob | undefined>;
+  getExportJob: (id: string) => Promise<ExportJob | undefined>;
   getRecord: (id: string) => Promise<ChangeControlRecord | undefined>;
   getRecordPolicyConfig: (record: ChangeControlRecord) => Promise<{
     overrides: {
@@ -332,13 +333,7 @@ type ResolvedApiRouteContext = {
   safe: <T>(value: T) => T;
   safeErrorSummary: (error: unknown) => { errorClass: string; message: string };
   saveAuditEvent: (event: AuditEventRecord) => Promise<void>;
-  saveExportJob: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    job: ExportJob,
-    actor: string,
-    actorRole: string
-  ) => Promise<void>;
+  saveExportJob: (job: ExportJob, actor: string, actorRole: string) => Promise<void>;
   saveOverrideRecord: (prisma: PrismaClient | undefined, record: OverrideRecord) => Promise<void>;
   saveRecord: (record: ChangeControlRecord, pr?: PullRequestInput) => Promise<ChangeControlRecord>;
   saveRepositoryPolicy: (
@@ -2233,7 +2228,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         content,
         createdAt: new Date().toISOString()
       };
-      await saveExportJob(state, prisma, job, actor.login, actor.role);
+      await saveExportJob(job, actor.login, actor.role);
       await saveAuditEvent(exportAuditEvent);
       return reply.code(201).send({
         id: job.id,
@@ -2335,7 +2330,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         content,
         createdAt: new Date().toISOString()
       };
-      await saveExportJob(state, prisma, job, actor.login, actor.role);
+      await saveExportJob(job, actor.login, actor.role);
       await saveAuditEvent(exportAuditEvent);
       return reply.code(201).send({
         id: job.id,
@@ -2360,7 +2355,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (!allowed.ok) {
         return handleAuthzFailure(request, reply, allowed);
       }
-      const job = await getExportJob(state, prisma, (request.params as { id: string }).id);
+      const job = await getExportJob((request.params as { id: string }).id);
       if (!job) {
         return reply.code(404).send({ error: "Export job not found" });
       }

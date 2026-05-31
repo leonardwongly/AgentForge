@@ -131,6 +131,7 @@ describe("in-memory persistence port", () => {
     const state = {
       records: [record("r1", "org_a")],
       auditEvents: [],
+      exports: [],
       deliveries: new Set<string>(),
       queuedEvaluations: [
         {
@@ -174,5 +175,25 @@ describe("in-memory persistence port", () => {
       hasCompleteWebhookReplayTarget({ repositoryFullName: "acme/app", pullRequestNumber: 1 })
     ).toBe(true);
     await expect(port.webhookDeliveries.listRecentFailures("org_a")).resolves.toEqual([]);
+  });
+
+  it("saves and gets export jobs through the port", async () => {
+    const port = createInMemoryPersistencePort();
+    const job = {
+      id: "export-1",
+      organizationId: "org_a",
+      status: "completed" as const,
+      format: "json" as const,
+      recordCount: 2,
+      totalMatchingRecords: 3,
+      truncated: true,
+      content: '{"records":[]}',
+      createdAt: "2026-05-12T00:00:00.000Z"
+    };
+
+    await port.exportJobs.save(job, { actor: "sam", actorRole: "auditor" });
+
+    await expect(port.exportJobs.get("export-1")).resolves.toEqual(job);
+    await expect(port.exportJobs.get("missing")).resolves.toBeUndefined();
   });
 });
