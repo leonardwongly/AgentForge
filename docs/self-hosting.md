@@ -28,14 +28,13 @@ clients so only the trusted dashboard can assert identity.
 
 ## Production configuration contract
 
-When `NODE_ENV=production`, the process fails closed at startup unless all of
-the following hold. Set them deliberately; do not relax them to work around a
-deployment problem.
+When `NODE_ENV=production`, the process fails closed at startup unless the
+security settings below hold. Durable production-ready mode also requires
+managed PostgreSQL and Redis; without those URLs the process can start, but
+`/api/settings` reports the runtime as not production-ready.
 
 | Variable                                   | Required value / note                                             |
 | ------------------------------------------ | ----------------------------------------------------------------- |
-| `DATABASE_URL`                             | Managed PostgreSQL connection string (no local default applies).  |
-| `REDIS_URL`                                | Managed Redis connection string (no local default applies).       |
 | `GITHUB_APP_ID`                            | Required, to mint installation tokens and publish checks.         |
 | `GITHUB_APP_PRIVATE_KEY`                   | Required, to authenticate as the GitHub App.                      |
 | `GITHUB_WEBHOOK_SECRET`                    | Required; webhook signature verification is mandatory.            |
@@ -48,6 +47,13 @@ deployment problem.
 | `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS`     | Must be `true` (acknowledges the proxy strips spoofable headers). |
 | `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS` | Must be `false`.                                                  |
 | `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR`   | Must be `false`.                                                  |
+
+For production-ready persistence and queueing, set:
+
+| Variable       | Required value / note                                           |
+| -------------- | --------------------------------------------------------------- |
+| `DATABASE_URL` | Managed PostgreSQL connection string for durable runtime state. |
+| `REDIS_URL`    | Managed Redis connection string for the merge-guard work queue. |
 
 If you enable built-in GitHub OAuth (set `GITHUB_CLIENT_ID` or
 `GITHUB_CLIENT_SECRET`), then `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and
@@ -115,8 +121,8 @@ pnpm start:web   # optional dashboard
 - [ ] `NODE_ENV=production` and the process starts without a fail-closed config
       error.
 - [ ] `curl -fsS https://<api-host>/health` returns `200` (public liveness).
-- [ ] `/ready` returns `200` only with signed operator headers, and
-      `401`/`403` without them.
+- [ ] `/ready` returns `200` when the API and queue are ready, or `503` when a
+      required dependency is unhealthy.
 - [ ] `/api/settings` reports `runtimeCapabilities.productionReady: true`.
 - [ ] A forged `x-agentforge-authenticated-*` header from an external client is
       stripped and not honored.
