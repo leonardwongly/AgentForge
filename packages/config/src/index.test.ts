@@ -108,6 +108,39 @@ describe("AgentForge runtime config", () => {
     expect(config.github.installationId).toBe("12345");
   });
 
+  it("rejects local actor modes on non-loopback URLs", () => {
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "development",
+        APP_BASE_URL: "https://dashboard.example.com",
+        API_BASE_URL: "http://localhost:4000",
+        AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: "true"
+      })
+    ).toThrow("Unsafe AgentForge local actor configuration");
+
+    expect(() =>
+      loadConfig({
+        NODE_ENV: "development",
+        APP_BASE_URL: "http://localhost:3000",
+        API_BASE_URL: "https://api.example.com",
+        AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS: "true"
+      })
+    ).toThrow("API_BASE_URL must use localhost");
+  });
+
+  it("allows local actor modes on loopback URLs", () => {
+    const config = loadConfig({
+      NODE_ENV: "development",
+      APP_BASE_URL: "http://127.0.0.1:3000",
+      API_BASE_URL: "http://[::1]:4000",
+      AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: "true",
+      AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS: "true"
+    });
+
+    expect(config.auth.dashboardAllowLocalActor).toBe(true);
+    expect(config.auth.apiAllowLocalActorHeaders).toBe(true);
+  });
+
   it("loads built-in GitHub OAuth authorization settings", () => {
     const config = loadConfig({
       NODE_ENV: "development",

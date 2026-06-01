@@ -28,7 +28,7 @@ jobs:
       - run: corepack enable
       - run: corepack prepare pnpm@11.1.1 --activate
       - run: pnpm install --frozen-lockfile
-      - run: pnpm audit --audit-level high
+      - run: pnpm audit --audit-level moderate
       - run: pnpm release:check
       - name: Repository hygiene scan
         run: |
@@ -43,4 +43,12 @@ jobs:
           if git grep -nE 'ghp_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN .*PRIVATE KEY-----' -- . ':!fixtures/repos/secret-like-token.json' ':!packages/security/src/redaction.ts' ':!.github/workflows/security.yml'; then
             exit 1
           fi
+      - name: Gitleaks secret scan
+        env:
+          GITLEAKS_VERSION: 8.28.0
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks detect --source . --redact --config .gitleaks.toml --verbose
       - run: pnpm --filter @agentforge/security test

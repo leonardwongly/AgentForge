@@ -97,27 +97,93 @@ const skipPatterns = [
   "pytest.skip("
 ];
 
+export type DetectorContext = {
+  pr: PullRequestInput;
+  files: ChangedFile[];
+  config: DetectorPolicyConfig;
+  options: Required<DetectorOptions>;
+  agentAssisted: boolean;
+};
+
+export type Detector = {
+  id: string;
+  factTypes: VerifiedFact["type"][];
+  detect: (context: DetectorContext) => VerifiedFact[];
+};
+
+export const DETECTOR_REGISTRY_VERSION = "1.0.0";
+
+// Versioned plug-in surface (assessment C4). Registration order is preserved
+// from the prior inline implementation so behavior is unchanged; new detectors
+// register here and declare the fact types they emit.
+export const detectorRegistry: Detector[] = [
+  {
+    id: "sensitive_paths",
+    factTypes: ["sensitive_path_changed"],
+    detect: (context) =>
+      detectSensitivePathChanges(
+        context.files,
+        context.config.sensitivePaths ?? {},
+        context.agentAssisted
+      )
+  },
+  {
+    id: "ci_workflow",
+    factTypes: ["ci_workflow_changed"],
+    detect: (context) =>
+      detectCiWorkflowChanges(
+        context.files,
+        context.config.ciWorkflowPaths ?? defaultCiWorkflowPaths,
+        context.agentAssisted
+      )
+  },
+  {
+    id: "tests",
+    factTypes: [
+      "test_deleted",
+      "test_skipped",
+      "coverage_threshold_reduced",
+      "suspicious_test_change"
+    ],
+    detect: (context) => detectTestChanges(context.files, context.options)
+  },
+  {
+    id: "dependencies",
+    factTypes: ["dependency_added", "dependency_bumped"],
+    detect: (context) => detectDependencyChanges(context.files)
+  },
+  {
+    id: "migrations",
+    factTypes: ["migration_added"],
+    detect: (context) =>
+      detectMigrationChanges(context.files, context.config.migrationPaths ?? defaultMigrationPaths)
+  },
+  {
+    id: "agent_signals",
+    factTypes: ["agent_signal_detected"],
+    detect: (context) => detectAgentSignals(context.pr)
+  },
+  {
+    id: "secret_like",
+    factTypes: ["secret_like_value_detected"],
+    detect: (context) => detectSecretLikeValues(context.files, context.options)
+  }
+];
+
 export function extractVerifiedFacts(
   pr: PullRequestInput,
   config: DetectorPolicyConfig = {},
   options: DetectorOptions = {}
 ): VerifiedFact[] {
   const merged = { ...defaultOptions, ...options };
-  const files = pr.changedFiles.slice(0, merged.maxFiles);
-  const agentAssisted = detectAgentSignals(pr).length > 0;
-  return [
-    ...detectSensitivePathChanges(files, config.sensitivePaths ?? {}, agentAssisted),
-    ...detectCiWorkflowChanges(
-      files,
-      config.ciWorkflowPaths ?? defaultCiWorkflowPaths,
-      agentAssisted
-    ),
-    ...detectTestChanges(files, merged),
-    ...detectDependencyChanges(files),
-    ...detectMigrationChanges(files, config.migrationPaths ?? defaultMigrationPaths),
-    ...detectAgentSignals(pr),
-    ...detectSecretLikeValues(files, merged)
-  ];
+  const context: DetectorContext = {
+    pr,
+    files: pr.changedFiles.slice(0, merged.maxFiles),
+    config,
+    options: merged,
+    agentAssisted: detectAgentSignals(pr).length > 0
+  };
+  return detectorRegistry.flatMap((detector) => detector.detect(context));
 }
 
 export function detectorConfigFromPolicy(policy: {

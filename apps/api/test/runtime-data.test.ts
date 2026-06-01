@@ -71,6 +71,24 @@ describe("runtime data surfaces", () => {
     await app.close();
   });
 
+  it("keeps public health minimal for load balancer checks", async () => {
+    const state = createInitialState();
+    const app = createApp(state);
+
+    const health = await app.inject({ method: "GET", url: "/health" });
+
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toEqual({
+      status: "ok",
+      version: "1.0.0"
+    });
+    expect(health.body).not.toContain("database");
+    expect(health.body).not.toContain("workerQueue");
+    expect(health.body).not.toContain("unsignedWebhookMode");
+
+    await app.close();
+  });
+
   it("exposes domain metrics without requiring privileged data access", async () => {
     const state = createInitialState();
     const app = createApp(state);
@@ -83,6 +101,7 @@ describe("runtime data surfaces", () => {
     expect(metrics.body).toContain('agentforge_queue_ready{backend="in_memory"} 1');
     expect(metrics.body).toContain("agentforge_webhook_deliveries_total");
     expect(metrics.body).toContain("agentforge_exports_total");
+    expect(metrics.body).toContain("agentforge_audit_events_total");
     await app.close();
   });
 
@@ -323,13 +342,21 @@ describe("runtime data surfaces", () => {
     const state = createInitialState();
     const app = createApp(state);
 
-    const preview = await app.inject({
+    const unauthenticatedPreview = await app.inject({
       method: "POST",
       url: "/api/policies/preview",
       payload: JSON.stringify({ pr: pullRequest }),
       headers: { "content-type": "application/json" }
     });
 
+    expect(unauthenticatedPreview.statusCode).toBe(401);
+
+    const preview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ pr: pullRequest }),
+      headers: { "content-type": "application/json", ...actorHeaders() }
+    });
     expect(preview.statusCode).toBe(400);
     expect(preview.json()).toEqual({
       error: "contentYaml is required when the repository has no active policy"
@@ -482,7 +509,7 @@ describe("runtime data surfaces", () => {
       method: "POST",
       url: "/api/policies/preview",
       payload: JSON.stringify({ pr: pullRequest }),
-      headers: { "content-type": "application/json" }
+      headers: { "content-type": "application/json", ...actorHeaders() }
     });
     expect(activePolicyPreview.statusCode).toBe(200);
     expect(activePolicyPreview.json().result).toEqual(

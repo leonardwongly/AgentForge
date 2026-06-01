@@ -33,7 +33,7 @@ agent orchestration.
 | Area                    | Evidence                                                                                                                                                                                                                                  |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Runtime topology        | `apps/api`, `apps/worker`, and `apps/web` are separate deployable services with shared `pnpm railway:build` and service-specific start commands.                                                                                          |
-| Backing services        | Railway health reports database and worker queue configured, `/ready` validates Redis/BullMQ availability while `/health` remains safe, runtime store `postgres`, and unsigned webhook mode disabled.                                     |
+| Backing services        | Railway health keeps public liveness minimal, authenticated `/ready` validates Redis/BullMQ availability, authenticated `/metrics` reports operational gauges, runtime store is `postgres`, and unsigned webhook mode is disabled.        |
 | GitHub App flow         | PR #3 published a live `AgentForge Merge Guard` check with persisted record URL: <https://agentforge-web-production.up.railway.app/records/c8c7e9a8-3126-4c68-96d2-1627c69e21bf>.                                                         |
 | Branch protection       | `main` requires strict, up-to-date `ci`, `security`, `e2e`, and `AgentForge Merge Guard` checks.                                                                                                                                          |
 | Policy packs            | Built-in policy packs are covered by `packages/policy/src/packs.test.ts` and `pnpm policy:validate`.                                                                                                                                      |
@@ -62,10 +62,6 @@ Expected health output:
 ```json
 {
   "status": "ok",
-  "database": "configured",
-  "workerQueue": "configured",
-  "runtimeStore": "postgres",
-  "unsignedWebhookMode": "disabled",
   "version": "1.0.0"
 }
 ```
@@ -92,7 +88,8 @@ pnpm build
 pnpm prisma:validate
 pnpm fixtures:run
 pnpm railway:build
-pnpm audit --audit-level high
+pnpm audit --audit-level moderate
+gitleaks detect --source . --redact --config .gitleaks.toml
 pnpm messaging:validate
 ```
 

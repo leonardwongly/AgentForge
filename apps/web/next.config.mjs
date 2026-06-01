@@ -3,7 +3,21 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const apiOrigin = originFromEnvUrl(process.env.API_BASE_URL);
-const cspReportOnly = [
+const isProduction = process.env.NODE_ENV === "production";
+const cspConnectSources = uniqueDirectiveValues([
+  "'self'",
+  isProduction ? undefined : "http://localhost:4000",
+  isProduction ? undefined : "http://127.0.0.1:4000",
+  apiOrigin
+]);
+const cspScriptSources = uniqueDirectiveValues([
+  "'self'",
+  // Next currently emits inline bootstrap scripts. Keep this explicit until the
+  // dashboard moves to a nonce-based CSP path; never allow eval in production.
+  "'unsafe-inline'",
+  isProduction ? undefined : "'unsafe-eval'"
+]);
+const csp = [
   "default-src 'self'",
   "base-uri 'self'",
   "frame-ancestors 'none'",
@@ -11,10 +25,13 @@ const cspReportOnly = [
   "form-action 'self'",
   "img-src 'self' data: https:",
   "font-src 'self' data:",
-  `connect-src 'self' http://localhost:4000 ${apiOrigin ?? ""} https:`.replace(/\s+/g, " "),
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  `connect-src ${cspConnectSources.join(" ")}`,
+  `script-src ${cspScriptSources.join(" ")}`,
   "style-src 'self' 'unsafe-inline'"
 ].join("; ");
+export const cspHeaderName = isProduction
+  ? "Content-Security-Policy"
+  : "Content-Security-Policy-Report-Only";
 
 function originFromEnvUrl(value) {
   if (!value) {
@@ -25,6 +42,10 @@ function originFromEnvUrl(value) {
   } catch {
     return undefined;
   }
+}
+
+function uniqueDirectiveValues(values) {
+  return [...new Set(values.filter(Boolean))];
 }
 
 /** @type {import('next').NextConfig} */
@@ -44,7 +65,7 @@ const nextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
           { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
-          { key: "Content-Security-Policy-Report-Only", value: cspReportOnly }
+          { key: cspHeaderName, value: csp }
         ]
       }
     ];

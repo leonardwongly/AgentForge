@@ -170,7 +170,8 @@ Default local endpoints:
 The local Postgres port is `15432` to avoid conflicts with a workstation Postgres on `5432`.
 Redis is required for queue-backed API and worker flows. MinIO is optional for
 future object-storage adapter experiments; V1 exports are delivered through
-authorized API export jobs.
+authorized API export jobs. Compose binds Postgres, Redis, and MinIO to
+`127.0.0.1` only; do not expose these local credentials on a shared network.
 
 ## Common Commands
 
@@ -286,6 +287,7 @@ curl -fsS http://localhost:4000/ready
 ```
 
 `/health` verifies the API process is alive. `/ready` verifies dependencies such as the queue backend are reachable and should be used before cutting over webhook traffic.
+In production, `/ready` and `/metrics` require signed proxy actor headers from an operator role. Local development keeps these endpoints open for smoke checks.
 
 ## GitHub App Setup
 
@@ -477,7 +479,7 @@ postgresql://agentforge:agentforge@localhost:15432/agentforge
 
 ### `/ready` is not ready but `/health` works
 
-`/health` only proves the API process is alive. `/ready` also checks runtime dependencies such as Redis/BullMQ. Start Redis and the worker:
+`/health` only proves the API process is alive. `/ready` also checks runtime dependencies such as Redis/BullMQ and is operator-authenticated in production. Start Redis and the worker:
 
 ```bash
 docker compose up -d redis
