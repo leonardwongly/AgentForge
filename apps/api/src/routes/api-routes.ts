@@ -292,16 +292,8 @@ type ResolvedApiRouteContext = {
   githubInstallUrl: (config: ApiConfig) => string | undefined;
   headerValue: (value: string | string[] | undefined) => string | undefined;
   isRecoverableWebhookDeliveryForEnqueue: (status: WebhookDeliveryStatus) => boolean;
-  listAuditEvents: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    organizationId?: string
-  ) => Promise<Array<Record<string, unknown>>>;
-  listAuditEventsForRecordExport: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    records: ChangeControlRecord[]
-  ) => Promise<AuditEventRecord[]>;
+  listAuditEvents: (organizationId?: string) => Promise<AuditEventRecord[]>;
+  listAuditEventsForRecordExport: (records: ChangeControlRecord[]) => Promise<AuditEventRecord[]>;
   listGithubInstallations: (
     prisma: PrismaClient | undefined,
     organizationId: string
@@ -387,11 +379,7 @@ type ResolvedApiRouteContext = {
   runtimeCapabilities: (input: { postgres: boolean; redisQueue: boolean }) => unknown;
   safe: <T>(value: T) => T;
   safeErrorSummary: (error: unknown) => { errorClass: string; message: string };
-  saveAuditEvent: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    event: AuditEventRecord
-  ) => Promise<void>;
+  saveAuditEvent: (event: AuditEventRecord) => Promise<void>;
   saveExportJob: (
     state: AppState,
     prisma: PrismaClient | undefined,
@@ -2057,7 +2045,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
             ...(output.auditEvent.metadataJson ?? {}),
             requestId: request.id
           };
-          await saveAuditEvent(state, prisma, output.auditEvent);
+          await saveAuditEvent(output.auditEvent);
         }
         return reply.code(201).send({
           override: safe(output.overrideRecord),
@@ -2273,7 +2261,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       );
       const records = matchingRecords.slice(offset, offset + maxRecords);
       const jobId = randomUUID();
-      const auditEvents = await listAuditEventsForRecordExport(state, prisma, records);
+      const auditEvents = await listAuditEventsForRecordExport(records);
       const exportAuditEvent = createAuditEvent({
         organizationId: actor.organizationId,
         actor: actor.login,
@@ -2316,7 +2304,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         createdAt: new Date().toISOString()
       };
       await saveExportJob(state, prisma, job, actor.login, actor.role);
-      await saveAuditEvent(state, prisma, exportAuditEvent);
+      await saveAuditEvent(exportAuditEvent);
       return reply.code(201).send({
         id: job.id,
         status: job.status,
@@ -2366,7 +2354,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
       const records = matchingRecords.slice(offset, offset + maxRecords);
       const jobId = randomUUID();
-      const auditEvents = await listAuditEventsForRecordExport(state, prisma, records);
+      const auditEvents = await listAuditEventsForRecordExport(records);
       const filters = {
         repositoryId,
         policyPackId,
@@ -2418,7 +2406,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         createdAt: new Date().toISOString()
       };
       await saveExportJob(state, prisma, job, actor.login, actor.role);
-      await saveAuditEvent(state, prisma, exportAuditEvent);
+      await saveAuditEvent(exportAuditEvent);
       return reply.code(201).send({
         id: job.id,
         status: job.status,
@@ -2470,7 +2458,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (!allowed.ok) {
         return handleAuthzFailure(request, reply, allowed);
       }
-      return { auditEvents: safe(await listAuditEvents(state, prisma, actor.organizationId)) };
+      return { auditEvents: safe(await listAuditEvents(actor.organizationId)) };
     });
 
     app.get("/api/check-output/:recordId", async (request, reply) => {

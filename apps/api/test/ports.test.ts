@@ -82,10 +82,18 @@ describe("in-memory persistence port", () => {
 
   it("appends and lists audit events with tenant filtering", async () => {
     const port = createInMemoryPersistencePort();
-    await port.auditEvents.append(audit("a1", "org_a"));
+    await port.auditEvents.append({
+      ...audit("a1", "org_a"),
+      repositoryId: "repo",
+      targetType: "change_control_record",
+      targetId: "r1"
+    });
     await port.auditEvents.append(audit("a2", "org_b"));
 
     expect(await port.auditEvents.list()).toHaveLength(2);
     expect(await port.auditEvents.list({ organizationId: "org_b" })).toHaveLength(1);
+    expect(await port.auditEvents.listForRecordExport([record("r1", "org_a")])).toMatchObject([
+      { id: "a1" }
+    ]);
   });
 });

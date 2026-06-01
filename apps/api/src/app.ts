@@ -715,7 +715,7 @@ export function createApp(
     body: z.infer<typeof repositorySettingsPatchSchema>
   ) => updateRepositorySettings(state, prisma, repositoryId, body, config);
   const audit = (input: Parameters<typeof createAuditEvent>[0]) =>
-    recordAuditEvent(state, prisma, input);
+    recordAuditEvent(persistence, input);
   const auditReevaluation = (
     record: ChangeControlRecord,
     actor: ApiActor,
@@ -874,8 +874,9 @@ export function createApp(
     githubInstallUrl,
     headerValue,
     isRecoverableWebhookDeliveryForEnqueue,
-    listAuditEvents,
-    listAuditEventsForRecordExport,
+    listAuditEvents: (organizationId?: string) => listAuditEvents(persistence, organizationId),
+    listAuditEventsForRecordExport: (records: ChangeControlRecord[]) =>
+      listAuditEventsForRecordExport(persistence, records),
     listGithubInstallations,
     listOwnerMappings,
     listRecentWebhookDeliveryFailures,
@@ -908,7 +909,7 @@ export function createApp(
     runtimeCapabilities,
     safe,
     safeErrorSummary,
-    saveAuditEvent,
+    saveAuditEvent: (event: AuditEventRecord) => saveAuditEvent(persistence, event),
     saveExportJob,
     saveOverrideRecord,
     saveRecord,
@@ -1476,7 +1477,6 @@ async function saveChangeControlRecord(
 }
 
 function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): PersistencePort {
-  const inMemoryAuditEvents = createInMemoryPersistencePort(state).auditEvents;
   return {
     records: {
       async get(id) {
@@ -1635,7 +1635,85 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         };
       }
     },
-    auditEvents: inMemoryAuditEvents
+    auditEvents: {
+      async append(event) {
+        state.auditEvents.push(event);
+        await ensureOrganization(prisma, event.organizationId);
+        const repository = event.repositoryId
+          ? await prisma.repository.findUnique({
+              where: { id: event.repositoryId },
+              select: { id: true }
+            })
+          : undefined;
+        const pullRequest =
+          event.pullRequestId && event.pullRequestId.startsWith("pr_")
+            ? await prisma.pullRequest.findUnique({
+                where: { id: event.pullRequestId },
+                select: { id: true }
+              })
+            : event.pullRequestId
+              ? await prisma.changeControlRecord.findUnique({
+                  where: { id: event.pullRequestId },
+                  select: { pullRequestId: true }
+                })
+              : undefined;
+
+        await prisma.auditEvent.upsert({
+          where: { id: event.id },
+          update: {},
+          create: {
+            id: event.id,
+            organizationId: event.organizationId,
+            repositoryId: repository?.id ?? null,
+            pullRequestId:
+              pullRequest && "pullRequestId" in pullRequest
+                ? pullRequest.pullRequestId
+                : (pullRequest?.id ?? null),
+            schemaVersion: event.schemaVersion,
+            actor: event.actor,
+            actorRole: event.actorRole,
+            action: event.action,
+            targetType: event.targetType,
+            targetId: event.targetId,
+            source: event.source,
+            requestId: event.requestId ?? null,
+            correlationId: event.correlationId ?? null,
+            policyVersion: event.policyVersion ?? null,
+            policyPackId: event.policyPackId ?? null,
+            policyPackVersion: event.policyPackVersion ?? null,
+            metadataJson: event.metadataJson as never,
+            createdAt: new Date(event.createdAt)
+          }
+        });
+      },
+      async list(filter) {
+        const rows = await prisma.auditEvent.findMany({
+          ...(filter?.organizationId ? { where: { organizationId: filter.organizationId } } : {}),
+          orderBy: { createdAt: "desc" },
+          take: 250
+        });
+        return rows.map(auditEventRecordFromRow);
+      },
+      async listForRecordExport(records) {
+        const repositoryIds = [...new Set(records.map((record) => record.repositoryId))];
+        const recordIds = records.map((record) => record.id);
+        const organizationId = records[0]?.organizationId;
+        if ((repositoryIds.length === 0 && recordIds.length === 0) || !organizationId) {
+          return [];
+        }
+        const rows = await prisma.auditEvent.findMany({
+          where: {
+            organizationId,
+            OR: [
+              { targetType: "change_control_record", targetId: { in: recordIds } },
+              { repositoryId: { in: repositoryIds } }
+            ]
+          },
+          orderBy: { createdAt: "asc" }
+        });
+        return rows.map(auditEventRecordFromRow);
+      }
+    }
   };
 }
 
@@ -2908,56 +2986,17 @@ async function getExportJob(
 }
 
 async function listAuditEvents(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   organizationId?: string
 ): Promise<AuditEventRecord[]> {
-  if (!prisma) {
-    return organizationId
-      ? state.auditEvents.filter((event) => event.organizationId === organizationId)
-      : state.auditEvents;
-  }
-  const rows = await prisma.auditEvent.findMany({
-    ...(organizationId ? { where: { organizationId } } : {}),
-    orderBy: { createdAt: "desc" },
-    take: 250
-  });
-  return rows.map(auditEventRecordFromRow);
+  return persistence.auditEvents.list(organizationId ? { organizationId } : undefined);
 }
 
 async function listAuditEventsForRecordExport(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   records: ChangeControlRecord[]
 ): Promise<AuditEventRecord[]> {
-  const repositoryIds = [...new Set(records.map((record) => record.repositoryId))];
-  const recordIds = records.map((record) => record.id);
-  const organizationId = records[0]?.organizationId;
-  if (repositoryIds.length === 0 && recordIds.length === 0) {
-    return [];
-  }
-  if (!organizationId) {
-    return [];
-  }
-  if (!prisma) {
-    return state.auditEvents.filter(
-      (event) =>
-        event.organizationId === organizationId &&
-        ((event.targetType === "change_control_record" && recordIds.includes(event.targetId)) ||
-          (event.repositoryId ? repositoryIds.includes(event.repositoryId) : false))
-    );
-  }
-  const rows = await prisma.auditEvent.findMany({
-    where: {
-      organizationId,
-      OR: [
-        { targetType: "change_control_record", targetId: { in: recordIds } },
-        { repositoryId: { in: repositoryIds } }
-      ]
-    },
-    orderBy: { createdAt: "asc" }
-  });
-  return rows.map(auditEventRecordFromRow);
+  return persistence.auditEvents.listForRecordExport(records);
 }
 
 function auditEventRecordFromRow(row: AuditEventRow): AuditEventRecord {
@@ -3003,71 +3042,19 @@ function normalizeAuditEventMetadata(row: AuditEventRow): Record<string, unknown
 }
 
 async function recordAuditEvent(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   input: Parameters<typeof createAuditEvent>[0]
 ): Promise<AuditEventRecord> {
   const event = createAuditEvent(input);
-  await saveAuditEvent(state, prisma, event);
+  await saveAuditEvent(persistence, event);
   return event;
 }
 
 async function saveAuditEvent(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   event: AuditEventRecord
 ): Promise<void> {
-  state.auditEvents.push(event);
-  if (!prisma) {
-    return;
-  }
-  await ensureOrganization(prisma, event.organizationId);
-  const repository = event.repositoryId
-    ? await prisma.repository.findUnique({
-        where: { id: event.repositoryId },
-        select: { id: true }
-      })
-    : undefined;
-  const pullRequest =
-    event.pullRequestId && event.pullRequestId.startsWith("pr_")
-      ? await prisma.pullRequest.findUnique({
-          where: { id: event.pullRequestId },
-          select: { id: true }
-        })
-      : event.pullRequestId
-        ? await prisma.changeControlRecord.findUnique({
-            where: { id: event.pullRequestId },
-            select: { pullRequestId: true }
-          })
-        : undefined;
-
-  await prisma.auditEvent.upsert({
-    where: { id: event.id },
-    update: {},
-    create: {
-      id: event.id,
-      organizationId: event.organizationId,
-      repositoryId: repository?.id ?? null,
-      pullRequestId:
-        pullRequest && "pullRequestId" in pullRequest
-          ? pullRequest.pullRequestId
-          : (pullRequest?.id ?? null),
-      schemaVersion: event.schemaVersion,
-      actor: event.actor,
-      actorRole: event.actorRole,
-      action: event.action,
-      targetType: event.targetType,
-      targetId: event.targetId,
-      source: event.source,
-      requestId: event.requestId ?? null,
-      correlationId: event.correlationId ?? null,
-      policyVersion: event.policyVersion ?? null,
-      policyPackId: event.policyPackId ?? null,
-      policyPackVersion: event.policyPackVersion ?? null,
-      metadataJson: event.metadataJson as never,
-      createdAt: new Date(event.createdAt)
-    }
-  });
+  await persistence.auditEvents.append(event);
 }
 
 function auditEventSource(value: string): AuditEventRecord["source"] {

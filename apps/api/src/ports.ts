@@ -15,6 +15,7 @@ export interface ChangeControlRecordStore {
 export interface AuditEventStore {
   append(event: AuditEventRecord): Promise<void>;
   list(filter?: { organizationId?: string }): Promise<AuditEventRecord[]>;
+  listForRecordExport(records: ChangeControlRecord[]): Promise<AuditEventRecord[]>;
 }
 
 export interface PersistencePort {
@@ -96,9 +97,30 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
       },
       async list(filter) {
         return byOrg(listAuditEvents(), filter?.organizationId);
+      },
+      async listForRecordExport(records) {
+        return auditEventsForRecordExport(listAuditEvents(), records);
       }
     }
   };
+}
+
+export function auditEventsForRecordExport(
+  auditEvents: AuditEventRecord[],
+  records: ChangeControlRecord[]
+): AuditEventRecord[] {
+  const repositoryIds = new Set(records.map((record) => record.repositoryId));
+  const recordIds = new Set(records.map((record) => record.id));
+  const organizationId = records[0]?.organizationId;
+  if ((repositoryIds.size === 0 && recordIds.size === 0) || !organizationId) {
+    return [];
+  }
+  return auditEvents.filter(
+    (event) =>
+      event.organizationId === organizationId &&
+      ((event.targetType === "change_control_record" && recordIds.has(event.targetId)) ||
+        (event.repositoryId ? repositoryIds.has(event.repositoryId) : false))
+  );
 }
 
 export function filterAndSortRecords(
