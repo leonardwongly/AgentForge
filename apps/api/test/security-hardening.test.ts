@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PullRequestInput } from "@agentforge/core";
+import { hashPolicy } from "@agentforge/policy";
 import { buildLlmAdvisoryPrompt } from "@agentforge/security";
 import { resolveApiActor } from "../src/auth.js";
 import { createApp, createInitialState } from "../src/index.js";
@@ -88,6 +89,7 @@ function authenticatedActorHeaders(
 
 function setProductionProxyAuthEnv() {
   process.env.NODE_ENV = "production";
+  delete process.env.DATABASE_URL;
   delete process.env.REDIS_URL;
   process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
   process.env.GITHUB_APP_ID = "123456";
@@ -175,7 +177,7 @@ describe("security and audit hardening", () => {
     process.env.NODE_ENV = "test";
     delete process.env.DATABASE_URL;
 
-    const app = createApp(createInitialState());
+    const app = createApp(createInitialState(), { prisma: undefined });
 
     expect(process.env.DATABASE_URL).toBeUndefined();
     await app.close();
@@ -204,6 +206,163 @@ describe("security and audit hardening", () => {
     });
     expect(rejected.statusCode).toBe(401);
     expect(state.records).toHaveLength(0);
+    await app.close();
+  });
+
+  it("requires registered repositories before production policy preview persistence", async () => {
+    setProductionProxyAuthEnv();
+    const prisma = {
+      repository: {
+        findFirst: async () => undefined
+      }
+    };
+    const app = createApp(createInitialState(), { prisma: prisma as never });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr(), persist: true }),
+      headers: {
+        "content-type": "application/json",
+        ...authenticatedActorHeaders("alex", "platform_admin")
+      }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      error: "Repository must be registered before persisted policy preview"
+    });
+    await app.close();
+
+    const inMemoryApp = createApp(createInitialState());
+    const inMemoryResponse = await inMemoryApp.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr(), persist: true }),
+      headers: {
+        "content-type": "application/json",
+        ...authenticatedActorHeaders("alex", "platform_admin")
+      }
+    });
+
+    expect(inMemoryResponse.statusCode).toBe(404);
+    expect(inMemoryResponse.json()).toEqual({
+      error: "Repository must be registered before persisted policy preview"
+    });
+    await inMemoryApp.close();
+  });
+
+  it("requires actor and tenant scope before policy preview reads stored repository state", async () => {
+    const state = createInitialState();
+    const { app } = await createPreviewRecord({ state, organizationId: "org-a" });
+    const repositoryId = state.records[0]!.repositoryId;
+
+    const savedPolicy = await app.inject({
+      method: "PUT",
+      url: `/api/repositories/${repositoryId}/policy`,
+      payload: JSON.stringify({ contentYaml: policyYaml }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("alex", "platform_admin", "org-a")
+      }
+    });
+    expect(savedPolicy.statusCode).toBe(200);
+
+    const modeOverride = await app.inject({
+      method: "PATCH",
+      url: `/api/repositories/${repositoryId}/settings`,
+      payload: JSON.stringify({ mode: "observe" }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("alex", "platform_admin", "org-a")
+      }
+    });
+    expect(modeOverride.statusCode).toBe(200);
+
+    const unauthenticatedStoredPreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ pr: sensitivePr() }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(unauthenticatedStoredPreview.statusCode).toBe(401);
+
+    const unauthenticatedFixturePreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr() }),
+      headers: { "content-type": "application/json" }
+    });
+    expect(unauthenticatedFixturePreview.statusCode).toBe(200);
+    expect(unauthenticatedFixturePreview.json().result.mode).toBe("enforce");
+    expect(unauthenticatedFixturePreview.json().persisted).toBe(false);
+
+    const crossTenantFixturePreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr() }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("brenda", "auditor", "org-b")
+      }
+    });
+    expect(crossTenantFixturePreview.statusCode).toBe(403);
+
+    const crossTenantStoredPreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ pr: sensitivePr() }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("brenda", "auditor", "org-b")
+      }
+    });
+    expect(crossTenantStoredPreview.statusCode).toBe(403);
+
+    const storedPreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ pr: sensitivePr() }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("auditor-a", "auditor", "org-a")
+      }
+    });
+    expect(storedPreview.statusCode).toBe(200);
+    expect(storedPreview.json().result.mode).toBe("observe");
+    expect(storedPreview.json().persisted).toBe(false);
+
+    const previewOverrideYaml = policyYaml.replace("mode: enforce", "mode: observe");
+    const authenticatedFixturePreview = await app.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: previewOverrideYaml, pr: sensitivePr() }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("auditor-a", "auditor", "org-a")
+      }
+    });
+    expect(authenticatedFixturePreview.statusCode).toBe(200);
+    expect(authenticatedFixturePreview.json().result.mode).toBe("observe");
+    expect(authenticatedFixturePreview.json().persisted).toBe(false);
+    expect(state.auditEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "policy_previewed",
+          organizationId: "org-a",
+          repositoryId,
+          actor: "auditor-a",
+          actorRole: "auditor",
+          targetId: hashPolicy(previewOverrideYaml),
+          metadataJson: expect.objectContaining({
+            repositoryFullName: "acme/payments",
+            previewPersisted: false,
+            mode: "observe"
+          })
+        })
+      ])
+    );
+
     await app.close();
   });
 
@@ -313,8 +472,12 @@ describe("security and audit hardening", () => {
   });
 
   it("rejects raw local actor headers in production even when they spoof a valid actor", async () => {
+    const state = createInitialState();
+    const seeded = await createPreviewRecord({ state });
+    await seeded.app.close();
+
     setProductionProxyAuthEnv();
-    const { app, state } = await createPreviewRecord();
+    const app = createApp(state);
     const record = state.records[0]!;
     const evidence = record.requiredEvidence[0]!;
 
@@ -346,8 +509,12 @@ describe("security and audit hardening", () => {
   });
 
   it("accepts authenticated proxy actor headers in production when proxy trust is enabled", async () => {
+    const state = createInitialState();
+    const seeded = await createPreviewRecord({ state });
+    await seeded.app.close();
+
     setProductionProxyAuthEnv();
-    const { app, state } = await createPreviewRecord();
+    const app = createApp(state);
     const record = state.records[0]!;
     const evidence = record.requiredEvidence[0]!;
 
@@ -1123,19 +1290,17 @@ describe("security and audit hardening", () => {
 
   it("keeps health safe while readiness fails when a configured queue is unavailable", async () => {
     process.env.NODE_ENV = "development";
+    delete process.env.DATABASE_URL;
     process.env.REDIS_URL = "redis://127.0.0.1:1";
-    const app = createApp(createInitialState());
+    const app = createApp(createInitialState(), { prisma: undefined });
 
     const health = await app.inject({ method: "GET", url: "/health" });
     const ready = await app.inject({ method: "GET", url: "/ready" });
 
     expect(health.statusCode).toBe(200);
-    expect(health.json()).toEqual(
-      expect.objectContaining({
-        status: "ok",
-        workerQueue: "configured"
-      })
-    );
+    expect(health.json()).toEqual({ status: "ok", version: "1.0.0" });
+    expect(health.body).not.toContain("workerQueue");
+    expect(health.body).not.toContain("database");
     expect(ready.statusCode).toBe(503);
     expect(ready.json()).toEqual(
       expect.objectContaining({
@@ -1151,6 +1316,54 @@ describe("security and audit hardening", () => {
         })
       })
     );
+
+    await app.close();
+  });
+
+  it("protects readiness and metrics details in production", async () => {
+    setProductionProxyAuthEnv();
+    const app = createApp(createInitialState());
+
+    const health = await app.inject({ method: "GET", url: "/health" });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toEqual({ status: "ok", version: "1.0.0" });
+
+    const unauthenticatedReady = await app.inject({ method: "GET", url: "/ready" });
+    expect(unauthenticatedReady.statusCode).toBe(401);
+    expect(unauthenticatedReady.body).not.toContain("runtimeStore");
+
+    const unauthenticatedMetrics = await app.inject({ method: "GET", url: "/metrics" });
+    expect(unauthenticatedMetrics.statusCode).toBe(401);
+    expect(unauthenticatedMetrics.body).not.toContain("agentforge_runtime_store");
+
+    const developerReady = await app.inject({
+      method: "GET",
+      url: "/ready",
+      headers: authenticatedActorHeaders("sam", "developer")
+    });
+    expect(developerReady.statusCode).toBe(403);
+
+    const operatorReady = await app.inject({
+      method: "GET",
+      url: "/ready",
+      headers: authenticatedActorHeaders("ops", "auditor")
+    });
+    expect(operatorReady.statusCode).toBe(200);
+    expect(operatorReady.json()).toEqual(
+      expect.objectContaining({
+        status: "ready",
+        runtimeStore: "in_memory",
+        workerQueue: "in_memory"
+      })
+    );
+
+    const operatorMetrics = await app.inject({
+      method: "GET",
+      url: "/metrics",
+      headers: authenticatedActorHeaders("ops", "platform_admin")
+    });
+    expect(operatorMetrics.statusCode).toBe(200);
+    expect(operatorMetrics.body).toContain('agentforge_runtime_store{backend="in_memory"} 1');
 
     await app.close();
   });
@@ -1248,6 +1461,14 @@ describe("security and audit hardening", () => {
       expect(event.requestId).toMatch(/^req-/u);
     }
     expect(JSON.stringify(audit.json())).not.toContain(rawGithubToken);
+    const metrics = await app.inject({
+      method: "GET",
+      url: "/metrics"
+    });
+    expect(metrics.statusCode).toBe(200);
+    expect(metrics.body).toContain('agentforge_audit_events_total{action="record_exported"} 1');
+    expect(metrics.body).toContain('agentforge_audit_events_total{action="evidence_provided"} 1');
+    expect(metrics.body).not.toContain(rawGithubToken);
     await app.close();
   });
 });

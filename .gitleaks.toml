@@ -1,0 +1,16 @@
+title = "AgentForge Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Intentional secret-shaped fixtures used to test redaction and detectors"
+paths = [
+  '''apps/api/test/security-hardening\.test\.ts''',
+  '''fixtures/repos/secret-like-token\.json''',
+  '''packages/detectors/src/detectors\.test\.ts''',
+  '''packages/records/src/records\.test\.ts''',
+  '''packages/security/src/draft\.test\.ts''',
+  '''packages/security/src/redaction\.test\.ts''',
+  '''packages/security/src/redaction\.ts'''
+]

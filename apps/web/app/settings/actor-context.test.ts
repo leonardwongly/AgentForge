@@ -118,10 +118,22 @@ describe("dashboard actor context", () => {
     ).toBeUndefined();
   });
 
-  it("uses local actor fallback outside production", () => {
+  it("requires explicit local actor fallback outside production", () => {
     expect(
       resolveDashboardActorContext({
         env: {
+          AGENTFORGE_DASHBOARD_ACTOR: "dashboard-local",
+          AGENTFORGE_DASHBOARD_ROLE: "engineering_manager",
+          AGENTFORGE_DASHBOARD_ORGANIZATION: "org-dev"
+        },
+        nodeEnv: "development"
+      })
+    ).toBeUndefined();
+
+    expect(
+      resolveDashboardActorContext({
+        env: {
+          AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: "true",
           AGENTFORGE_DASHBOARD_ACTOR: "dashboard-local",
           AGENTFORGE_DASHBOARD_ROLE: "engineering_manager",
           AGENTFORGE_DASHBOARD_ORGANIZATION: "org-dev"
@@ -136,17 +148,24 @@ describe("dashboard actor context", () => {
     });
   });
 
-  it("requires an explicit local actor fallback in production", () => {
+  it("uses a non-admin local actor by default", () => {
     expect(
       resolveDashboardActorContext({
         env: {
-          AGENTFORGE_DASHBOARD_ACTOR: "dashboard-local",
-          AGENTFORGE_DASHBOARD_ROLE: "platform_admin"
+          AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: "true",
+          AGENTFORGE_DASHBOARD_ACTOR: "dashboard-local"
         },
-        nodeEnv: "production"
+        nodeEnv: "development"
       })
-    ).toBeUndefined();
+    ).toEqual({
+      login: "dashboard-local",
+      role: "developer",
+      organizationId: "org_local",
+      source: "local_environment"
+    });
+  });
 
+  it("allows an explicit admin local actor override", () => {
     expect(
       resolveDashboardActorContext({
         env: {

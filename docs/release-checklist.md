@@ -15,10 +15,11 @@ Use this checklist before making the repository public or cutting a tagged relea
 
 ## Secret And Data Hygiene
 
-- [ ] `git ls-files | grep -E '(^|/)\.DS_Store$|(^|/)\.env($|\.)|(^|/)playwright-report/|(^|/)test-results/' | grep -v '^\.env\.example$'` returns no committed local artifacts.
+- [ ] `git ls-files | grep -E '(^|/)\.DS_Store$|(^|/)\.env($|\.)|(^|/)playwright-report/|(^|/)test-results/|(^|/)\.gradle/|(^|/)local\.properties$|(^|/)build/outputs/|(^|/)DerivedData/|\.xcuserdata/|\.(apk|aab)$|^artifacts/' | grep -v '^\.env\.example$'` returns no committed local artifacts.
 - [ ] Run the secret-grep command from `.github/workflows/security.yml` locally and confirm it returns no real secrets.
+- [ ] Run `gitleaks detect --source . --redact --config .gitleaks.toml` locally and confirm only explicitly allowlisted test fixtures are ignored.
 - [ ] Run `pnpm release:check` and confirm it passes.
-- [ ] Run a git-history secret scan before changing repository visibility to public. If a real secret is found, rotate it before deciding whether history remediation is required.
+- [ ] Run a git-history secret scan before changing repository visibility to public, for example `gitleaks detect --source . --redact --config .gitleaks.toml --log-opts="--all"`. If a real secret is found, rotate it before deciding whether history remediation is required.
 - [ ] `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=false`, `SOURCE_CODE_STORAGE=false`, and `REDACT_SECRETS=true` are documented as production defaults.
 - [ ] Exports and dashboard views are verified to exclude raw source code and secrets under the default storage policy.
 
@@ -49,7 +50,7 @@ pnpm typecheck
 pnpm test
 pnpm fixtures:run
 pnpm build
-pnpm audit --audit-level high
+pnpm audit --audit-level moderate
 pnpm release:check
 ```
 
@@ -79,7 +80,7 @@ Manual browser QA:
 ## Tag And Publication
 
 - [ ] Merge release-readiness changes to `main`.
-- [ ] Confirm `CI`, `Security`, `CodeQL`, dependency review, and E2E workflows pass on `main`.
+- [ ] Confirm `CI`, `Security`, `CodeQL`, blocking dependency review, and E2E workflows pass on `main`.
 - [ ] Create and push the `v1.0.0` tag.
 - [ ] Create the GitHub Release from `RELEASE_NOTES.md`.
 - [ ] Set repository topics, homepage/docs URL, and description.

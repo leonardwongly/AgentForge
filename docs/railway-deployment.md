@@ -127,7 +127,12 @@ After deployment:
 
 ```bash
 curl -fsS "$API_BASE_URL/health"
-curl -fsS "$API_BASE_URL/ready"
+curl -fsS "$API_BASE_URL/ready" \
+  -H "x-agentforge-authenticated-actor: <operator-login>" \
+  -H "x-agentforge-authenticated-role: auditor" \
+  -H "x-agentforge-authenticated-organization: <organization-id>" \
+  -H "x-agentforge-signature-timestamp: <unix-seconds>" \
+  -H "x-agentforge-signature: <proxy-signature>"
 pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-id <installation-id>
 pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-id <installation-id> --publish-check
 ```
@@ -156,10 +161,10 @@ The expected result for both requests is `401` or `403`. If either request
 succeeds, do not cut over traffic; fix ingress header stripping and proxy
 signature enforcement before setting the GitHub App webhook URL.
 
-Poll `/ready` with retry/backoff until it returns success. Do not update the
-GitHub App webhook URL until `/health`, `/ready`, and the GitHub smoke checks
-pass; `/ready` proves Redis/BullMQ are reachable before webhook traffic is cut
-over:
+Poll authenticated `/ready` with retry/backoff until it returns success. Do not
+update the GitHub App webhook URL until `/health`, authenticated `/ready`, and
+the GitHub smoke checks pass; `/ready` proves Redis/BullMQ are reachable before
+webhook traffic is cut over:
 
 ```text
 https://<api-host>/webhooks/github
@@ -169,9 +174,9 @@ Then use GitHub App settings to send a ping delivery or edit a test PR. Confirm:
 
 - GitHub reports a `2xx` webhook delivery.
 - `WebhookDelivery` records are written once per delivery ID.
-- `/ready` reports the Redis-backed worker queue as ready. If Redis is
-  configured but unavailable, `/ready` returns `not_ready` while `/health`
-  remains available for safe load-balancer checks.
+- Authenticated `/ready` reports the Redis-backed worker queue as ready. If
+  Redis is configured but unavailable, `/ready` returns `not_ready` while
+  `/health` remains available for safe load-balancer checks.
 - The worker consumes the queued evaluation.
 - The `AgentForge Merge Guard` check run is published on the test PR.
 - Logs do not expose private keys, webhook secrets, source patches, or installation tokens.

@@ -259,7 +259,8 @@ test("settings form persists repository mode, retention, and owner mappings", as
   await expect(page.getByLabel("Reviewer 1")).toHaveValue("runtime-team");
 
   const activePolicyPreview = await request.post(`${apiBaseUrl}/api/policies/preview`, {
-    data: { pr, contentYaml }
+    data: { pr, contentYaml },
+    headers: readActorHeaders
   });
   expect(activePolicyPreview.ok()).toBeTruthy();
   const previewPayload = (await activePolicyPreview.json()) as {

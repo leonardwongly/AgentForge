@@ -86,9 +86,14 @@ For local dashboard setup without GitHub OAuth or a proxy:
 ```env
 AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR=true
 AGENTFORGE_DASHBOARD_ACTOR=dashboard-local
-AGENTFORGE_DASHBOARD_ROLE=platform_admin
+AGENTFORGE_DASHBOARD_ROLE=developer
 AGENTFORGE_DASHBOARD_ORGANIZATION=org_local
 AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=true
 ```
 
-Do not use local actor headers in production.
+The fallback is explicit-only in every environment and is rejected by config and
+preflight checks when `APP_BASE_URL`, `NEXT_PUBLIC_APP_URL`, or `API_BASE_URL`
+point outside `localhost`, `127.0.0.1`, or `[::1]`. The default fallback role is
+`developer`; set `AGENTFORGE_DASHBOARD_ROLE=platform_admin` or
+`engineering_manager` only for local admin smoke tests. Do not use local actor
+headers in production or shared staging.

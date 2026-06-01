@@ -323,6 +323,35 @@ describe("records", () => {
     expect(json).not.toContain('"mode": "observe"');
   });
 
+  it("does not attach read-only policy preview audits to later records", () => {
+    const record = createChangeControlRecord({
+      organizationId: "org",
+      repositoryId: "repo",
+      pr,
+      policyResult: result,
+      now: "2026-05-12T01:00:00.000Z"
+    });
+    const previewEvent = createAuditEvent({
+      organizationId: "org",
+      repositoryId: "repo",
+      actor: "alex",
+      actorRole: "auditor",
+      action: "policy_previewed",
+      targetType: "policy",
+      targetId: "preview-policy-hash",
+      metadataJson: {
+        mode: "observe",
+        status: "pass",
+        policyVersion: "fintech@preview"
+      },
+      createdAt: "2026-05-12T00:30:00.000Z"
+    });
+
+    const json = exportChangeControlRecordsJson([record], undefined, [previewEvent]);
+
+    expect(json).not.toContain('"action": "policy_previewed"');
+  });
+
   it("links export lifecycle events to each exported record", () => {
     const record = createChangeControlRecord({
       organizationId: "org",

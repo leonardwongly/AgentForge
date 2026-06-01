@@ -70,6 +70,10 @@ let workerPrisma: PrismaClient | undefined;
 
 const WORKER_FAILURE_MESSAGE_LIMIT = 500;
 const CHECK_PUBLICATION_CLAIM_TTL_MS = 5 * 60 * 1000;
+type PrismaTransactionClient = Omit<
+  PrismaClient,
+  "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends"
+>;
 
 export class RepositoryNotConfiguredError extends Error {
   constructor(repositoryFullName: string) {
@@ -1311,7 +1315,7 @@ async function persistWorkerEvaluationSnapshot(input: {
     completedAt: new Date(input.record.updatedAt),
     explanationJson: explainChangeControlRecord(input.record) as never
   };
-  await input.prisma.$transaction(async (tx) => {
+  await input.prisma.$transaction(async (tx: PrismaTransactionClient) => {
     await tx.evaluation.upsert({
       where: { id: evaluationId },
       update: evaluationData,

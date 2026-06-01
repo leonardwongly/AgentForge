@@ -47,7 +47,7 @@ export function resolveDashboardActorContext(
     return fromSession;
   }
 
-  if (input.nodeEnv !== "production" || env.AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR === "true") {
+  if (env.AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR === "true") {
     return dashboardActorFromLocalEnvironment(env);
   }
 
@@ -91,7 +91,7 @@ function dashboardActorFromLocalEnvironment(
   env: Record<string, string | undefined>
 ): DashboardActorContext | undefined {
   const login = safeActorValue(env.AGENTFORGE_DASHBOARD_ACTOR ?? "dashboard-local");
-  const role = safeRoleValue(env.AGENTFORGE_DASHBOARD_ROLE ?? "platform_admin");
+  const role = safeRoleValue(env.AGENTFORGE_DASHBOARD_ROLE ?? "developer");
   const organizationId = safeOrganizationValue(
     env.AGENTFORGE_DASHBOARD_ORGANIZATION ?? localOrganizationId
   );

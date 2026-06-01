@@ -109,6 +109,51 @@ export default async function PolicyInsightsPage() {
             ))}
           </ul>
         </section>
+
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <h2>Proposed tuning actions</h2>
+              <p>
+                Human-gated proposals derived from the insights above. Each requires explicit
+                platform-admin approval and never changes policy automatically.
+              </p>
+            </div>
+            <Lightbulb size={18} aria-hidden="true" />
+          </div>
+          <ul className="compact-list">
+            {(data.proposals ?? []).length === 0 ? (
+              <li>No tuning proposals are available for this record window.</li>
+            ) : null}
+            {(data.proposals ?? []).map((proposal) => (
+              <li key={proposal.insightId}>
+                <div className="list-row">
+                  <div>
+                    <strong>{proposal.title}</strong>
+                    <p>{humanize(proposal.category)}</p>
+                  </div>
+                  <StatusBadge status={proposal.severity} />
+                </div>
+                <p>{proposal.recommendation}</p>
+                <div className="summary-strip">
+                  <span>
+                    Status
+                    <strong>{proposal.status}</strong>
+                  </span>
+                  <span>
+                    Approval
+                    <strong>{proposal.requiresApproval ? "required" : "not required"}</strong>
+                  </span>
+                  <span>
+                    Applied
+                    <strong>{proposal.applied ? "yes" : "no"}</strong>
+                  </span>
+                </div>
+                <p className="muted">{proposal.guardrail}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
       </section>
     </>
   );

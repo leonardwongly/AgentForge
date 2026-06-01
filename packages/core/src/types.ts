@@ -221,6 +221,7 @@ export type DataRetentionSettings = {
 
 export type AuditEventAction =
   | "policy_changed"
+  | "policy_previewed"
   | "override_created"
   | "evidence_provided"
   | "evidence_approved"

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   governanceDisposition,
   governanceDecisionLabel,
@@ -15,9 +15,36 @@ import {
 } from "./data";
 import type { ChangeControlRecord } from "@agentforge/core";
 
+const mutableEnvKeys = [
+  "AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR",
+  "AGENTFORGE_DASHBOARD_ACTOR",
+  "AGENTFORGE_DASHBOARD_ROLE",
+  "AGENTFORGE_DASHBOARD_ORGANIZATION",
+  "AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS"
+] as const;
+const originalEnv = new Map<string, string | undefined>(
+  mutableEnvKeys.map((key) => [key, process.env[key]])
+);
+
 describe("dashboard API data loaders", () => {
+  beforeEach(() => {
+    process.env.AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR = "true";
+    process.env.AGENTFORGE_DASHBOARD_ACTOR = "dashboard-local";
+    process.env.AGENTFORGE_DASHBOARD_ROLE = "platform_admin";
+    process.env.AGENTFORGE_DASHBOARD_ORGANIZATION = "org_local";
+    process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS = "true";
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
+    for (const key of mutableEnvKeys) {
+      const originalValue = originalEnv.get(key);
+      if (originalValue === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = originalValue;
+      }
+    }
   });
 
   it("treats an empty dashboard API response as an actionable empty state", async () => {

@@ -1,7 +1,8 @@
 # Runtime Boundaries
 
 AgentForge has two runtime modes. The distinction is intentional and visible in
-`/health`, `/ready`, `/api/settings`, and `/metrics`.
+`/ready`, `/api/settings`, and `/metrics`. `/health` is intentionally minimal so
+public load balancers can probe process liveness without learning backend state.
 
 ## Local In-Memory Mode
 
@@ -33,6 +34,9 @@ Durable mode is required for public or shared deployments.
   recoverable and replayable.
 - `/ready` reports `not_ready` when Redis is configured but unavailable, while
   `/health` remains safe for process liveness checks.
+- In production, `/ready` and `/metrics` require signed proxy actor context from
+  a `platform_admin`, `engineering_manager`, or `auditor`; unauthenticated
+  requests receive `401` and lower-privilege actors receive `403`.
 
 ## Capability Contract
 
@@ -53,16 +57,27 @@ Use these checks after setup or deployment:
 
 ```bash
 curl -fsS "$API_BASE_URL/health"
-curl -fsS "$API_BASE_URL/ready"
+curl -fsS "$API_BASE_URL/ready" \
+  -H "x-agentforge-authenticated-actor: <operator-login>" \
+  -H "x-agentforge-authenticated-role: auditor" \
+  -H "x-agentforge-authenticated-organization: <organization-id>" \
+  -H "x-agentforge-signature-timestamp: <unix-seconds>" \
+  -H "x-agentforge-signature: <proxy-signature>"
 curl -fsS "$API_BASE_URL/api/settings" \
   -H "x-agentforge-authenticated-actor: <operator-login>" \
   -H "x-agentforge-authenticated-role: platform_admin" \
   -H "x-agentforge-authenticated-organization: <organization-id>" \
   -H "x-agentforge-signature-timestamp: <unix-seconds>" \
   -H "x-agentforge-signature: <proxy-signature>"
-curl -fsS "$API_BASE_URL/metrics"
+curl -fsS "$API_BASE_URL/metrics" \
+  -H "x-agentforge-authenticated-actor: <operator-login>" \
+  -H "x-agentforge-authenticated-role: auditor" \
+  -H "x-agentforge-authenticated-organization: <organization-id>" \
+  -H "x-agentforge-signature-timestamp: <unix-seconds>" \
+  -H "x-agentforge-signature: <proxy-signature>"
 ```
 
 For public deployments, `runtimeCapabilities.productionReady` should be `true`,
 `/ready` should return `200`, and `/metrics` should expose queue, webhook,
-record, check-run, export, and GitHub App configuration gauges without secrets.
+record, check-run, export, audit-action, and GitHub App configuration gauges
+without secrets.
