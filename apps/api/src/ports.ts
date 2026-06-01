@@ -32,10 +32,16 @@ export interface WebhookDeliveryStore {
   listRecentFailures(organizationId?: string): Promise<Array<Record<string, unknown>>>;
 }
 
+export interface ExportJobStore {
+  save(job: ExportJob, actor: ExportJobActor): Promise<void>;
+  get(id: string): Promise<ExportJob | undefined>;
+}
+
 export interface PersistencePort {
   records: ChangeControlRecordStore;
   auditEvents: AuditEventStore;
   webhookDeliveries: WebhookDeliveryStore;
+  exportJobs: ExportJobStore;
 }
 
 export type WebhookDeliveryStatus =
@@ -99,6 +105,23 @@ export function hasCompleteWebhookReplayTarget(target: WebhookReplayTarget): boo
   );
 }
 
+export type ExportJob = {
+  id: string;
+  organizationId: string;
+  status: "completed";
+  format: "json" | "csv";
+  recordCount: number;
+  totalMatchingRecords: number;
+  truncated: boolean;
+  content: string;
+  createdAt: string;
+};
+
+export type ExportJobActor = {
+  actor: string;
+  actorRole: string;
+};
+
 export type RecordPageQuery = {
   limit: number;
   offset: number;
@@ -128,6 +151,7 @@ export type RecordPage = {
 type InMemoryPersistenceState = {
   records: ChangeControlRecord[];
   auditEvents: AuditEventRecord[];
+  exports: ExportJob[];
   deliveries: Set<string>;
   queuedEvaluations: Array<{
     deliveryId: string;
@@ -142,6 +166,7 @@ type InMemoryPersistenceState = {
 export function createInMemoryPersistencePort(state?: InMemoryPersistenceState): PersistencePort {
   const records = new Map<string, ChangeControlRecord>();
   const auditEvents: AuditEventRecord[] = [];
+  const exports = new Map<string, ExportJob>();
   const listRecords = () => state?.records ?? [...records.values()];
   const listAuditEvents = () => state?.auditEvents ?? auditEvents;
   const byOrg = <T extends { organizationId: string }>(items: T[], organizationId?: string): T[] =>
@@ -182,6 +207,18 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
       },
       async listForRecordExport(records) {
         return auditEventsForRecordExport(listAuditEvents(), records);
+      }
+    },
+    exportJobs: {
+      async save(job, _actor) {
+        if (state) {
+          state.exports = [job, ...(state.exports ?? []).filter((item) => item.id !== job.id)];
+        } else {
+          exports.set(job.id, job);
+        }
+      },
+      async get(id) {
+        return state ? (state.exports ?? []).find((job) => job.id === id) : exports.get(id);
       }
     },
     webhookDeliveries: {

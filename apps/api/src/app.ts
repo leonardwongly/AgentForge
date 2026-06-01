@@ -68,6 +68,7 @@ import {
   pageInfo,
   paginateRecords,
   recordRequiresAction,
+  type ExportJob,
   type PersistencePort,
   type ReplayableDelivery,
   type StoredWebhookDelivery,
@@ -136,18 +137,6 @@ type WebhookFailureRow = {
 type AppDependencyOverrides = {
   prisma?: PrismaClient | undefined;
   evaluationQueue?: Queue<MergeGuardEvaluationJobPayload> | undefined;
-};
-
-export type ExportJob = {
-  id: string;
-  organizationId: string;
-  status: "completed";
-  format: "json" | "csv";
-  recordCount: number;
-  totalMatchingRecords: number;
-  truncated: boolean;
-  content: string;
-  createdAt: string;
 };
 
 type PageInfo = {
@@ -823,7 +812,7 @@ export function createApp(
       findReplayableDelivery(persistence, target, organizationId),
     findRepositoryIdByFullName,
     fetchGithubInstallationAccount,
-    getExportJob,
+    getExportJob: (id: string) => getExportJob(persistence, id),
     getRecord,
     getRecordPolicyConfig,
     getRepositoryModeOverride,
@@ -876,7 +865,8 @@ export function createApp(
     safe,
     safeErrorSummary,
     saveAuditEvent: (event: AuditEventRecord) => saveAuditEvent(persistence, event),
-    saveExportJob,
+    saveExportJob: (job: ExportJob, actor: string, actorRole: string) =>
+      saveExportJob(persistence, job, actor, actorRole),
     saveOverrideRecord,
     saveRecord,
     saveRepositoryPolicy,
@@ -1679,6 +1669,42 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
           orderBy: { createdAt: "asc" }
         });
         return rows.map(auditEventRecordFromRow);
+      }
+    },
+    exportJobs: {
+      async save(job, actor) {
+        await prisma.exportJob.create({
+          data: {
+            id: job.id,
+            organizationId: job.organizationId,
+            actor: actor.actor,
+            actorRole: actor.actorRole,
+            status: job.status,
+            format: job.format,
+            recordCount: job.recordCount,
+            totalMatchingRecords: job.totalMatchingRecords,
+            truncated: job.truncated,
+            content: job.content,
+            createdAt: new Date(job.createdAt)
+          }
+        });
+        state.exports = [job, ...(state.exports ?? []).filter((item) => item.id !== job.id)];
+      },
+      async get(id) {
+        const row = await prisma.exportJob.findUnique({ where: { id } });
+        return row
+          ? {
+              id: row.id,
+              organizationId: row.organizationId ?? "org_local",
+              status: "completed",
+              format: row.format === "csv" ? "csv" : "json",
+              recordCount: row.recordCount,
+              totalMatchingRecords: row.totalMatchingRecords,
+              truncated: row.truncated,
+              content: row.content,
+              createdAt: row.createdAt.toISOString()
+            }
+          : state.exports.find((item) => item.id === id);
       }
     },
     webhookDeliveries: {
@@ -2871,55 +2897,19 @@ function dateString(value: Date | string | null | undefined): string | undefined
 }
 
 async function saveExportJob(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   job: ExportJob,
   actor: string,
   actorRole: string
 ): Promise<void> {
-  state.exports = [job, ...state.exports.filter((item) => item.id !== job.id)];
-  if (!prisma) {
-    return;
-  }
-  await prisma.exportJob.create({
-    data: {
-      id: job.id,
-      organizationId: job.organizationId,
-      actor,
-      actorRole,
-      status: job.status,
-      format: job.format,
-      recordCount: job.recordCount,
-      totalMatchingRecords: job.totalMatchingRecords,
-      truncated: job.truncated,
-      content: job.content,
-      createdAt: new Date(job.createdAt)
-    }
-  });
+  await persistence.exportJobs.save(job, { actor, actorRole });
 }
 
 async function getExportJob(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   id: string
 ): Promise<ExportJob | undefined> {
-  if (!prisma) {
-    return state.exports.find((item) => item.id === id);
-  }
-  const row = await prisma.exportJob.findUnique({ where: { id } });
-  return row
-    ? {
-        id: row.id,
-        organizationId: row.organizationId ?? "org_local",
-        status: "completed",
-        format: row.format === "csv" ? "csv" : "json",
-        recordCount: row.recordCount,
-        totalMatchingRecords: row.totalMatchingRecords,
-        truncated: row.truncated,
-        content: row.content,
-        createdAt: row.createdAt.toISOString()
-      }
-    : state.exports.find((item) => item.id === id);
+  return persistence.exportJobs.get(id);
 }
 
 async function listAuditEvents(
