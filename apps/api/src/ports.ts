@@ -46,12 +46,30 @@ export interface OverrideStore {
   save(override: OverrideRecord): Promise<void>;
 }
 
+export interface RepositoryStore {
+  organizationId(repositoryId: string): Promise<string | undefined>;
+  listSummaries(
+    defaultMode: ChangeControlRecord["mode"],
+    organizationId?: string
+  ): Promise<RepositorySummary[]>;
+  getActivePolicy(repositoryId: string): Promise<RepositoryPolicyState | undefined>;
+  saveActivePolicy(policy: RepositoryPolicyState): Promise<RepositoryPolicyState>;
+  updateSettings(input: {
+    repositoryId: string;
+    patch: RepositorySettingsPatch;
+    defaultDataHandling: RepositoryDataHandlingState;
+    defaultMode: ChangeControlRecord["mode"];
+  }): Promise<RepositorySettingsResult>;
+  listOwnerMappings(repositoryId?: string): Promise<OwnerMappingState[]>;
+}
+
 export interface PersistencePort {
   records: ChangeControlRecordStore;
   auditEvents: AuditEventStore;
   webhookDeliveries: WebhookDeliveryStore;
   exportJobs: ExportJobStore;
   overrides: OverrideStore;
+  repositories: RepositoryStore;
 }
 
 export type WebhookDeliveryStatus =
@@ -132,6 +150,105 @@ export type ExportJobActor = {
   actorRole: string;
 };
 
+export type RepositoryDataHandlingState = {
+  sourceCodeStorage: boolean;
+  fullDiffRetention: "disabled" | "7d" | "30d" | "custom";
+  redactSecrets: boolean;
+  llmFeatures: boolean;
+  auditRecordRetentionDays: number;
+};
+
+export type OwnerMapping = {
+  organizationId?: string | undefined;
+  ownerKey: string;
+  reviewer: string;
+  reviewerType: "user" | "team";
+  id?: string | undefined;
+  createdAt?: string | undefined;
+  updatedAt?: string | undefined;
+};
+
+export type OwnerMappingState = {
+  id: string;
+  organizationId: string;
+  repositoryId?: string | undefined;
+  ownerKey: string;
+  reviewer: string;
+  reviewerType: "user" | "team";
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RepositoryPolicyState = {
+  repositoryId: string;
+  version: string;
+  mode: ChangeControlRecord["mode"];
+  contentYaml: string;
+  contentHash: string;
+  createdBy: string;
+  createdAt: string;
+  policyPackId?: string | undefined;
+  policyPackVersion?: string | undefined;
+};
+
+export type RepositorySettingsState = {
+  repositoryId: string;
+  organizationId?: string | undefined;
+  enabled: boolean;
+  mode?: ChangeControlRecord["mode"] | undefined;
+  dataHandling?: RepositoryDataHandlingState | undefined;
+  updatedAt: string;
+};
+
+export type RepositoryDataHandlingPatch = {
+  sourceCodeStorage?: boolean | undefined;
+  fullDiffRetention?: RepositoryDataHandlingState["fullDiffRetention"] | undefined;
+  redactSecrets?: boolean | undefined;
+  llmFeatures?: boolean | undefined;
+  auditRecordRetentionDays?: number | undefined;
+};
+
+export type RepositorySummary = {
+  id: string;
+  organizationId?: string | undefined;
+  fullName: string;
+  enabled?: boolean | undefined;
+  mode?: ChangeControlRecord["mode"] | undefined;
+  currentPolicyPack?: string | undefined;
+  currentPolicyVersion?: string | undefined;
+  protected?: boolean | undefined;
+  defaultBranch?: string | undefined;
+  dataHandling?: Record<string, unknown> | undefined;
+  archivedAt?: string | undefined;
+  archiveReason?: string | undefined;
+};
+
+export type RepositorySettingsPatch = {
+  enabled?: boolean | undefined;
+  mode?: ChangeControlRecord["mode"] | undefined;
+  policyVersion?: string | undefined;
+  dataHandling?: RepositoryDataHandlingPatch | undefined;
+  ownerMappings?: OwnerMapping[] | undefined;
+  sourceCodeStorage?: boolean | undefined;
+  fullDiffRetention?: RepositoryDataHandlingState["fullDiffRetention"] | undefined;
+  redactSecrets?: boolean | undefined;
+  llmFeatures?: boolean | undefined;
+  auditRecordRetentionDays?: number | undefined;
+};
+
+export type RepositorySettingsRepository = {
+  id: string;
+  enabled: boolean;
+  mode: ChangeControlRecord["mode"];
+  dataHandling: RepositoryDataHandlingState;
+};
+
+export type RepositorySettingsResult = {
+  organizationId: string;
+  repository: RepositorySettingsRepository;
+  ownerMappings: OwnerMappingState[];
+};
+
 export type RecordPageQuery = {
   limit: number;
   offset: number;
@@ -163,6 +280,9 @@ type InMemoryPersistenceState = {
   auditEvents: AuditEventRecord[];
   exports: ExportJob[];
   overrides: OverrideRecord[];
+  repositoryPolicies: Map<string, RepositoryPolicyState>;
+  repositorySettings: Map<string, RepositorySettingsState>;
+  ownerMappings: OwnerMappingState[];
   deliveries: Set<string>;
   queuedEvaluations: Array<{
     deliveryId: string;
@@ -179,8 +299,14 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
   const auditEvents: AuditEventRecord[] = [];
   const exports = new Map<string, ExportJob>();
   const overrides = new Map<string, OverrideRecord>();
+  const repositoryPolicies = new Map<string, RepositoryPolicyState>();
+  const repositorySettings = new Map<string, RepositorySettingsState>();
+  let ownerMappings: OwnerMappingState[] = [];
   const listRecords = () => state?.records ?? [...records.values()];
   const listAuditEvents = () => state?.auditEvents ?? auditEvents;
+  const policyMap = () => state?.repositoryPolicies ?? repositoryPolicies;
+  const settingsMap = () => state?.repositorySettings ?? repositorySettings;
+  const listOwnerMappings = () => state?.ownerMappings ?? ownerMappings;
   const byOrg = <T extends { organizationId: string }>(items: T[], organizationId?: string): T[] =>
     organizationId ? items.filter((item) => item.organizationId === organizationId) : items;
 
@@ -243,6 +369,167 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
         } else {
           overrides.set(override.id, override);
         }
+      }
+    },
+    repositories: {
+      async organizationId(repositoryId) {
+        return (
+          settingsMap().get(repositoryId)?.organizationId ??
+          listRecords().find((record) => record.repositoryId === repositoryId)?.organizationId
+        );
+      },
+      async listSummaries(defaultMode, organizationId) {
+        const repositories = new Map<string, RepositorySummary>();
+
+        for (const record of listRecords()) {
+          if (organizationId && record.organizationId !== organizationId) {
+            continue;
+          }
+          const policy = policyMap().get(record.repositoryId);
+          const settings = settingsMap().get(record.repositoryId);
+          repositories.set(record.repositoryId, {
+            id: record.repositoryId,
+            organizationId: record.organizationId,
+            fullName: record.repositoryFullName,
+            enabled: settings?.enabled ?? true,
+            mode: settings?.mode ?? policy?.mode ?? record.mode,
+            currentPolicyPack: policy?.policyPackId ?? record.policyPackId,
+            currentPolicyVersion: policy?.version ?? record.policyVersion,
+            protected: false,
+            defaultBranch: record.baseBranch,
+            dataHandling: settings?.dataHandling
+          });
+        }
+
+        for (const policy of policyMap().values()) {
+          const settings = settingsMap().get(policy.repositoryId);
+          const policyOrganizationId =
+            settings?.organizationId ??
+            listRecords().find((record) => record.repositoryId === policy.repositoryId)
+              ?.organizationId;
+          if (organizationId && policyOrganizationId !== organizationId) {
+            continue;
+          }
+          if (!repositories.has(policy.repositoryId)) {
+            repositories.set(policy.repositoryId, {
+              id: policy.repositoryId,
+              ...(policyOrganizationId ? { organizationId: policyOrganizationId } : {}),
+              fullName: policy.repositoryId,
+              enabled: settings?.enabled ?? true,
+              mode: settings?.mode ?? policy.mode,
+              currentPolicyPack: policy.policyPackId,
+              currentPolicyVersion: policy.version,
+              protected: false,
+              defaultBranch: "main",
+              dataHandling: settings?.dataHandling
+            });
+          }
+        }
+
+        for (const settings of settingsMap().values()) {
+          if (organizationId && settings.organizationId !== organizationId) {
+            continue;
+          }
+          if (!repositories.has(settings.repositoryId)) {
+            repositories.set(settings.repositoryId, {
+              id: settings.repositoryId,
+              organizationId: settings.organizationId,
+              fullName: settings.repositoryId,
+              enabled: settings.enabled,
+              mode: settings.mode ?? defaultMode,
+              protected: false,
+              defaultBranch: "main",
+              dataHandling: settings.dataHandling
+            });
+          }
+        }
+
+        return [...repositories.values()].sort((a, b) => a.fullName.localeCompare(b.fullName));
+      },
+      async getActivePolicy(repositoryId) {
+        return policyMap().get(repositoryId);
+      },
+      async saveActivePolicy(policy) {
+        policyMap().set(policy.repositoryId, policy);
+        return policy;
+      },
+      async updateSettings({ repositoryId, patch, defaultDataHandling, defaultMode }) {
+        const existingRecord = listRecords().find((record) => record.repositoryId === repositoryId);
+        const existingPolicy = policyMap().get(repositoryId);
+        const existingSettings = settingsMap().get(repositoryId);
+        if (!existingRecord && !existingPolicy && !existingSettings) {
+          throw new Error("Repository must exist before updating settings.");
+        }
+        if (patch.policyVersion && existingPolicy?.version !== patch.policyVersion) {
+          throw new Error("Requested policy version is not available for this repository.");
+        }
+        const dataHandling = {
+          ...(existingSettings?.dataHandling ?? defaultDataHandling),
+          ...(repositoryDataHandlingPatch(patch) ?? {})
+        };
+        const nextSettings: RepositorySettingsState = {
+          repositoryId,
+          organizationId: existingRecord?.organizationId ?? existingSettings?.organizationId,
+          enabled: patch.enabled ?? existingSettings?.enabled ?? true,
+          mode:
+            patch.mode ?? existingSettings?.mode ?? existingPolicy?.mode ?? existingRecord?.mode,
+          dataHandling,
+          updatedAt: new Date().toISOString()
+        };
+        settingsMap().set(repositoryId, nextSettings);
+        if (patch.ownerMappings) {
+          const organizationId = nextSettings.organizationId ?? "org_local";
+          const mapped = patch.ownerMappings.map((mapping) => {
+            const now = new Date().toISOString();
+            return {
+              id: `owner_mapping:${repositoryId}:${mapping.ownerKey}`,
+              organizationId,
+              repositoryId,
+              ownerKey: mapping.ownerKey,
+              reviewer: mapping.reviewer,
+              reviewerType: mapping.reviewerType,
+              createdAt: now,
+              updatedAt: now
+            } satisfies OwnerMappingState;
+          });
+          if (state) {
+            state.ownerMappings = [
+              ...state.ownerMappings.filter((mapping) => mapping.repositoryId !== repositoryId),
+              ...mapped
+            ];
+          } else {
+            ownerMappings = [
+              ...ownerMappings.filter((mapping) => mapping.repositoryId !== repositoryId),
+              ...mapped
+            ];
+          }
+        }
+        const repositoryOwnerMappings = listOwnerMappings()
+          .filter((mapping) => mapping.repositoryId === repositoryId)
+          .sort((a, b) =>
+            `${a.repositoryId ?? ""}:${a.ownerKey}`.localeCompare(
+              `${b.repositoryId ?? ""}:${b.ownerKey}`
+            )
+          );
+        return {
+          organizationId: nextSettings.organizationId ?? "org_local",
+          repository: {
+            id: repositoryId,
+            enabled: nextSettings.enabled,
+            mode: nextSettings.mode ?? defaultMode,
+            dataHandling
+          },
+          ownerMappings: repositoryOwnerMappings
+        };
+      },
+      async listOwnerMappings(repositoryId) {
+        return listOwnerMappings()
+          .filter((mapping) => !repositoryId || mapping.repositoryId === repositoryId)
+          .sort((a, b) =>
+            `${a.repositoryId ?? ""}:${a.ownerKey}`.localeCompare(
+              `${b.repositoryId ?? ""}:${b.ownerKey}`
+            )
+          );
       }
     },
     webhookDeliveries: {
@@ -333,6 +620,47 @@ export function auditEventsForRecordExport(
       ((event.targetType === "change_control_record" && recordIds.has(event.targetId)) ||
         (event.repositoryId ? repositoryIds.has(event.repositoryId) : false))
   );
+}
+
+function repositoryDataHandlingPatch(
+  patch: RepositorySettingsPatch
+): Partial<RepositoryDataHandlingState> | undefined {
+  const output: Partial<RepositoryDataHandlingState> = {};
+  const nested = patch.dataHandling;
+  const fullDiffRetention = nested?.fullDiffRetention ?? patch.fullDiffRetention;
+  if (typeof nested?.sourceCodeStorage === "boolean") {
+    output.sourceCodeStorage = nested.sourceCodeStorage;
+  }
+  if (
+    fullDiffRetention === "disabled" ||
+    fullDiffRetention === "7d" ||
+    fullDiffRetention === "30d" ||
+    fullDiffRetention === "custom"
+  ) {
+    output.fullDiffRetention = fullDiffRetention;
+  }
+  if (typeof nested?.redactSecrets === "boolean") {
+    output.redactSecrets = nested.redactSecrets;
+  }
+  if (typeof nested?.llmFeatures === "boolean") {
+    output.llmFeatures = nested.llmFeatures;
+  }
+  if (typeof nested?.auditRecordRetentionDays === "number") {
+    output.auditRecordRetentionDays = nested.auditRecordRetentionDays;
+  }
+  if (patch.sourceCodeStorage !== undefined) {
+    output.sourceCodeStorage = patch.sourceCodeStorage;
+  }
+  if (patch.redactSecrets !== undefined) {
+    output.redactSecrets = patch.redactSecrets;
+  }
+  if (patch.llmFeatures !== undefined) {
+    output.llmFeatures = patch.llmFeatures;
+  }
+  if (patch.auditRecordRetentionDays !== undefined) {
+    output.auditRecordRetentionDays = patch.auditRecordRetentionDays;
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
 }
 
 export function filterAndSortRecords(

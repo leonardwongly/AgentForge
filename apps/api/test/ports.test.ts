@@ -133,6 +133,9 @@ describe("in-memory persistence port", () => {
       auditEvents: [],
       exports: [],
       overrides: [],
+      repositoryPolicies: new Map(),
+      repositorySettings: new Map(),
+      ownerMappings: [],
       deliveries: new Set<string>(),
       queuedEvaluations: [
         {
@@ -204,6 +207,9 @@ describe("in-memory persistence port", () => {
       auditEvents: [],
       exports: [],
       overrides: [],
+      repositoryPolicies: new Map(),
+      repositorySettings: new Map(),
+      ownerMappings: [],
       deliveries: new Set<string>(),
       queuedEvaluations: []
     };
@@ -223,5 +229,106 @@ describe("in-memory persistence port", () => {
     await port.overrides.save(override);
 
     expect(state.overrides).toEqual([override]);
+  });
+
+  it("manages repository policies, settings, and owner mappings through the port", async () => {
+    const state = {
+      records: [record("r1", "org_a")],
+      auditEvents: [],
+      exports: [],
+      overrides: [],
+      repositoryPolicies: new Map(),
+      repositorySettings: new Map(),
+      ownerMappings: [],
+      deliveries: new Set<string>(),
+      queuedEvaluations: []
+    };
+    const port = createInMemoryPersistencePort(state);
+
+    await expect(port.repositories.organizationId("repo")).resolves.toBe("org_a");
+    await expect(
+      port.repositories.saveActivePolicy({
+        repositoryId: "repo",
+        version: "fintech@2.0.0+abcdef12",
+        mode: "enforce",
+        contentYaml: "version: 1",
+        contentHash: "abcdef123456",
+        createdBy: "sam",
+        createdAt: "2026-05-12T00:00:00.000Z",
+        policyPackId: "fintech",
+        policyPackVersion: "2.0.0"
+      })
+    ).resolves.toMatchObject({ repositoryId: "repo", mode: "enforce" });
+    await expect(port.repositories.getActivePolicy("repo")).resolves.toMatchObject({
+      version: "fintech@2.0.0+abcdef12"
+    });
+    await expect(port.repositories.listSummaries("warn", "org_a")).resolves.toMatchObject([
+      {
+        id: "repo",
+        organizationId: "org_a",
+        fullName: "acme/app",
+        mode: "enforce",
+        currentPolicyPack: "fintech",
+        currentPolicyVersion: "fintech@2.0.0+abcdef12"
+      }
+    ]);
+
+    await expect(
+      port.repositories.updateSettings({
+        repositoryId: "repo",
+        patch: {
+          enabled: false,
+          mode: "warn",
+          dataHandling: {
+            sourceCodeStorage: false,
+            fullDiffRetention: "7d",
+            redactSecrets: true,
+            llmFeatures: false,
+            auditRecordRetentionDays: 90
+          },
+          ownerMappings: [
+            {
+              ownerKey: "src/payments",
+              reviewer: "payments-team",
+              reviewerType: "team"
+            }
+          ]
+        },
+        defaultDataHandling: {
+          sourceCodeStorage: true,
+          fullDiffRetention: "30d",
+          redactSecrets: true,
+          llmFeatures: true,
+          auditRecordRetentionDays: 365
+        },
+        defaultMode: "warn"
+      })
+    ).resolves.toMatchObject({
+      organizationId: "org_a",
+      repository: {
+        id: "repo",
+        enabled: false,
+        mode: "warn",
+        dataHandling: {
+          sourceCodeStorage: false,
+          fullDiffRetention: "7d",
+          redactSecrets: true,
+          llmFeatures: false,
+          auditRecordRetentionDays: 90
+        }
+      },
+      ownerMappings: [
+        {
+          organizationId: "org_a",
+          repositoryId: "repo",
+          ownerKey: "src/payments",
+          reviewer: "payments-team",
+          reviewerType: "team"
+        }
+      ]
+    });
+    await expect(port.repositories.listOwnerMappings("repo")).resolves.toMatchObject([
+      { repositoryId: "repo", ownerKey: "src/payments" }
+    ]);
   });
 });
