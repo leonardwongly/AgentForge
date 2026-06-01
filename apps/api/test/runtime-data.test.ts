@@ -134,7 +134,7 @@ describe("runtime data surfaces", () => {
         runtimeCapabilities: {
           durableRecords: false,
           durableWebhookReplay: false,
-          manualGitHubInstallationApproval: false,
+          manualGitHubInstallationApproval: true,
           queueBackedEvaluations: expect.any(Boolean),
           productionReady: false
         }
@@ -144,7 +144,7 @@ describe("runtime data surfaces", () => {
     await app.close();
   });
 
-  it("returns actionable setup guidance for manual installation verification without Postgres", async () => {
+  it("records manual installation verification without Postgres", async () => {
     const state = createInitialState();
     const app = createApp(state);
 
@@ -162,9 +162,15 @@ describe("runtime data surfaces", () => {
       })
     });
 
-    expect(response.statusCode).toBe(409);
+    expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      error: expect.stringContaining("requires the Postgres runtime store")
+      installation: expect.objectContaining({
+        organizationId: "org_local",
+        githubInstallationId: "12345678",
+        accountLogin: "acme",
+        accountType: "Organization",
+        status: "pending_approval"
+      })
     });
 
     await app.close();

@@ -62,12 +62,35 @@ import {
 } from "./auth.js";
 import { evaluateFixturePr } from "./evaluation.js";
 import {
+  checkConclusionForRecord,
   createInMemoryPersistencePort,
   filterAndSortRecords,
+  hasCompleteWebhookReplayTarget,
   pageInfo,
   paginateRecords,
   recordRequiresAction,
-  type PersistencePort
+  type DomainMetricCounts,
+  type EvaluationSnapshotStore,
+  type EvaluationSnapshotInput,
+  type EvaluationSnapshotState,
+  type ExportJob,
+  type GitHubInstallationDecision,
+  type GitHubInstallationState,
+  type GitHubInstallationVerifyInput,
+  type GithubRepositoryRef,
+  type OwnerMappingState,
+  type PolicyVersionSnapshotInput,
+  type PolicyVersionSnapshotState,
+  type PersistencePort,
+  type ReplayableDelivery,
+  type RepositoryDataHandlingState,
+  type RepositoryPolicyState,
+  type RepositorySettingsPatch,
+  type RepositorySettingsResult,
+  type RepositorySettingsState,
+  type RepositorySummary,
+  type StoredWebhookDelivery,
+  type WebhookDeliveryStatus
 } from "./ports.js";
 import { registerApiRoutes } from "./routes/api-routes.js";
 import {
@@ -97,50 +120,6 @@ type QueueEnqueueResult = {
   jobId: string;
   deliveryId: string;
   backend: QueueBackend;
-};
-
-type WebhookDeliveryStatus =
-  | "received"
-  | "queued"
-  | "processing"
-  | "completed"
-  | "enqueue_failed"
-  | "failed";
-
-type StoredWebhookDelivery = {
-  deliveryId: string;
-  event: string;
-  action: string | null;
-  repositoryFullName: string | null;
-  organizationId?: string | null | undefined;
-  repositoryId?: string | null | undefined;
-  pullRequestNumber: number | null;
-  headSha: string | null;
-  enqueued: boolean;
-  deliveryStatus?: WebhookDeliveryStatus | string | undefined;
-  queueJobId?: string | null | undefined;
-  queuedAt?: Date | string | null | undefined;
-  processingStartedAt?: Date | string | null | undefined;
-  completedAt?: Date | string | null | undefined;
-  lastEnqueueFailureClass?: string | null | undefined;
-  lastEnqueueFailureMessage?: string | null | undefined;
-  lastEnqueueFailedAt?: Date | string | null | undefined;
-  payloadJson: unknown;
-  evaluationAttemptsMade?: number | undefined;
-  evaluationTerminalFailure?: boolean | undefined;
-  lastFailureClass?: string | null | undefined;
-  lastFailureMessage?: string | null | undefined;
-  lastFailureCorrelationId?: string | null | undefined;
-  lastFailedAt?: Date | string | null | undefined;
-  replayCount?: number | undefined;
-  lastReplayedAt?: Date | string | null | undefined;
-  lastReplayedBy?: string | null | undefined;
-  createdAt?: Date | string | undefined;
-};
-
-type ReplayableDelivery = {
-  delivery: StoredWebhookDelivery;
-  envelope: GithubWebhookEnvelope;
 };
 
 type RepositoryInstallationRow = {
@@ -178,17 +157,10 @@ type AppDependencyOverrides = {
   evaluationQueue?: Queue<MergeGuardEvaluationJobPayload> | undefined;
 };
 
-export type ExportJob = {
-  id: string;
-  organizationId: string;
-  status: "completed";
-  format: "json" | "csv";
-  recordCount: number;
-  totalMatchingRecords: number;
-  truncated: boolean;
-  content: string;
-  createdAt: string;
-};
+type PrismaTransactionClient = Pick<
+  PrismaClient,
+  "ownerMapping" | "policyVersion" | "repository" | "repositorySetting"
+>;
 
 type PageInfo = {
   limit: number;
@@ -203,32 +175,6 @@ type RecordPageQuery = z.infer<typeof recordPageQuerySchema>;
 type RecordPage = {
   records: ChangeControlRecord[];
   pageInfo: PageInfo;
-};
-
-export type RepositoryPolicyState = {
-  repositoryId: string;
-  version: string;
-  mode: ChangeControlRecord["mode"];
-  contentYaml: string;
-  contentHash: string;
-  createdBy: string;
-  createdAt: string;
-  policyPackId?: string | undefined;
-  policyPackVersion?: string | undefined;
-};
-
-type RepositoryDataHandlingState = {
-  sourceCodeStorage: boolean;
-  fullDiffRetention: "disabled" | "7d" | "30d" | "custom";
-  redactSecrets: boolean;
-  llmFeatures: boolean;
-  auditRecordRetentionDays: number;
-};
-
-type GithubRepositoryRef = {
-  id: number;
-  fullName: string;
-  githubRepositoryId?: bigint | undefined;
 };
 
 type RepositorySummaryRow = {
@@ -304,35 +250,24 @@ type AuditEventRow = {
   createdAt: Date;
 };
 
-type RepositorySettingsState = {
-  repositoryId: string;
-  organizationId?: string | undefined;
-  enabled: boolean;
-  mode?: ChangeControlRecord["mode"] | undefined;
-  dataHandling?: RepositoryDataHandlingState | undefined;
-  updatedAt: string;
-};
-
-type OwnerMappingState = {
-  id: string;
-  organizationId: string;
-  repositoryId?: string | undefined;
-  ownerKey: string;
-  reviewer: string;
-  reviewerType: "user" | "team";
-  createdAt: string;
-  updatedAt: string;
-};
-
 export type AppState = {
   deliveries: Set<string>;
   queuedEvaluations: QueuedEvaluation[];
   records: ChangeControlRecord[];
   auditEvents: AuditEventRecord[];
   exports: ExportJob[];
+  overrides: OverrideRecord[];
   repositoryPolicies: Map<string, RepositoryPolicyState>;
   repositorySettings: Map<string, RepositorySettingsState>;
   ownerMappings: OwnerMappingState[];
+  policyVersionSnapshots: Map<string, PolicyVersionSnapshotState>;
+  evaluationSnapshots: EvaluationSnapshotState[];
+  githubInstallations: GitHubInstallationState[];
+  githubInstallationEvents: Array<{
+    githubInstallationId: string;
+    installation: NonNullable<GithubWebhookEnvelope["installation"]>;
+    createdAt: string;
+  }>;
 };
 
 type RawBodyRequest = {
@@ -680,14 +615,17 @@ export function createApp(
   const persistence = prisma
     ? createPrismaPersistencePort(state, prisma)
     : createInMemoryPersistencePort(state);
+  const runtimeStore = prisma ? "postgres" : "in_memory";
   const listRecords = (filter?: { organizationId?: string }) =>
     listChangeControlRecords(persistence, filter);
   const getRecord = (id: string) => getChangeControlRecord(persistence, id);
   const saveRecord = (record: ChangeControlRecord, pr?: PullRequestInput) =>
     saveChangeControlRecord(persistence, record, pr);
   const listRepositories = (organizationId?: string) =>
-    listRepositorySummaries(state, prisma, config.defaultPolicyMode, organizationId);
-  const getRepositoryPolicy = (id: string) => getActiveRepositoryPolicy(state, prisma, id);
+    listRepositorySummaries(persistence, config.defaultPolicyMode, organizationId);
+  const getRepositoryOrganizationId = (repositoryId: string) =>
+    repositoryOrganizationId(persistence, repositoryId);
+  const getRepositoryPolicy = (id: string) => getActiveRepositoryPolicy(persistence, id);
   const getRecordPolicyConfig = async (record: ChangeControlRecord) => {
     const activePolicy = await getRepositoryPolicy(record.repositoryId);
     const contentYaml =
@@ -708,12 +646,12 @@ export function createApp(
     contentYaml: string,
     actor: string,
     parsed: ReturnType<typeof parsePolicyYaml>
-  ) => saveActiveRepositoryPolicy(state, prisma, repositoryId, contentYaml, actor, parsed);
-  const listOwnerMappings = () => listConfiguredOwnerMappings(state, prisma);
+  ) => saveActiveRepositoryPolicy(persistence, repositoryId, contentYaml, actor, parsed);
+  const listOwnerMappings = () => listConfiguredOwnerMappings(persistence);
   const saveRepositorySettings = (
     repositoryId: string,
     body: z.infer<typeof repositorySettingsPatchSchema>
-  ) => updateRepositorySettings(state, prisma, repositoryId, body, config);
+  ) => updateRepositorySettings(persistence, repositoryId, body, config);
   const audit = (input: Parameters<typeof createAuditEvent>[0]) =>
     recordAuditEvent(persistence, input);
   const auditReevaluation = (
@@ -846,30 +784,42 @@ export function createApp(
     apiCache,
     audit,
     auditReevaluation,
-    approveGithubInstallation,
+    approveGithubInstallation: (input: GitHubInstallationDecision) =>
+      approveGithubInstallation(persistence, input),
     codeownersPreviewSchema,
-    collectPrometheusMetrics,
+    collectPrometheusMetrics: () =>
+      collectPrometheusMetrics({
+        persistence,
+        runtimeStore,
+        state,
+        evaluationQueue,
+        config
+      }),
     compliancePackageRequestSchema,
     config,
     dashboardSummary,
-    defaultDataHandlingSettings,
+    defaultDataHandlingSettings: () => defaultDataHandlingSettings(persistence, config),
     enqueueMergeGuardEvaluation,
     evaluationQueue,
     evidenceRejectionSchema,
     evidenceSubmissionSchema,
     exportRequestSchema,
     filterAndSortRecords,
-    findReplayableDelivery,
-    findRepositoryIdByFullName,
+    findReplayableDelivery: (target: z.infer<typeof queueReplaySchema>, organizationId?: string) =>
+      findReplayableDelivery(persistence, target, organizationId),
+    findRepositoryIdByFullName: (fullName: string) =>
+      findRepositoryIdByFullName(persistence, fullName),
     fetchGithubInstallationAccount,
-    getExportJob,
+    getExportJob: (id: string) => getExportJob(persistence, id),
     getRecord,
     getRecordPolicyConfig,
-    getRepositoryModeOverride,
+    getRepositoryModeOverride: (repositoryId: string) =>
+      getRepositoryModeOverride(persistence, repositoryId),
     getRepositoryPolicy,
     githubCredentialsConfigured,
     githubInstallationDecisionSchema,
-    githubInstallationSummary,
+    githubInstallationSummary: (organizationId: string) =>
+      githubInstallationSummary(persistence, config, organizationId),
     githubInstallationVerifySchema,
     githubInstallUrl,
     headerValue,
@@ -877,22 +827,30 @@ export function createApp(
     listAuditEvents: (organizationId?: string) => listAuditEvents(persistence, organizationId),
     listAuditEventsForRecordExport: (records: ChangeControlRecord[]) =>
       listAuditEventsForRecordExport(persistence, records),
-    listGithubInstallations,
+    listGithubInstallations: (organizationId: string) =>
+      listGithubInstallations(persistence, organizationId),
     listOwnerMappings,
-    listRecentWebhookDeliveryFailures,
+    listRecentWebhookDeliveryFailures: (organizationId?: string) =>
+      listRecentWebhookDeliveryFailures(persistence, organizationId),
     listRecords,
     listRepositories,
-    markWebhookDeliveryCompleted,
-    markWebhookDeliveryEnqueueFailed,
-    markWebhookDeliveryQueued,
-    markWebhookDeliveryReplayed,
+    markWebhookDeliveryCompleted: (deliveryId: string) =>
+      markWebhookDeliveryCompleted(persistence, deliveryId),
+    markWebhookDeliveryEnqueueFailed: (deliveryId: string, error: unknown) =>
+      markWebhookDeliveryEnqueueFailed(persistence, deliveryId, error),
+    markWebhookDeliveryQueued: (deliveryId: string, queueJobId: string) =>
+      markWebhookDeliveryQueued(persistence, deliveryId, queueJobId),
+    markWebhookDeliveryReplayed: (deliveryId: string, actor: string) =>
+      markWebhookDeliveryReplayed(persistence, deliveryId, actor),
     onboardingStepsFromRuntime,
     ownerMappingForApi,
     paginateRecords,
     policyPreviewSchema,
     policyUpdateSchema,
     prisma,
-    processGithubInstallationWebhook,
+    runtimeStore,
+    processGithubInstallationWebhook: (envelope: GithubWebhookEnvelope) =>
+      processGithubInstallationWebhook(state, persistence, envelope, config),
     queueOperationalStatus,
     queueReplaySchema,
     recordPageQuerySchema,
@@ -900,8 +858,9 @@ export function createApp(
     recordsForAction,
     recordsVisibleTo,
     recomputeRequirementStatus,
-    rejectGithubInstallation,
-    repositoryOrganizationId,
+    rejectGithubInstallation: (input: GitHubInstallationDecision) =>
+      rejectGithubInstallation(persistence, input),
+    repositoryOrganizationId: getRepositoryOrganizationId,
     repositoryReadinessScore,
     repositorySettingsPatchSchema,
     requireReadActor,
@@ -910,17 +869,24 @@ export function createApp(
     safe,
     safeErrorSummary,
     saveAuditEvent: (event: AuditEventRecord) => saveAuditEvent(persistence, event),
-    saveExportJob,
-    saveOverrideRecord,
+    saveExportJob: (job: ExportJob, actor: string, actorRole: string) =>
+      saveExportJob(persistence, job, actor, actorRole),
+    saveOverrideRecord: (override: OverrideRecord) => saveOverrideRecord(persistence, override),
     saveRecord,
     saveRepositoryPolicy,
     saveRepositorySettings,
     state,
     storagePolicy,
-    syncRepositoriesFromCurrentGithubInstallation,
-    syncRepositoriesFromStoredInstallationEvents,
-    upsertPendingGithubInstallation,
-    recordWebhookDeliveryReceived,
+    syncRepositoriesFromCurrentGithubInstallation: (
+      installation: Parameters<typeof syncRepositoriesFromCurrentGithubInstallation>[3]
+    ) => syncRepositoriesFromCurrentGithubInstallation(state, persistence, config, installation),
+    syncRepositoriesFromStoredInstallationEvents: (
+      installation: Parameters<typeof syncRepositoriesFromStoredInstallationEvents>[2]
+    ) => syncRepositoriesFromStoredInstallationEvents(state, persistence, installation),
+    upsertPendingGithubInstallation: (input: GitHubInstallationVerifyInput) =>
+      upsertPendingGithubInstallation(persistence, input),
+    recordWebhookDeliveryReceived: (envelope: GithubWebhookEnvelope) =>
+      recordWebhookDeliveryReceived(persistence, envelope),
     recordRequiresAction,
     groupBy
   });
@@ -935,183 +901,41 @@ export function createInitialState(): AppState {
     records: [],
     auditEvents: [],
     exports: [],
+    overrides: [],
     repositoryPolicies: new Map(),
     repositorySettings: new Map(),
-    ownerMappings: []
+    ownerMappings: [],
+    policyVersionSnapshots: new Map(),
+    evaluationSnapshots: [],
+    githubInstallations: [],
+    githubInstallationEvents: []
   };
 }
 
 async function repositoryOrganizationId(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   repositoryId: string
 ): Promise<string | undefined> {
-  if (prisma) {
-    const repository = await prisma.repository.findUnique({
-      where: { id: repositoryId },
-      select: { organizationId: true }
-    });
-    return repository?.organizationId;
-  }
-  return (
-    state.repositorySettings.get(repositoryId)?.organizationId ??
-    state.records.find((record) => record.repositoryId === repositoryId)?.organizationId
-  );
+  return persistence.repositories.organizationId(repositoryId);
 }
 
 async function listRepositorySummaries(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   defaultMode: ChangeControlRecord["mode"],
   organizationId?: string
 ) {
-  if (prisma) {
-    const rows = await prisma.repository.findMany({
-      ...(organizationId ? { where: { organizationId } } : {}),
-      include: { currentPolicyVersion: true, settings: true },
-      orderBy: { fullName: "asc" }
-    });
-    return rows.map((row: RepositorySummaryRow) => {
-      const parsedPolicy = row.currentPolicyVersion
-        ? parsePolicyYaml(row.currentPolicyVersion.contentYaml)
-        : undefined;
-      return {
-        id: row.id,
-        organizationId: row.organizationId,
-        fullName: row.fullName,
-        enabled: row.enabled,
-        mode: effectiveRepositoryMode(row.mode, row.currentPolicyVersion?.mode, defaultMode),
-        currentPolicyPack: parsedPolicy?.config.policy_pack_id,
-        currentPolicyVersion: row.currentPolicyVersion?.version,
-        protected: row.protected,
-        defaultBranch: row.defaultBranch,
-        archivedAt: row.archivedAt?.toISOString(),
-        archiveReason: row.archiveReason ?? undefined,
-        dataHandling: row.settings ? dataHandlingFromRepositorySetting(row.settings) : undefined
-      };
-    });
-  }
-
-  const repositories = new Map<
-    string,
-    {
-      id: string;
-      organizationId?: string | undefined;
-      fullName: string;
-      enabled: boolean;
-      mode: ChangeControlRecord["mode"];
-      currentPolicyPack?: string | undefined;
-      currentPolicyVersion?: string | undefined;
-      protected: boolean;
-      defaultBranch: string;
-      dataHandling?: RepositoryDataHandlingState | undefined;
-      archivedAt?: string | undefined;
-      archiveReason?: string | undefined;
-    }
-  >();
-
-  for (const record of state.records) {
-    if (organizationId && record.organizationId !== organizationId) {
-      continue;
-    }
-    const policy = state.repositoryPolicies.get(record.repositoryId);
-    const settings = state.repositorySettings.get(record.repositoryId);
-    repositories.set(record.repositoryId, {
-      id: record.repositoryId,
-      organizationId: record.organizationId,
-      fullName: record.repositoryFullName,
-      enabled: settings?.enabled ?? true,
-      mode: settings?.mode ?? policy?.mode ?? record.mode,
-      currentPolicyPack: policy?.policyPackId ?? record.policyPackId,
-      currentPolicyVersion: policy?.version ?? record.policyVersion,
-      protected: false,
-      defaultBranch: record.baseBranch,
-      dataHandling: settings?.dataHandling
-    });
-  }
-
-  for (const policy of state.repositoryPolicies.values()) {
-    const settings = state.repositorySettings.get(policy.repositoryId);
-    const policyOrganizationId =
-      settings?.organizationId ??
-      state.records.find((record) => record.repositoryId === policy.repositoryId)?.organizationId;
-    if (organizationId && policyOrganizationId !== organizationId) {
-      continue;
-    }
-    if (!repositories.has(policy.repositoryId)) {
-      repositories.set(policy.repositoryId, {
-        id: policy.repositoryId,
-        ...(policyOrganizationId ? { organizationId: policyOrganizationId } : {}),
-        fullName: policy.repositoryId,
-        enabled: settings?.enabled ?? true,
-        mode: settings?.mode ?? policy.mode,
-        currentPolicyPack: policy.policyPackId,
-        currentPolicyVersion: policy.version,
-        protected: false,
-        defaultBranch: "main",
-        dataHandling: settings?.dataHandling
-      });
-    }
-  }
-
-  for (const settings of state.repositorySettings.values()) {
-    if (organizationId && settings.organizationId !== organizationId) {
-      continue;
-    }
-    if (!repositories.has(settings.repositoryId)) {
-      repositories.set(settings.repositoryId, {
-        id: settings.repositoryId,
-        organizationId: settings.organizationId,
-        fullName: settings.repositoryId,
-        enabled: settings.enabled,
-        mode: settings.mode ?? defaultMode,
-        protected: false,
-        defaultBranch: "main",
-        dataHandling: settings.dataHandling
-      });
-    }
-  }
-
-  return [...repositories.values()].sort((a, b) => a.fullName.localeCompare(b.fullName));
+  return persistence.repositories.listSummaries(defaultMode, organizationId);
 }
 
 async function getActiveRepositoryPolicy(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   repositoryId: string
 ): Promise<RepositoryPolicyState | undefined> {
-  const cached = state.repositoryPolicies.get(repositoryId);
-  if (cached) {
-    return cached;
-  }
-  if (!prisma) {
-    return undefined;
-  }
-  const repository = await prisma.repository.findUnique({
-    where: { id: repositoryId },
-    include: { currentPolicyVersion: true }
-  });
-  const version = repository?.currentPolicyVersion;
-  if (!version) {
-    return undefined;
-  }
-  const parsed = parsePolicyYaml(version.contentYaml);
-  return {
-    repositoryId,
-    version: version.version,
-    mode: version.mode,
-    contentYaml: version.contentYaml,
-    contentHash: version.contentHash,
-    createdBy: version.createdBy,
-    createdAt: version.createdAt.toISOString(),
-    policyPackId: parsed.config.policy_pack_id,
-    policyPackVersion: parsed.config.policy_pack_version
-  };
+  return persistence.repositories.getActivePolicy(repositoryId);
 }
 
 async function saveActiveRepositoryPolicy(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   repositoryId: string,
   contentYaml: string,
   actor: string,
@@ -1128,244 +952,35 @@ async function saveActiveRepositoryPolicy(
     policyPackId: parsed.config.policy_pack_id,
     policyPackVersion: parsed.config.policy_pack_version
   };
-  state.repositoryPolicies.set(repositoryId, policy);
-
-  if (!prisma) {
-    return policy;
-  }
-
-  const repository = await prisma.repository.findUnique({
-    where: { id: repositoryId },
-    select: { id: true, organizationId: true }
-  });
-  if (!repository) {
-    throw new Error("Repository must exist before assigning an active policy.");
-  }
-  const row = await prisma.policyVersion.create({
-    data: {
-      organizationId: repository.organizationId,
-      repositoryId: repository.id,
-      version: policy.version,
-      mode: policy.mode,
-      contentYaml: policy.contentYaml,
-      contentHash: policy.contentHash,
-      createdBy: actor
-    }
-  });
-  await prisma.repository.update({
-    where: { id: repository.id },
-    data: {
-      currentPolicyVersionId: row.id,
-      mode: policy.mode
-    }
-  });
-
-  return {
-    ...policy,
-    version: row.version,
-    createdAt: row.createdAt.toISOString()
-  };
+  return persistence.repositories.saveActivePolicy(policy);
 }
 
 async function updateRepositorySettings(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   repositoryId: string,
   patch: z.infer<typeof repositorySettingsPatchSchema>,
   config: ReturnType<typeof loadConfig>
-): Promise<{
-  organizationId: string;
-  repository: {
-    id: string;
-    enabled: boolean;
-    mode: ChangeControlRecord["mode"];
-    dataHandling: RepositoryDataHandlingState;
-  };
-  ownerMappings: OwnerMappingState[];
-}> {
-  const dataHandlingPatch = extractDataHandlingPatch(patch);
-  if (prisma) {
-    const repository = await prisma.repository.findUnique({
-      where: { id: repositoryId },
-      include: { currentPolicyVersion: true, settings: true }
-    });
-    if (!repository) {
-      throw new Error("Repository must exist before updating settings.");
-    }
-    let policyVersionId: string | null | undefined;
-    let policyMode: ChangeControlRecord["mode"] | undefined;
-    if (patch.policyVersion) {
-      const version = await prisma.policyVersion.findFirst({
-        where: {
-          repositoryId: repository.id,
-          version: patch.policyVersion
-        },
-        select: { id: true, mode: true }
-      });
-      if (!version) {
-        throw new Error("Requested policy version is not available for this repository.");
-      }
-      policyVersionId = version.id;
-      policyMode = version.mode;
-    }
-    const updatedRepository = await prisma.repository.update({
-      where: { id: repository.id },
-      data: {
-        enabled: patch.enabled ?? repository.enabled,
-        mode: patch.mode ?? policyMode ?? repository.mode,
-        ...(policyVersionId ? { currentPolicyVersionId: policyVersionId } : {})
-      }
-    });
-    let dataHandling = repository.settings
-      ? dataHandlingFromRepositorySetting(repository.settings)
-      : dataHandlingDefaults(config);
-    if (dataHandlingPatch) {
-      const savedSetting = await prisma.repositorySetting.upsert({
-        where: { repositoryId: repository.id },
-        update: dataHandlingPatch,
-        create: {
-          repositoryId: repository.id,
-          ...dataHandlingDefaults(config),
-          ...dataHandlingPatch
-        }
-      });
-      dataHandling = dataHandlingFromRepositorySetting(savedSetting);
-    }
-    if (patch.ownerMappings) {
-      await prisma.ownerMapping.deleteMany({ where: { repositoryId: repository.id } });
-      if (patch.ownerMappings.length > 0) {
-        await prisma.ownerMapping.createMany({
-          data: patch.ownerMappings.map((mapping) => ({
-            organizationId: repository.organizationId,
-            repositoryId: repository.id,
-            ownerKey: mapping.ownerKey,
-            reviewer: mapping.reviewer,
-            reviewerType: mapping.reviewerType
-          }))
-        });
-      }
-    }
-    const ownerMappings = await listConfiguredOwnerMappings(state, prisma, repository.id);
-    return {
-      organizationId: repository.organizationId,
-      repository: {
-        id: repository.id,
-        enabled: updatedRepository.enabled,
-        mode:
-          updatedRepository.mode ??
-          repository.currentPolicyVersion?.mode ??
-          config.defaultPolicyMode,
-        dataHandling
-      },
-      ownerMappings
-    };
-  }
-
-  const existingRecord = state.records.find((record) => record.repositoryId === repositoryId);
-  const existingPolicy = state.repositoryPolicies.get(repositoryId);
-  const existingSettings = state.repositorySettings.get(repositoryId);
-  if (!existingRecord && !existingPolicy && !existingSettings) {
-    throw new Error("Repository must exist before updating settings.");
-  }
-  if (patch.policyVersion && existingPolicy?.version !== patch.policyVersion) {
-    throw new Error("Requested policy version is not available for this repository.");
-  }
-  const dataHandling = {
-    ...(existingSettings?.dataHandling ?? dataHandlingDefaults(config)),
-    ...(dataHandlingPatch ?? {})
-  };
-  const nextSettings: RepositorySettingsState = {
+): Promise<RepositorySettingsResult> {
+  return persistence.repositories.updateSettings({
     repositoryId,
-    organizationId: existingRecord?.organizationId ?? existingSettings?.organizationId,
-    enabled: patch.enabled ?? existingSettings?.enabled ?? true,
-    mode: patch.mode ?? existingSettings?.mode ?? existingPolicy?.mode ?? existingRecord?.mode,
-    dataHandling,
-    updatedAt: new Date().toISOString()
-  };
-  state.repositorySettings.set(repositoryId, nextSettings);
-  if (patch.ownerMappings) {
-    state.ownerMappings = [
-      ...state.ownerMappings.filter((mapping) => mapping.repositoryId !== repositoryId),
-      ...patch.ownerMappings.map((mapping) => {
-        const now = new Date().toISOString();
-        return {
-          id: `owner_mapping:${repositoryId}:${mapping.ownerKey}`,
-          organizationId: existingRecord?.organizationId ?? "org_local",
-          repositoryId,
-          ownerKey: mapping.ownerKey,
-          reviewer: mapping.reviewer,
-          reviewerType: mapping.reviewerType,
-          createdAt: now,
-          updatedAt: now
-        } satisfies OwnerMappingState;
-      })
-    ];
-  }
-  const ownerMappings = await listConfiguredOwnerMappings(state, prisma, repositoryId);
-  return {
-    organizationId: existingRecord?.organizationId ?? "org_local",
-    repository: {
-      id: repositoryId,
-      enabled: nextSettings.enabled,
-      mode: nextSettings.mode ?? config.defaultPolicyMode,
-      dataHandling
-    },
-    ownerMappings
-  };
+    patch,
+    defaultDataHandling: dataHandlingDefaults(config),
+    defaultMode: config.defaultPolicyMode
+  });
 }
 
 async function listConfiguredOwnerMappings(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   repositoryId?: string
 ): Promise<OwnerMappingState[]> {
-  if (prisma) {
-    const rows = await prisma.ownerMapping.findMany({
-      ...(repositoryId ? { where: { repositoryId } } : {}),
-      orderBy: [{ repositoryId: "asc" }, { ownerKey: "asc" }]
-    });
-    return rows.map((row: OwnerMappingRow) => {
-      const output: OwnerMappingState = {
-        id: row.id,
-        organizationId: row.organizationId,
-        ownerKey: row.ownerKey,
-        reviewer: row.reviewer,
-        reviewerType: row.reviewerType === "user" ? "user" : "team",
-        createdAt: row.createdAt.toISOString(),
-        updatedAt: row.updatedAt.toISOString()
-      };
-      if (row.repositoryId) {
-        output.repositoryId = row.repositoryId;
-      }
-      return output;
-    });
-  }
-  return state.ownerMappings
-    .filter((mapping) => !repositoryId || mapping.repositoryId === repositoryId)
-    .sort((a, b) =>
-      `${a.repositoryId ?? ""}:${a.ownerKey}`.localeCompare(`${b.repositoryId ?? ""}:${b.ownerKey}`)
-    );
+  return persistence.repositories.listOwnerMappings(repositoryId);
 }
 
 async function defaultDataHandlingSettings(
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   config: ReturnType<typeof loadConfig>
 ): Promise<RepositoryDataHandlingState> {
-  if (prisma) {
-    const retention = await prisma.retentionSetting.findFirst({
-      orderBy: { createdAt: "desc" }
-    });
-    if (retention) {
-      return {
-        sourceCodeStorage: retention.sourceCodeStorage,
-        fullDiffRetention: normalizeFullDiffRetention(retention.fullDiffRetention),
-        redactSecrets: retention.redactSecrets,
-        llmFeatures: retention.llmFeatures,
-        auditRecordRetentionDays: retention.auditRecordRetentionDays
-      };
-    }
-  }
-  return dataHandlingDefaults(config);
+  return persistence.repositories.defaultDataHandling(dataHandlingDefaults(config));
 }
 
 function dataHandlingDefaults(config: ReturnType<typeof loadConfig>): RepositoryDataHandlingState {
@@ -1477,6 +1092,11 @@ async function saveChangeControlRecord(
 }
 
 function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): PersistencePort {
+  const evaluationSnapshots: EvaluationSnapshotStore = {
+    ensurePolicyVersion: (input) => ensurePrismaPolicyVersionSnapshot(prisma, input),
+    persist: (input) => persistPrismaEvaluationSnapshot(prisma, input)
+  };
+
   return {
     records: {
       async get(id) {
@@ -1538,7 +1158,7 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
             ...changeControlRecordData(record)
           }
         });
-        await persistEvaluationSnapshot(prisma, {
+        await evaluationSnapshots.persist({
           organizationId: organization.id,
           repositoryId: repository.id,
           pullRequestId: pullRequest.id,
@@ -1635,6 +1255,300 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         };
       }
     },
+    repositories: {
+      async organizationId(repositoryId) {
+        const repository = await prisma.repository.findUnique({
+          where: { id: repositoryId },
+          select: { organizationId: true }
+        });
+        return repository?.organizationId;
+      },
+      async findIdByFullName(fullName) {
+        const repository = await prisma.repository.findFirst({
+          where: { fullName },
+          select: { id: true }
+        });
+        return repository?.id;
+      },
+      async modeOverride(repositoryId) {
+        const repository = await prisma.repository.findUnique({
+          where: { id: repositoryId },
+          select: { mode: true }
+        });
+        return repository?.mode || undefined;
+      },
+      async defaultDataHandling(defaults) {
+        const retention = await prisma.retentionSetting.findFirst({
+          orderBy: { createdAt: "desc" }
+        });
+        if (!retention) {
+          return defaults;
+        }
+        return {
+          sourceCodeStorage: retention.sourceCodeStorage,
+          fullDiffRetention: normalizeFullDiffRetention(retention.fullDiffRetention),
+          redactSecrets: retention.redactSecrets,
+          llmFeatures: retention.llmFeatures,
+          auditRecordRetentionDays: retention.auditRecordRetentionDays
+        };
+      },
+      async listSummaries(defaultMode, organizationId) {
+        const rows = await prisma.repository.findMany({
+          ...(organizationId ? { where: { organizationId } } : {}),
+          include: { currentPolicyVersion: true, settings: true },
+          orderBy: { fullName: "asc" }
+        });
+        return rows.map((row: RepositorySummaryRow) => {
+          const parsedPolicy = row.currentPolicyVersion
+            ? parsePolicyYaml(row.currentPolicyVersion.contentYaml)
+            : undefined;
+          return {
+            id: row.id,
+            organizationId: row.organizationId,
+            fullName: row.fullName,
+            enabled: row.enabled,
+            mode: effectiveRepositoryMode(row.mode, row.currentPolicyVersion?.mode, defaultMode),
+            currentPolicyPack: parsedPolicy?.config.policy_pack_id,
+            currentPolicyVersion: row.currentPolicyVersion?.version,
+            protected: row.protected,
+            defaultBranch: row.defaultBranch,
+            archivedAt: row.archivedAt?.toISOString(),
+            archiveReason: row.archiveReason ?? undefined,
+            dataHandling: row.settings ? dataHandlingFromRepositorySetting(row.settings) : undefined
+          };
+        });
+      },
+      async getActivePolicy(repositoryId) {
+        const cached = state.repositoryPolicies.get(repositoryId);
+        if (cached) {
+          return cached;
+        }
+        const repository = await prisma.repository.findUnique({
+          where: { id: repositoryId },
+          include: { currentPolicyVersion: true }
+        });
+        const version = repository?.currentPolicyVersion;
+        if (!version) {
+          return undefined;
+        }
+        const parsed = parsePolicyYaml(version.contentYaml);
+        return {
+          repositoryId,
+          version: version.version,
+          mode: version.mode,
+          contentYaml: version.contentYaml,
+          contentHash: version.contentHash,
+          createdBy: version.createdBy,
+          createdAt: version.createdAt.toISOString(),
+          policyPackId: parsed.config.policy_pack_id,
+          policyPackVersion: parsed.config.policy_pack_version
+        };
+      },
+      async saveActivePolicy(policy) {
+        const repository = await prisma.repository.findUnique({
+          where: { id: policy.repositoryId },
+          select: { id: true, organizationId: true }
+        });
+        if (!repository) {
+          throw new Error("Repository must exist before assigning an active policy.");
+        }
+        const row = await prisma.$transaction(async (tx: PrismaTransactionClient) => {
+          const createdRow = await tx.policyVersion.create({
+            data: {
+              organizationId: repository.organizationId,
+              repositoryId: repository.id,
+              version: policy.version,
+              mode: policy.mode,
+              contentYaml: policy.contentYaml,
+              contentHash: policy.contentHash,
+              createdBy: policy.createdBy
+            }
+          });
+          await tx.repository.update({
+            where: { id: repository.id },
+            data: {
+              currentPolicyVersionId: createdRow.id,
+              mode: policy.mode
+            }
+          });
+          return createdRow;
+        });
+
+        const finalizedPolicy = {
+          ...policy,
+          version: row.version,
+          createdAt: row.createdAt.toISOString()
+        };
+        state.repositoryPolicies.set(policy.repositoryId, finalizedPolicy);
+        return finalizedPolicy;
+      },
+      async updateSettings({ repositoryId, patch, defaultDataHandling, defaultMode }) {
+        const dataHandlingPatch = extractDataHandlingPatch(patch);
+        const repository = await prisma.repository.findUnique({
+          where: { id: repositoryId },
+          include: { currentPolicyVersion: true, settings: true }
+        });
+        if (!repository) {
+          throw new Error("Repository must exist before updating settings.");
+        }
+        const [updatedRepository, dataHandling, ownerMappings] = await prisma.$transaction(
+          async (tx: PrismaTransactionClient) => {
+            let policyVersionId: string | null | undefined;
+            let policyMode: ChangeControlRecord["mode"] | undefined;
+            if (patch.policyVersion) {
+              const version = await tx.policyVersion.findFirst({
+                where: {
+                  repositoryId: repository.id,
+                  version: patch.policyVersion
+                },
+                select: { id: true, mode: true }
+              });
+              if (!version) {
+                throw new Error("Requested policy version is not available for this repository.");
+              }
+              policyVersionId = version.id;
+              policyMode = version.mode;
+            }
+            const updated = await tx.repository.update({
+              where: { id: repository.id },
+              data: {
+                enabled: patch.enabled ?? repository.enabled,
+                mode: patch.mode ?? policyMode ?? repository.mode,
+                ...(policyVersionId ? { currentPolicyVersionId: policyVersionId } : {})
+              }
+            });
+            let currentDataHandling = repository.settings
+              ? dataHandlingFromRepositorySetting(repository.settings)
+              : defaultDataHandling;
+            if (dataHandlingPatch) {
+              const savedSetting = await tx.repositorySetting.upsert({
+                where: { repositoryId: repository.id },
+                update: dataHandlingPatch,
+                create: {
+                  repositoryId: repository.id,
+                  ...defaultDataHandling,
+                  ...dataHandlingPatch
+                }
+              });
+              currentDataHandling = dataHandlingFromRepositorySetting(savedSetting);
+            }
+            if (patch.ownerMappings) {
+              await tx.ownerMapping.deleteMany({ where: { repositoryId: repository.id } });
+              if (patch.ownerMappings.length > 0) {
+                await tx.ownerMapping.createMany({
+                  data: patch.ownerMappings.map((mapping) => ({
+                    organizationId: repository.organizationId,
+                    repositoryId: repository.id,
+                    ownerKey: mapping.ownerKey,
+                    reviewer: mapping.reviewer,
+                    reviewerType: mapping.reviewerType
+                  }))
+                });
+              }
+            }
+            const ownerMappingRows = await tx.ownerMapping.findMany({
+              where: { repositoryId: repository.id },
+              orderBy: [{ repositoryId: "asc" }, { ownerKey: "asc" }]
+            });
+            const mappedOwners = ownerMappingRows.map((row: OwnerMappingRow) => {
+              const output: OwnerMappingState = {
+                id: row.id,
+                organizationId: row.organizationId,
+                ownerKey: row.ownerKey,
+                reviewer: row.reviewer,
+                reviewerType: row.reviewerType === "user" ? "user" : "team",
+                createdAt: row.createdAt.toISOString(),
+                updatedAt: row.updatedAt.toISOString()
+              };
+              if (row.repositoryId) {
+                output.repositoryId = row.repositoryId;
+              }
+              return output;
+            });
+            return [updated, currentDataHandling, mappedOwners] as const;
+          }
+        );
+        return {
+          organizationId: repository.organizationId,
+          repository: {
+            id: repository.id,
+            enabled: updatedRepository.enabled,
+            mode: updatedRepository.mode ?? repository.currentPolicyVersion?.mode ?? defaultMode,
+            dataHandling
+          },
+          ownerMappings
+        };
+      },
+      async listOwnerMappings(repositoryId) {
+        const rows = await prisma.ownerMapping.findMany({
+          ...(repositoryId ? { where: { repositoryId } } : {}),
+          orderBy: [{ repositoryId: "asc" }, { ownerKey: "asc" }]
+        });
+        return rows.map((row: OwnerMappingRow) => {
+          const output: OwnerMappingState = {
+            id: row.id,
+            organizationId: row.organizationId,
+            ownerKey: row.ownerKey,
+            reviewer: row.reviewer,
+            reviewerType: row.reviewerType === "user" ? "user" : "team",
+            createdAt: row.createdAt.toISOString(),
+            updatedAt: row.updatedAt.toISOString()
+          };
+          if (row.repositoryId) {
+            output.repositoryId = row.repositoryId;
+          }
+          return output;
+        });
+      },
+      async listGithubInstallationRepositories({ organizationId, accountLogin }) {
+        const rows = (await prisma.repository.findMany({
+          where: {
+            organizationId,
+            fullName: { startsWith: `${accountLogin}/` }
+          },
+          select: { fullName: true, githubRepositoryId: true }
+        })) as RepositoryInstallationRow[];
+        return rows.map((row) => ({
+          fullName: row.fullName,
+          githubRepositoryId: row.githubRepositoryId.toString()
+        }));
+      },
+      async syncGithubInstallation({ organizationId, installation }) {
+        await ensureOrganization(prisma, organizationId);
+        for (const repo of installation.repositoriesAdded) {
+          if (!repo.fullName) {
+            continue;
+          }
+          const repository = await ensureRepository(
+            prisma,
+            {
+              organizationId,
+              repositoryId: repositoryIdFromFullName(repo.fullName),
+              fullName: repo.fullName,
+              defaultBranch: "main",
+              githubRepositoryId: githubRepositoryBigInt(repo)
+            },
+            { forceUnarchive: true }
+          );
+          state.repositorySettings.set(repository.id, {
+            repositoryId: repository.id,
+            organizationId,
+            enabled: repository.enabled,
+            mode: repository.mode ?? undefined,
+            updatedAt: new Date().toISOString()
+          });
+        }
+        await archiveRemovedRepositoriesInPrisma(
+          prisma,
+          organizationId,
+          installation.repositoriesRemoved
+        );
+      },
+      async archiveGithubRepositories({ organizationId, repositoriesRemoved }) {
+        await archiveRemovedRepositoriesInPrisma(prisma, organizationId, repositoriesRemoved);
+      }
+    },
+    evaluationSnapshots,
     auditEvents: {
       async append(event) {
         state.auditEvents.push(event);
@@ -1713,20 +1627,519 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         });
         return rows.map(auditEventRecordFromRow);
       }
+    },
+    exportJobs: {
+      async save(job, actor) {
+        await prisma.exportJob.create({
+          data: {
+            id: job.id,
+            organizationId: job.organizationId,
+            actor: actor.actor,
+            actorRole: actor.actorRole,
+            status: job.status,
+            format: job.format,
+            recordCount: job.recordCount,
+            totalMatchingRecords: job.totalMatchingRecords,
+            truncated: job.truncated,
+            content: job.content,
+            createdAt: new Date(job.createdAt)
+          }
+        });
+        state.exports = [job, ...(state.exports ?? []).filter((item) => item.id !== job.id)];
+      },
+      async get(id) {
+        const row = await prisma.exportJob.findUnique({ where: { id } });
+        return row
+          ? {
+              id: row.id,
+              organizationId: row.organizationId ?? "org_local",
+              status: "completed",
+              format: row.format === "csv" ? "csv" : "json",
+              recordCount: row.recordCount,
+              totalMatchingRecords: row.totalMatchingRecords,
+              truncated: row.truncated,
+              content: row.content,
+              createdAt: row.createdAt.toISOString()
+            }
+          : state.exports.find((item) => item.id === id);
+      }
+    },
+    overrides: {
+      async save(override) {
+        const record = await prisma.changeControlRecord.findUnique({
+          where: { id: override.pullRequestId },
+          select: { pullRequestId: true }
+        });
+        if (!record) {
+          return;
+        }
+        await prisma.overrideRecord.upsert({
+          where: { id: override.id },
+          update: {},
+          create: {
+            id: override.id,
+            pullRequestId: record.pullRequestId,
+            evaluationId: null,
+            actor: override.actor,
+            actorRole: override.actorRole,
+            reason: override.reason,
+            scope: override.scope,
+            visibleInPr: override.visibleInPr,
+            policyVersion: override.policyVersion,
+            createdAt: new Date(override.createdAt)
+          }
+        });
+        state.overrides = [override, ...state.overrides.filter((item) => item.id !== override.id)];
+      }
+    },
+    webhookDeliveries: {
+      async recordReceived(envelope) {
+        state.deliveries.add(envelope.deliveryId);
+        const repositoryFullName = envelope.repository?.fullName ?? null;
+        const repositoryId = repositoryFullName
+          ? (
+              await prisma.repository.findFirst({
+                where: { fullName: repositoryFullName },
+                select: { id: true }
+              })
+            )?.id
+          : undefined;
+        const repository = repositoryId
+          ? await prisma.repository.findUnique({
+              where: { id: repositoryId },
+              select: { organizationId: true }
+            })
+          : undefined;
+        const organizationId =
+          repository?.organizationId ??
+          state.records.find((record) => record.repositoryFullName === repositoryFullName)
+            ?.organizationId;
+        const payloadJson = {
+          installationId: envelope.installationId,
+          repository: envelope.repository,
+          pullRequest: envelope.pullRequest,
+          review: envelope.review,
+          checkRun: envelope.checkRun,
+          installation: envelope.installation,
+          receivedAt: envelope.receivedAt
+        } as never;
+        const existing = await prisma.webhookDelivery.findUnique({
+          where: { deliveryId: envelope.deliveryId },
+          select: { deliveryStatus: true, enqueued: true }
+        });
+        if (existing) {
+          return {
+            duplicate: true,
+            status: webhookDeliveryStatus(existing.deliveryStatus, existing.enqueued)
+          };
+        }
+        try {
+          const created = await prisma.webhookDelivery.create({
+            data: {
+              deliveryId: envelope.deliveryId,
+              event: envelope.event,
+              action: envelope.action ?? null,
+              organizationId: organizationId ?? null,
+              repositoryId: repositoryId ?? null,
+              repositoryFullName,
+              pullRequestNumber:
+                envelope.pullRequest?.number ?? envelope.checkRun?.pullRequests[0]?.number ?? null,
+              headSha: envelope.pullRequest?.headSha ?? envelope.checkRun?.headSha ?? null,
+              enqueued: false,
+              deliveryStatus: "received",
+              payloadJson
+            },
+            select: { deliveryStatus: true, enqueued: true }
+          });
+          return {
+            duplicate: false,
+            status: webhookDeliveryStatus(created.deliveryStatus, created.enqueued)
+          };
+        } catch (error) {
+          const retryExisting = await prisma.webhookDelivery.findUnique({
+            where: { deliveryId: envelope.deliveryId },
+            select: { deliveryStatus: true, enqueued: true }
+          });
+          if (retryExisting) {
+            return {
+              duplicate: true,
+              status: webhookDeliveryStatus(retryExisting.deliveryStatus, retryExisting.enqueued)
+            };
+          }
+          throw error;
+        }
+      },
+      async markQueued(deliveryId, queueJobId) {
+        state.deliveries.add(deliveryId);
+        await prisma.webhookDelivery.updateMany({
+          where: { deliveryId },
+          data: {
+            enqueued: true,
+            deliveryStatus: "queued",
+            queueJobId,
+            queuedAt: new Date(),
+            lastEnqueueFailureClass: null,
+            lastEnqueueFailureMessage: null,
+            lastEnqueueFailedAt: null
+          }
+        });
+      },
+      async markCompleted(deliveryId) {
+        state.deliveries.add(deliveryId);
+        await prisma.webhookDelivery.updateMany({
+          where: { deliveryId },
+          data: {
+            deliveryStatus: "completed",
+            completedAt: new Date()
+          }
+        });
+      },
+      async markEnqueueFailed(deliveryId, error) {
+        state.deliveries.add(deliveryId);
+        const summary = safeErrorSummary(error);
+        await prisma.webhookDelivery.updateMany({
+          where: { deliveryId, deliveryStatus: { in: ["received", "enqueue_failed"] } },
+          data: {
+            enqueued: false,
+            deliveryStatus: "enqueue_failed",
+            lastEnqueueFailureClass: summary.errorClass,
+            lastEnqueueFailureMessage: summary.message,
+            lastEnqueueFailedAt: new Date()
+          }
+        });
+      },
+      async markReplayed(deliveryId, actor) {
+        await prisma.webhookDelivery.updateMany({
+          where: { deliveryId },
+          data: {
+            replayCount: { increment: 1 },
+            lastReplayedAt: new Date(),
+            lastReplayedBy: actor
+          }
+        });
+      },
+      async findReplayable(target, organizationId) {
+        if (!hasCompleteWebhookReplayTarget(target)) {
+          return undefined;
+        }
+        const delivery = target.deliveryId
+          ? await prisma.webhookDelivery.findFirst({
+              where: {
+                deliveryId: target.deliveryId,
+                ...(organizationId ? { organizationId } : {})
+              }
+            })
+          : await findReplayableWebhookByPullRequest(prisma, target, organizationId);
+        if (!delivery) {
+          return undefined;
+        }
+        const envelope = envelopeFromStoredWebhookDelivery(delivery);
+        return envelope ? { delivery, envelope } : undefined;
+      },
+      async listRecentFailures(organizationId) {
+        const deliveries = (await prisma.webhookDelivery.findMany({
+          where: {
+            OR: [{ lastFailedAt: { not: null } }, { lastEnqueueFailedAt: { not: null } }],
+            ...(organizationId ? { organizationId } : {})
+          },
+          orderBy: [
+            { lastEnqueueFailedAt: { sort: "desc", nulls: "last" } },
+            { lastFailedAt: { sort: "desc", nulls: "last" } }
+          ],
+          take: QUEUE_FAILED_JOB_LIMIT
+        })) as WebhookFailureRow[];
+        return deliveries.map(webhookFailureForApi);
+      }
+    },
+    githubInstallations: {
+      async upsertPending(input) {
+        await ensureOrganization(prisma, input.organizationId);
+        const existing = await prisma.gitHubInstallation.findUnique({
+          where: { githubInstallationId: BigInt(input.githubInstallationId) }
+        });
+        if (existing?.organizationId && existing.organizationId !== input.organizationId) {
+          return undefined;
+        }
+        if (!existing && !input.accountLogin) {
+          return undefined;
+        }
+        const status = existing?.status === "approved" ? "approved" : "pending_approval";
+        const data = {
+          organizationId: input.organizationId,
+          accountLogin:
+            input.accountLogin ??
+            existing?.accountLogin ??
+            `installation-${input.githubInstallationId}`,
+          accountType: input.accountType ?? existing?.accountType ?? "Organization",
+          status,
+          approvedBy: status === "approved" ? (existing?.approvedBy ?? null) : null,
+          approvedAt: status === "approved" ? (existing?.approvedAt ?? null) : null,
+          rejectedBy: null,
+          rejectedAt: null,
+          archivedAt: null,
+          lastWebhookAt: new Date()
+        };
+        const row = existing
+          ? await prisma.gitHubInstallation.update({
+              where: { id: existing.id },
+              data
+            })
+          : await prisma.gitHubInstallation.create({
+              data: {
+                ...data,
+                organizationId: input.organizationId,
+                archivedAt: null,
+                githubInstallationId: BigInt(input.githubInstallationId)
+              }
+            });
+        return githubInstallationForApi(row);
+      },
+      async approve(input) {
+        await ensureOrganization(prisma, input.organizationId);
+        const existing = await prisma.gitHubInstallation.findFirst({
+          where: { id: input.id, organizationId: input.organizationId }
+        });
+        if (!existing) {
+          return undefined;
+        }
+        const row = await prisma.gitHubInstallation.update({
+          where: { id: existing.id },
+          data: {
+            organizationId: input.organizationId,
+            status: "approved",
+            approvedBy: input.actor,
+            approvedAt: new Date(),
+            rejectedBy: null,
+            rejectedAt: null,
+            archivedAt: null
+          }
+        });
+        return githubInstallationForApi(row);
+      },
+      async reject(input) {
+        const existing = await prisma.gitHubInstallation.findFirst({
+          where: { id: input.id, organizationId: input.organizationId }
+        });
+        if (!existing) {
+          return undefined;
+        }
+        const row = await prisma.gitHubInstallation.update({
+          where: { id: existing.id },
+          data: {
+            status: "rejected",
+            approvedBy: null,
+            approvedAt: null,
+            rejectedBy: input.actor,
+            rejectedAt: new Date(),
+            archivedAt: new Date()
+          }
+        });
+        return githubInstallationForApi(row);
+      },
+      async list(organizationId) {
+        const rows = await prisma.gitHubInstallation.findMany({
+          where: { organizationId },
+          orderBy: [{ status: "asc" }, { updatedAt: "desc" }]
+        });
+        return rows.map(githubInstallationForApi);
+      },
+      async summary(organizationId) {
+        const installation = await prisma.gitHubInstallation.findFirst({
+          where: {
+            status: "approved",
+            archivedAt: null,
+            organizationId
+          },
+          orderBy: { approvedAt: "desc" }
+        });
+        const pendingApprovalCount = await prisma.gitHubInstallation.count({
+          where: {
+            status: "pending_approval",
+            archivedAt: null,
+            organizationId
+          }
+        });
+        return {
+          installation: installation ? githubInstallationForApi(installation) : undefined,
+          pendingApprovalCount
+        };
+      },
+      async recordWebhook(envelope) {
+        const installation = envelope.installation;
+        if (!installation) {
+          return undefined;
+        }
+        const existing = await prisma.gitHubInstallation.findUnique({
+          where: { githubInstallationId: BigInt(installation.id) }
+        });
+        const now = new Date();
+        const archiveAction =
+          envelope.event === "installation" &&
+          (envelope.action === "deleted" || envelope.action === "suspend");
+        const status = archiveAction
+          ? "archived"
+          : existing?.status === "approved"
+            ? "approved"
+            : "pending_approval";
+        const approvedBy = status === "approved" ? (existing?.approvedBy ?? null) : null;
+        const approvedAt = status === "approved" ? (existing?.approvedAt ?? null) : null;
+        const row = await prisma.gitHubInstallation.upsert({
+          where: { githubInstallationId: BigInt(installation.id) },
+          update: {
+            accountLogin:
+              installation.accountLogin ||
+              existing?.accountLogin ||
+              `installation-${installation.id}`,
+            accountType: installation.accountType || existing?.accountType || "Organization",
+            status,
+            approvedBy,
+            approvedAt,
+            rejectedBy: null,
+            rejectedAt: null,
+            archivedAt: archiveAction ? now : null,
+            lastWebhookAt: now
+          },
+          create: {
+            githubInstallationId: BigInt(installation.id),
+            accountLogin: installation.accountLogin || `installation-${installation.id}`,
+            accountType: installation.accountType || "Organization",
+            status,
+            approvedBy,
+            approvedAt,
+            rejectedBy: null,
+            rejectedAt: null,
+            archivedAt: archiveAction ? now : null,
+            lastWebhookAt: now
+          }
+        });
+        return githubInstallationForApi(row);
+      },
+      async listStoredInstallationEvents(githubInstallationId) {
+        const pageSize = 250;
+        let cursor: string | undefined;
+        const githubInstallationIdNumber = Number(githubInstallationId);
+        const installationIdFilters = [
+          {
+            payloadJson: {
+              path: ["installation", "id"],
+              equals: githubInstallationId
+            }
+          },
+          ...(Number.isSafeInteger(githubInstallationIdNumber)
+            ? [
+                {
+                  payloadJson: {
+                    path: ["installation", "id"],
+                    equals: githubInstallationIdNumber
+                  }
+                }
+              ]
+            : [])
+        ];
+        const events: Array<NonNullable<GithubWebhookEnvelope["installation"]>> = [];
+        for (;;) {
+          const deliveries = await prisma.webhookDelivery.findMany({
+            where: {
+              event: { in: ["installation", "installation_repositories"] },
+              OR: installationIdFilters
+            },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            take: pageSize,
+            ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
+          });
+          if (deliveries.length === 0) {
+            return events;
+          }
+          for (const delivery of deliveries) {
+            const payload = delivery.payloadJson as {
+              installation?: GithubWebhookEnvelope["installation"];
+            } | null;
+            const stored = payload?.installation;
+            if (stored?.id && String(stored.id) === githubInstallationId) {
+              events.push(stored);
+            }
+          }
+          if (deliveries.length < pageSize) {
+            return events;
+          }
+          cursor = deliveries.at(-1)?.id;
+        }
+      }
+    },
+    metrics: {
+      async domainCounts() {
+        const [webhookGroups, recordGroups, checkRuns, exports, auditEventGroups] =
+          (await Promise.all([
+            prisma.webhookDelivery.groupBy({ by: ["deliveryStatus"], _count: { _all: true } }),
+            prisma.changeControlRecord.groupBy({ by: ["checkStatus"], _count: { _all: true } }),
+            prisma.checkRun.count(),
+            prisma.exportJob.count(),
+            prisma.auditEvent.groupBy({ by: ["action"], _count: { _all: true } })
+          ])) as [
+            Array<CountGroup<"deliveryStatus">>,
+            Array<CountGroup<"checkStatus">>,
+            number,
+            number,
+            Array<CountGroup<"action">>
+          ];
+        return {
+          webhookDeliveriesByStatus: Object.fromEntries(
+            webhookGroups.map((group) => [group.deliveryStatus, group._count._all])
+          ),
+          recordsByStatus: Object.fromEntries(
+            recordGroups.map((group) => [String(group.checkStatus), group._count._all])
+          ),
+          checkRuns,
+          exports,
+          auditEventsByAction: Object.fromEntries(
+            auditEventGroups.map((group) => [group.action, group._count._all])
+          )
+        };
+      }
     }
   };
 }
 
-async function persistEvaluationSnapshot(
+async function findReplayableWebhookByPullRequest(
   prisma: PrismaClient,
-  input: {
-    organizationId: string;
-    repositoryId: string;
-    pullRequestId: string;
-    record: ChangeControlRecord;
+  target: { repositoryFullName?: string | undefined; pullRequestNumber?: number | undefined },
+  organizationId?: string
+): Promise<StoredWebhookDelivery | null> {
+  if (!target.repositoryFullName || target.pullRequestNumber === undefined) {
+    return null;
   }
+  return prisma.webhookDelivery.findFirst({
+    where: {
+      repositoryFullName: target.repositoryFullName,
+      pullRequestNumber: target.pullRequestNumber,
+      deliveryStatus: {
+        in: ["received", "queued", "processing", "completed", "failed", "enqueue_failed"]
+      },
+      ...(organizationId ? { organizationId } : {})
+    },
+    orderBy: { createdAt: "desc" }
+  });
+}
+
+async function persistEvaluationSnapshot(
+  persistence: PersistencePort,
+  input: EvaluationSnapshotInput
 ): Promise<void> {
-  const policyVersion = await ensurePolicyVersionSnapshot(prisma, input);
+  await persistence.evaluationSnapshots.persist(input);
+}
+
+async function ensurePolicyVersionSnapshot(
+  persistence: PersistencePort,
+  input: PolicyVersionSnapshotInput
+): Promise<PolicyVersionSnapshotState> {
+  return persistence.evaluationSnapshots.ensurePolicyVersion(input);
+}
+
+async function persistPrismaEvaluationSnapshot(
+  prisma: PrismaClient,
+  input: EvaluationSnapshotInput
+): Promise<void> {
+  const policyVersion = await ensurePrismaPolicyVersionSnapshot(prisma, input);
   const evaluation = await prisma.evaluation.create({
     data: {
       pullRequestId: input.pullRequestId,
@@ -1795,14 +2208,10 @@ async function persistEvaluationSnapshot(
   });
 }
 
-async function ensurePolicyVersionSnapshot(
+async function ensurePrismaPolicyVersionSnapshot(
   prisma: PrismaClient,
-  input: {
-    organizationId: string;
-    repositoryId: string;
-    record: ChangeControlRecord;
-  }
-) {
+  input: PolicyVersionSnapshotInput
+): Promise<PolicyVersionSnapshotState> {
   const existing = await prisma.policyVersion.findFirst({
     where: {
       organizationId: input.organizationId,
@@ -1811,12 +2220,12 @@ async function ensurePolicyVersionSnapshot(
     }
   });
   if (existing) {
-    return existing;
+    return policyVersionSnapshotFromRow(existing, input.repositoryId);
   }
   const policyPack = input.record.policyPackId
     ? await prisma.policyPack.findUnique({ where: { id: input.record.policyPackId } })
     : null;
-  return prisma.policyVersion.create({
+  const created = await prisma.policyVersion.create({
     data: {
       organizationId: input.organizationId,
       repositoryId: input.repositoryId,
@@ -1830,92 +2239,41 @@ async function ensurePolicyVersionSnapshot(
       createdBy: "system"
     }
   });
+  return policyVersionSnapshotFromRow(created, input.repositoryId);
 }
 
-function checkConclusionForRecord(
-  record: Pick<ChangeControlRecord, "mode" | "checkStatus">
-): "success" | "neutral" | "failure" {
-  if (record.mode === "observe") {
-    return "success";
-  }
-  if (record.mode === "warn") {
-    return "neutral";
-  }
-  return record.checkStatus === "block" ? "failure" : "success";
+function policyVersionSnapshotFromRow(
+  row: {
+    id: string;
+    organizationId: string;
+    repositoryId: string | null;
+    policyPackId: string | null;
+    version: string;
+    mode: ChangeControlRecord["mode"];
+    contentYaml: string;
+    contentHash: string;
+    createdBy: string;
+  },
+  repositoryId: string
+): PolicyVersionSnapshotState {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    repositoryId: row.repositoryId ?? repositoryId,
+    policyPackId: row.policyPackId ?? undefined,
+    version: row.version,
+    mode: row.mode,
+    contentYaml: row.contentYaml,
+    contentHash: row.contentHash,
+    createdBy: row.createdBy
+  };
 }
 
 async function recordWebhookDeliveryReceived(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   envelope: GithubWebhookEnvelope
 ): Promise<{ duplicate: boolean; status: WebhookDeliveryStatus }> {
-  const inMemoryDuplicate = state.deliveries.has(envelope.deliveryId);
-  state.deliveries.add(envelope.deliveryId);
-  const repositoryFullName = envelope.repository?.fullName ?? null;
-  const repositoryId = repositoryFullName
-    ? await findRepositoryIdByFullName(state, prisma, repositoryFullName)
-    : undefined;
-  const organizationId = repositoryId
-    ? await repositoryOrganizationId(state, prisma, repositoryId)
-    : state.records.find((record) => record.repositoryFullName === repositoryFullName)
-        ?.organizationId;
-  if (!prisma) {
-    return { duplicate: inMemoryDuplicate, status: inMemoryDuplicate ? "queued" : "received" };
-  }
-  const payloadJson = {
-    installationId: envelope.installationId,
-    repository: envelope.repository,
-    pullRequest: envelope.pullRequest,
-    review: envelope.review,
-    checkRun: envelope.checkRun,
-    installation: envelope.installation,
-    receivedAt: envelope.receivedAt
-  } as never;
-  const existing = await prisma.webhookDelivery.findUnique({
-    where: { deliveryId: envelope.deliveryId },
-    select: { deliveryStatus: true, enqueued: true }
-  });
-  if (existing) {
-    return {
-      duplicate: true,
-      status: webhookDeliveryStatus(existing.deliveryStatus, existing.enqueued)
-    };
-  }
-  try {
-    const created = await prisma.webhookDelivery.create({
-      data: {
-        deliveryId: envelope.deliveryId,
-        event: envelope.event,
-        action: envelope.action ?? null,
-        organizationId: organizationId ?? null,
-        repositoryId: repositoryId ?? null,
-        repositoryFullName,
-        pullRequestNumber:
-          envelope.pullRequest?.number ?? envelope.checkRun?.pullRequests[0]?.number ?? null,
-        headSha: envelope.pullRequest?.headSha ?? envelope.checkRun?.headSha ?? null,
-        enqueued: false,
-        deliveryStatus: "received",
-        payloadJson
-      },
-      select: { deliveryStatus: true, enqueued: true }
-    });
-    return {
-      duplicate: false,
-      status: webhookDeliveryStatus(created.deliveryStatus, created.enqueued)
-    };
-  } catch (error) {
-    const retryExisting = await prisma.webhookDelivery.findUnique({
-      where: { deliveryId: envelope.deliveryId },
-      select: { deliveryStatus: true, enqueued: true }
-    });
-    if (retryExisting) {
-      return {
-        duplicate: true,
-        status: webhookDeliveryStatus(retryExisting.deliveryStatus, retryExisting.enqueued)
-      };
-    }
-    throw error;
-  }
+  return persistence.webhookDeliveries.recordReceived(envelope);
 }
 
 function webhookDeliveryStatus(value: string, enqueued: boolean): WebhookDeliveryStatus {
@@ -1941,129 +2299,53 @@ function isRecoverableWebhookDeliveryForEnqueue(status: WebhookDeliveryStatus): 
 }
 
 async function markWebhookDeliveryQueued(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   deliveryId: string,
   queueJobId: string
 ): Promise<void> {
-  state.deliveries.add(deliveryId);
-  if (!prisma) {
-    return;
-  }
-  await prisma.webhookDelivery.updateMany({
-    where: { deliveryId },
-    data: {
-      enqueued: true,
-      deliveryStatus: "queued",
-      queueJobId,
-      queuedAt: new Date(),
-      lastEnqueueFailureClass: null,
-      lastEnqueueFailureMessage: null,
-      lastEnqueueFailedAt: null
-    }
-  });
+  await persistence.webhookDeliveries.markQueued(deliveryId, queueJobId);
 }
 
 async function markWebhookDeliveryCompleted(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   deliveryId: string
 ): Promise<void> {
-  state.deliveries.add(deliveryId);
-  if (!prisma) {
-    return;
-  }
-  await prisma.webhookDelivery.updateMany({
-    where: { deliveryId },
-    data: {
-      deliveryStatus: "completed",
-      completedAt: new Date()
-    }
-  });
+  await persistence.webhookDeliveries.markCompleted(deliveryId);
 }
 
 async function markWebhookDeliveryEnqueueFailed(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   deliveryId: string,
   error: unknown
 ): Promise<void> {
-  state.deliveries.add(deliveryId);
-  if (!prisma) {
-    return;
-  }
-  const summary = safeErrorSummary(error);
-  await prisma.webhookDelivery.updateMany({
-    where: { deliveryId, deliveryStatus: { in: ["received", "enqueue_failed"] } },
-    data: {
-      enqueued: false,
-      deliveryStatus: "enqueue_failed",
-      lastEnqueueFailureClass: summary.errorClass,
-      lastEnqueueFailureMessage: summary.message,
-      lastEnqueueFailedAt: new Date()
-    }
-  });
+  await persistence.webhookDeliveries.markEnqueueFailed(deliveryId, error);
 }
 
 async function processGithubInstallationWebhook(
   state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   envelope: GithubWebhookEnvelope,
   config?: ReturnType<typeof loadConfig>
 ): Promise<void> {
   const installation = envelope.installation;
-  if (!installation || !prisma) {
+  if (!installation) {
     return;
   }
-  const existing = await prisma.gitHubInstallation.findUnique({
-    where: { githubInstallationId: BigInt(installation.id) }
-  });
-  const now = new Date();
   const archiveAction =
     envelope.event === "installation" &&
     (envelope.action === "deleted" || envelope.action === "suspend");
-  const status = archiveAction
-    ? "archived"
-    : existing?.status === "approved"
-      ? "approved"
-      : "pending_approval";
-  const approvedBy = status === "approved" ? (existing?.approvedBy ?? null) : null;
-  const approvedAt = status === "approved" ? (existing?.approvedAt ?? null) : null;
-  const row = await prisma.gitHubInstallation.upsert({
-    where: { githubInstallationId: BigInt(installation.id) },
-    update: {
-      accountLogin:
-        installation.accountLogin || existing?.accountLogin || `installation-${installation.id}`,
-      accountType: installation.accountType || existing?.accountType || "Organization",
-      status,
-      approvedBy,
-      approvedAt,
-      rejectedBy: null,
-      rejectedAt: null,
-      archivedAt: archiveAction ? now : null,
-      lastWebhookAt: now
-    },
-    create: {
-      githubInstallationId: BigInt(installation.id),
-      accountLogin: installation.accountLogin || `installation-${installation.id}`,
-      accountType: installation.accountType || "Organization",
-      status,
-      approvedBy,
-      approvedAt,
-      rejectedBy: null,
-      rejectedAt: null,
-      archivedAt: archiveAction ? now : null,
-      lastWebhookAt: now
-    }
-  });
+  const row = await persistence.githubInstallations.recordWebhook(envelope);
+  if (!row) {
+    return;
+  }
   if (
     row.organizationId &&
     !archiveAction &&
     row.status === "approved" &&
     config &&
-    (await syncRepositoriesFromCurrentGithubInstallation(state, prisma, config, {
+    (await syncRepositoriesFromCurrentGithubInstallation(state, persistence, config, {
       organizationId: row.organizationId,
-      githubInstallationId: row.githubInstallationId.toString(),
+      githubInstallationId: row.githubInstallationId,
       accountLogin: row.accountLogin,
       accountType: row.accountType
     }))
@@ -2071,59 +2353,22 @@ async function processGithubInstallationWebhook(
     return;
   }
   if (row.organizationId && !archiveAction) {
-    await syncRepositoriesFromInstallation(state, prisma, row.organizationId, installation);
+    await syncRepositoriesFromInstallation(state, persistence, row.organizationId, installation);
   }
   if (row.organizationId && installation.repositoriesRemoved.length > 0) {
-    await archiveRemovedRepositories(prisma, row.organizationId, installation.repositoriesRemoved);
+    await archiveRemovedRepositories(
+      persistence,
+      row.organizationId,
+      installation.repositoriesRemoved
+    );
   }
 }
 
 async function upsertPendingGithubInstallation(
-  prisma: PrismaClient | undefined,
-  input: z.infer<typeof githubInstallationVerifySchema> & { organizationId: string }
+  persistence: PersistencePort,
+  input: GitHubInstallationVerifyInput
 ) {
-  if (!prisma) {
-    throw new Error("GitHub installation verification requires the Postgres runtime store.");
-  }
-  const id = BigInt(input.githubInstallationId);
-  await ensureOrganization(prisma, input.organizationId);
-  const existing = await prisma.gitHubInstallation.findUnique({
-    where: { githubInstallationId: id }
-  });
-  if (existing?.organizationId && existing.organizationId !== input.organizationId) {
-    return undefined;
-  }
-  if (!existing && !input.accountLogin) {
-    return undefined;
-  }
-  const status = existing?.status === "approved" ? "approved" : "pending_approval";
-  const data = {
-    organizationId: input.organizationId,
-    accountLogin:
-      input.accountLogin ?? existing?.accountLogin ?? `installation-${input.githubInstallationId}`,
-    accountType: input.accountType ?? existing?.accountType ?? "Organization",
-    status,
-    approvedBy: status === "approved" ? (existing?.approvedBy ?? null) : null,
-    approvedAt: status === "approved" ? (existing?.approvedAt ?? null) : null,
-    rejectedBy: null,
-    rejectedAt: null,
-    archivedAt: null,
-    lastWebhookAt: new Date()
-  };
-  const row = existing
-    ? await prisma.gitHubInstallation.update({
-        where: { id: existing.id },
-        data
-      })
-    : await prisma.gitHubInstallation.create({
-        data: {
-          ...data,
-          organizationId: input.organizationId,
-          archivedAt: null,
-          githubInstallationId: id
-        }
-      });
-  return githubInstallationForApi(row);
+  return persistence.githubInstallations.upsertPending(input);
 }
 
 async function fetchGithubInstallationAccount(
@@ -2254,7 +2499,7 @@ function githubInstallationRepositoryPageState(input: {
 
 async function syncRepositoriesFromCurrentGithubInstallation(
   state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   config: ReturnType<typeof loadConfig>,
   input: {
     organizationId?: string | undefined;
@@ -2263,7 +2508,7 @@ async function syncRepositoriesFromCurrentGithubInstallation(
     accountType?: string | undefined;
   }
 ): Promise<boolean> {
-  if (!prisma || !input.organizationId || !input.accountLogin) {
+  if (!input.organizationId || !input.accountLogin) {
     return false;
   }
   const repositories = await fetchGithubInstallationRepositories(
@@ -2277,26 +2522,23 @@ async function syncRepositoriesFromCurrentGithubInstallation(
     repositories.map((repository) => githubRepositoryBigInt(repository).toString())
   );
   const currentNames = new Set(repositories.map((repository) => repository.fullName));
-  const existingRepositories = (await prisma.repository.findMany({
-    where: {
-      organizationId: input.organizationId,
-      fullName: { startsWith: `${input.accountLogin}/` }
-    },
-    select: { fullName: true, githubRepositoryId: true }
-  })) as RepositoryInstallationRow[];
+  const existingRepositories = await persistence.repositories.listGithubInstallationRepositories({
+    organizationId: input.organizationId,
+    accountLogin: input.accountLogin
+  });
   const staleRepositories = existingRepositories
     .filter(
       (repository) =>
-        !currentRepositoryIds.has(repository.githubRepositoryId.toString()) &&
+        !currentRepositoryIds.has(repository.githubRepositoryId) &&
         !currentNames.has(repository.fullName)
     )
     .map((repository) => ({
       id: 0,
       fullName: repository.fullName,
-      githubRepositoryId: repository.githubRepositoryId
+      githubRepositoryId: BigInt(repository.githubRepositoryId)
     }));
 
-  await syncRepositoriesFromInstallation(state, prisma, input.organizationId, {
+  await syncRepositoriesFromInstallation(state, persistence, input.organizationId, {
     id: Number(input.githubInstallationId),
     accountLogin: input.accountLogin,
     accountType: input.accountType === "User" ? "User" : "Organization",
@@ -2304,137 +2546,60 @@ async function syncRepositoriesFromCurrentGithubInstallation(
     repositoriesRemoved: staleRepositories
   });
   if (staleRepositories.length > 0) {
-    await archiveRemovedRepositories(prisma, input.organizationId, staleRepositories);
+    await archiveRemovedRepositories(persistence, input.organizationId, staleRepositories);
   }
   return true;
 }
 
 async function approveGithubInstallation(
-  prisma: PrismaClient | undefined,
-  input: { id: string; organizationId: string; actor: string }
+  persistence: PersistencePort,
+  input: GitHubInstallationDecision
 ) {
-  if (!prisma) {
-    throw new Error("GitHub installation approval requires the Postgres runtime store.");
-  }
-  await ensureOrganization(prisma, input.organizationId);
-  const existing = await prisma.gitHubInstallation.findFirst({
-    where: { id: input.id, organizationId: input.organizationId }
-  });
-  if (!existing) {
-    return undefined;
-  }
-  const row = await prisma.gitHubInstallation.update({
-    where: { id: existing.id },
-    data: {
-      organizationId: input.organizationId,
-      status: "approved",
-      approvedBy: input.actor,
-      approvedAt: new Date(),
-      rejectedBy: null,
-      rejectedAt: null,
-      archivedAt: null
-    }
-  });
-  return githubInstallationForApi(row);
+  return persistence.githubInstallations.approve(input);
 }
 
 async function rejectGithubInstallation(
-  prisma: PrismaClient | undefined,
-  input: { id: string; organizationId: string; actor: string }
+  persistence: PersistencePort,
+  input: GitHubInstallationDecision
 ) {
-  if (!prisma) {
-    throw new Error("GitHub installation rejection requires the Postgres runtime store.");
-  }
-  const existing = await prisma.gitHubInstallation.findFirst({
-    where: { id: input.id, organizationId: input.organizationId }
-  });
-  if (!existing) {
-    return undefined;
-  }
-  const row = await prisma.gitHubInstallation.update({
-    where: { id: existing.id },
-    data: {
-      status: "rejected",
-      approvedBy: null,
-      approvedAt: null,
-      rejectedBy: input.actor,
-      rejectedAt: new Date(),
-      archivedAt: new Date()
-    }
-  });
-  return githubInstallationForApi(row);
+  return persistence.githubInstallations.reject(input);
 }
 
 async function syncRepositoriesFromStoredInstallationEvents(
   state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   installation: { organizationId?: string | undefined; githubInstallationId: string }
 ): Promise<void> {
-  if (!prisma || !installation.organizationId) {
+  if (!installation.organizationId) {
     return;
   }
-  const pageSize = 250;
-  let cursor: string | undefined;
-  for (;;) {
-    const deliveries = await prisma.webhookDelivery.findMany({
-      where: { event: { in: ["installation", "installation_repositories"] } },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      take: pageSize,
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
-    });
-    if (deliveries.length === 0) {
-      return;
-    }
-    for (const delivery of deliveries) {
-      const payload = delivery.payloadJson as {
-        installation?: GithubWebhookEnvelope["installation"];
-      } | null;
-      const stored = payload?.installation;
-      if (stored?.id && String(stored.id) === installation.githubInstallationId) {
-        await syncRepositoriesFromInstallation(state, prisma, installation.organizationId, stored);
-      }
-    }
-    if (deliveries.length < pageSize) {
-      return;
-    }
-    cursor = deliveries.at(-1)?.id;
+  const events = await persistence.githubInstallations.listStoredInstallationEvents(
+    installation.githubInstallationId
+  );
+  for (const stored of events) {
+    await syncRepositoriesFromInstallation(state, persistence, installation.organizationId, stored);
   }
 }
 
 async function syncRepositoriesFromInstallation(
   state: AppState,
-  prisma: PrismaClient,
+  persistence: PersistencePort,
   organizationId: string,
   installation: NonNullable<GithubWebhookEnvelope["installation"]>
 ): Promise<void> {
-  await ensureOrganization(prisma, organizationId);
-  for (const repo of installation.repositoriesAdded) {
-    if (!repo.fullName) {
-      continue;
-    }
-    const repository = await ensureRepository(
-      prisma,
-      {
-        organizationId,
-        repositoryId: repositoryIdFromFullName(repo.fullName),
-        fullName: repo.fullName,
-        defaultBranch: "main",
-        githubRepositoryId: githubRepositoryBigInt(repo)
-      },
-      { forceUnarchive: true }
-    );
-    state.repositorySettings.set(repository.id, {
-      repositoryId: repository.id,
-      organizationId,
-      enabled: repository.enabled,
-      mode: repository.mode ?? undefined,
-      updatedAt: new Date().toISOString()
-    });
-  }
-  await archiveRemovedRepositories(prisma, organizationId, installation.repositoriesRemoved);
+  void state;
+  await persistence.repositories.syncGithubInstallation({ organizationId, installation });
 }
 
 async function archiveRemovedRepositories(
+  persistence: PersistencePort,
+  organizationId: string,
+  repositoriesRemoved: GithubRepositoryRef[]
+): Promise<void> {
+  await persistence.repositories.archiveGithubRepositories({ organizationId, repositoriesRemoved });
+}
+
+async function archiveRemovedRepositoriesInPrisma(
   prisma: PrismaClient,
   organizationId: string,
   repositoriesRemoved: GithubRepositoryRef[]
@@ -2578,8 +2743,9 @@ async function queueOperationalStatus(input: {
 }
 
 async function collectPrometheusMetrics(input: {
+  persistence: PersistencePort;
+  runtimeStore: "postgres" | "in_memory";
   state: AppState;
-  prisma: PrismaClient | undefined;
   evaluationQueue: Queue<MergeGuardEvaluationJobPayload> | undefined;
   config: ReturnType<typeof loadConfig>;
 }): Promise<string> {
@@ -2590,7 +2756,7 @@ async function collectPrometheusMetrics(input: {
   const lines: string[] = [
     "# HELP agentforge_runtime_store Runtime persistence backend. 1 means active.",
     "# TYPE agentforge_runtime_store gauge",
-    metricLine("agentforge_runtime_store", { backend: input.prisma ? "postgres" : "in_memory" }, 1),
+    metricLine("agentforge_runtime_store", { backend: input.runtimeStore }, 1),
     "# HELP agentforge_github_app_configured GitHub App credentials configured. 1 means configured.",
     "# TYPE agentforge_github_app_configured gauge",
     metricLine(
@@ -2612,7 +2778,7 @@ async function collectPrometheusMetrics(input: {
     lines.push(metricLine("agentforge_queue_jobs", { state: stateName }, count));
   }
 
-  const domainCounts = await domainMetricCounts(input.state, input.prisma);
+  const domainCounts = await domainMetricCounts(input.persistence);
   lines.push(
     "# HELP agentforge_webhook_deliveries_total GitHub webhook deliveries recorded by status.",
     "# TYPE agentforge_webhook_deliveries_total gauge"
@@ -2647,54 +2813,8 @@ async function collectPrometheusMetrics(input: {
   return `${lines.join("\n")}\n`;
 }
 
-async function domainMetricCounts(
-  state: AppState,
-  prisma: PrismaClient | undefined
-): Promise<{
-  webhookDeliveriesByStatus: Record<string, number>;
-  recordsByStatus: Record<string, number>;
-  checkRuns: number;
-  exports: number;
-  auditEventsByAction: Record<string, number>;
-}> {
-  if (!prisma) {
-    return {
-      webhookDeliveriesByStatus: {
-        recorded: state.deliveries.size
-      },
-      recordsByStatus: countBy(state.records, (record) => record.checkStatus),
-      checkRuns: 0,
-      exports: state.exports.length,
-      auditEventsByAction: countBy(state.auditEvents, (event) => event.action)
-    };
-  }
-
-  const [webhookGroups, recordGroups, checkRuns, exports, auditEventGroups] = (await Promise.all([
-    prisma.webhookDelivery.groupBy({ by: ["deliveryStatus"], _count: { _all: true } }),
-    prisma.changeControlRecord.groupBy({ by: ["checkStatus"], _count: { _all: true } }),
-    prisma.checkRun.count(),
-    prisma.exportJob.count(),
-    prisma.auditEvent.groupBy({ by: ["action"], _count: { _all: true } })
-  ])) as [
-    Array<CountGroup<"deliveryStatus">>,
-    Array<CountGroup<"checkStatus">>,
-    number,
-    number,
-    Array<CountGroup<"action">>
-  ];
-  return {
-    webhookDeliveriesByStatus: Object.fromEntries(
-      webhookGroups.map((group) => [group.deliveryStatus, group._count._all])
-    ),
-    recordsByStatus: Object.fromEntries(
-      recordGroups.map((group) => [String(group.checkStatus), group._count._all])
-    ),
-    checkRuns,
-    exports,
-    auditEventsByAction: Object.fromEntries(
-      auditEventGroups.map((group) => [group.action, group._count._all])
-    )
-  };
+async function domainMetricCounts(persistence: PersistencePort): Promise<DomainMetricCounts> {
+  return persistence.metrics.domainCounts();
 }
 
 function runtimeCapabilities(input: { postgres: boolean; redisQueue: boolean }): {
@@ -2707,88 +2827,18 @@ function runtimeCapabilities(input: { postgres: boolean; redisQueue: boolean }):
   return {
     durableRecords: input.postgres,
     durableWebhookReplay: input.postgres,
-    manualGitHubInstallationApproval: input.postgres,
+    manualGitHubInstallationApproval: true,
     queueBackedEvaluations: input.redisQueue,
     productionReady: input.postgres && input.redisQueue
   };
 }
 
 async function findReplayableDelivery(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   target: z.infer<typeof queueReplaySchema>,
   organizationId?: string
 ): Promise<ReplayableDelivery | undefined> {
-  const inMemoryDelivery = replayableDeliveryFromState(state, target, organizationId);
-  if (inMemoryDelivery) {
-    return inMemoryDelivery;
-  }
-  if (!prisma) {
-    return undefined;
-  }
-
-  const delivery = target.deliveryId
-    ? await prisma.webhookDelivery.findFirst({
-        where: { deliveryId: target.deliveryId, ...(organizationId ? { organizationId } : {}) }
-      })
-    : await prisma.webhookDelivery.findFirst({
-        where: {
-          repositoryFullName: target.repositoryFullName!,
-          pullRequestNumber: target.pullRequestNumber!,
-          deliveryStatus: {
-            in: ["received", "queued", "processing", "completed", "failed", "enqueue_failed"]
-          },
-          ...(organizationId ? { organizationId } : {})
-        },
-        orderBy: { createdAt: "desc" }
-      });
-  if (!delivery) {
-    return undefined;
-  }
-  const envelope = envelopeFromStoredWebhookDelivery(delivery);
-  return envelope ? { delivery, envelope } : undefined;
-}
-
-function replayableDeliveryFromState(
-  state: AppState,
-  target: z.infer<typeof queueReplaySchema>,
-  organizationId?: string
-): ReplayableDelivery | undefined {
-  const candidates = [...state.queuedEvaluations].reverse();
-  const queued = target.deliveryId
-    ? candidates.find((item) => item.deliveryId === target.deliveryId)
-    : candidates.find(
-        (item) =>
-          item.envelope.repository?.fullName === target.repositoryFullName &&
-          item.envelope.pullRequest?.number === target.pullRequestNumber
-      );
-  if (!queued) {
-    return undefined;
-  }
-  const matchingRecord = state.records.find(
-    (record) => record.repositoryFullName === queued.envelope.repository?.fullName
-  );
-  const deliveryOrganizationId = matchingRecord?.organizationId ?? "org_local";
-  if (organizationId && deliveryOrganizationId !== organizationId) {
-    return undefined;
-  }
-  return {
-    envelope: queued.envelope,
-    delivery: {
-      deliveryId: queued.deliveryId,
-      event: queued.envelope.event,
-      action: queued.envelope.action ?? null,
-      organizationId: deliveryOrganizationId,
-      repositoryId: matchingRecord?.repositoryId ?? null,
-      repositoryFullName: queued.envelope.repository?.fullName ?? null,
-      pullRequestNumber: queued.envelope.pullRequest?.number ?? null,
-      headSha: queued.envelope.pullRequest?.headSha ?? queued.envelope.checkRun?.headSha ?? null,
-      enqueued: true,
-      deliveryStatus: "queued",
-      payloadJson: {},
-      createdAt: queued.queuedAt
-    }
-  };
+  return persistence.webhookDeliveries.findReplayable(target, organizationId);
 }
 
 function envelopeFromStoredWebhookDelivery(
@@ -2816,42 +2866,22 @@ function envelopeFromStoredWebhookDelivery(
 }
 
 async function markWebhookDeliveryReplayed(
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   deliveryId: string,
   actor: string
 ): Promise<void> {
-  if (!prisma) {
-    return;
-  }
-  await prisma.webhookDelivery.updateMany({
-    where: { deliveryId },
-    data: {
-      replayCount: { increment: 1 },
-      lastReplayedAt: new Date(),
-      lastReplayedBy: actor
-    }
-  });
+  await persistence.webhookDeliveries.markReplayed(deliveryId, actor);
 }
 
 async function listRecentWebhookDeliveryFailures(
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   organizationId?: string
 ): Promise<Array<Record<string, unknown>>> {
-  if (!prisma) {
-    return [];
-  }
-  const deliveries = (await prisma.webhookDelivery.findMany({
-    where: {
-      OR: [{ lastFailedAt: { not: null } }, { lastEnqueueFailedAt: { not: null } }],
-      ...(organizationId ? { organizationId } : {})
-    },
-    orderBy: [
-      { lastEnqueueFailedAt: { sort: "desc", nulls: "last" } },
-      { lastFailedAt: { sort: "desc", nulls: "last" } }
-    ],
-    take: QUEUE_FAILED_JOB_LIMIT
-  })) as WebhookFailureRow[];
-  return deliveries.map((delivery) => ({
+  return persistence.webhookDeliveries.listRecentFailures(organizationId);
+}
+
+function webhookFailureForApi(delivery: WebhookFailureRow): Record<string, unknown> {
+  return {
     deliveryId: delivery.deliveryId,
     deliveryStatus: delivery.deliveryStatus,
     queueJobId: delivery.queueJobId,
@@ -2870,7 +2900,7 @@ async function listRecentWebhookDeliveryFailures(
     replayCount: delivery.replayCount,
     lastReplayedAt: dateString(delivery.lastReplayedAt),
     lastReplayedBy: delivery.lastReplayedBy
-  }));
+  };
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
@@ -2934,55 +2964,19 @@ function dateString(value: Date | string | null | undefined): string | undefined
 }
 
 async function saveExportJob(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   job: ExportJob,
   actor: string,
   actorRole: string
 ): Promise<void> {
-  state.exports = [job, ...state.exports.filter((item) => item.id !== job.id)];
-  if (!prisma) {
-    return;
-  }
-  await prisma.exportJob.create({
-    data: {
-      id: job.id,
-      organizationId: job.organizationId,
-      actor,
-      actorRole,
-      status: job.status,
-      format: job.format,
-      recordCount: job.recordCount,
-      totalMatchingRecords: job.totalMatchingRecords,
-      truncated: job.truncated,
-      content: job.content,
-      createdAt: new Date(job.createdAt)
-    }
-  });
+  await persistence.exportJobs.save(job, { actor, actorRole });
 }
 
 async function getExportJob(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   id: string
 ): Promise<ExportJob | undefined> {
-  if (!prisma) {
-    return state.exports.find((item) => item.id === id);
-  }
-  const row = await prisma.exportJob.findUnique({ where: { id } });
-  return row
-    ? {
-        id: row.id,
-        organizationId: row.organizationId ?? "org_local",
-        status: "completed",
-        format: row.format === "csv" ? "csv" : "json",
-        recordCount: row.recordCount,
-        totalMatchingRecords: row.totalMatchingRecords,
-        truncated: row.truncated,
-        content: row.content,
-        createdAt: row.createdAt.toISOString()
-      }
-    : state.exports.find((item) => item.id === id);
+  return persistence.exportJobs.get(id);
 }
 
 async function listAuditEvents(
@@ -3064,48 +3058,59 @@ function auditEventSource(value: string): AuditEventRecord["source"] {
 }
 
 export const testInternals = {
-  approveGithubInstallation,
+  approveGithubInstallation: (
+    prisma: PrismaClient,
+    input: GitHubInstallationDecision,
+    state: AppState = createInitialState()
+  ) => approveGithubInstallation(createPrismaPersistencePort(state, prisma), input),
   ensureRepository,
   fetchGithubInstallationAccount,
   fetchGithubInstallationRepositories,
   githubInstallationRepositoryPageState,
-  listGithubInstallations,
-  processGithubInstallationWebhook,
-  rejectGithubInstallation,
-  syncRepositoriesFromStoredInstallationEvents,
-  upsertPendingGithubInstallation
+  listGithubInstallations: (
+    prisma: PrismaClient,
+    organizationId: string,
+    state: AppState = createInitialState()
+  ) => listGithubInstallations(createPrismaPersistencePort(state, prisma), organizationId),
+  processGithubInstallationWebhook: (
+    state: AppState,
+    prisma: PrismaClient,
+    envelope: GithubWebhookEnvelope,
+    config?: ReturnType<typeof loadConfig>
+  ) =>
+    processGithubInstallationWebhook(
+      state,
+      createPrismaPersistencePort(state, prisma),
+      envelope,
+      config
+    ),
+  rejectGithubInstallation: (
+    prisma: PrismaClient,
+    input: GitHubInstallationDecision,
+    state: AppState = createInitialState()
+  ) => rejectGithubInstallation(createPrismaPersistencePort(state, prisma), input),
+  syncRepositoriesFromStoredInstallationEvents: (
+    state: AppState,
+    prisma: PrismaClient,
+    installation: { organizationId?: string | undefined; githubInstallationId: string }
+  ) =>
+    syncRepositoriesFromStoredInstallationEvents(
+      state,
+      createPrismaPersistencePort(state, prisma),
+      installation
+    ),
+  upsertPendingGithubInstallation: (
+    prisma: PrismaClient,
+    input: GitHubInstallationVerifyInput,
+    state: AppState = createInitialState()
+  ) => upsertPendingGithubInstallation(createPrismaPersistencePort(state, prisma), input)
 };
 
 async function saveOverrideRecord(
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   override: OverrideRecord
 ): Promise<void> {
-  if (!prisma) {
-    return;
-  }
-  const record = await prisma.changeControlRecord.findUnique({
-    where: { id: override.pullRequestId },
-    select: { pullRequestId: true }
-  });
-  if (!record) {
-    return;
-  }
-  await prisma.overrideRecord.upsert({
-    where: { id: override.id },
-    update: {},
-    create: {
-      id: override.id,
-      pullRequestId: record.pullRequestId,
-      evaluationId: null,
-      actor: override.actor,
-      actorRole: override.actorRole,
-      reason: override.reason,
-      scope: override.scope,
-      visibleInPr: override.visibleInPr,
-      policyVersion: override.policyVersion,
-      createdAt: new Date(override.createdAt)
-    }
-  });
+  await persistence.overrides.save(override);
 }
 
 async function ensureOrganization(prisma: PrismaClient, id: string) {
@@ -3243,41 +3248,17 @@ function stableBigInt(value: string): bigint {
 }
 
 async function findRepositoryIdByFullName(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   fullName: string
 ): Promise<string | undefined> {
-  const inMemory = state.records.find((record) => record.repositoryFullName === fullName);
-  if (inMemory) {
-    return inMemory.repositoryId;
-  }
-  if (!prisma) {
-    return undefined;
-  }
-  const repository = await prisma.repository.findFirst({
-    where: { fullName },
-    select: { id: true }
-  });
-  return repository?.id;
+  return persistence.repositories.findIdByFullName(fullName);
 }
 
 async function getRepositoryModeOverride(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   repositoryId: string
 ): Promise<ChangeControlRecord["mode"] | undefined> {
-  const inMemory = state.repositorySettings.get(repositoryId)?.mode;
-  if (inMemory) {
-    return inMemory;
-  }
-  if (!prisma) {
-    return undefined;
-  }
-  const repository = await prisma.repository.findUnique({
-    where: { id: repositoryId },
-    select: { mode: true }
-  });
-  return repository?.mode ?? undefined;
+  return persistence.repositories.modeOverride(repositoryId);
 }
 
 function repositoryIdFromFullName(fullName: string): string {
@@ -3297,7 +3278,7 @@ function humanizeIdentifier(value: string): string {
 }
 
 async function githubInstallationSummary(
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   config: ReturnType<typeof loadConfig>,
   organizationId: string
 ) {
@@ -3305,44 +3286,16 @@ async function githubInstallationSummary(
   const appCredentialsConfigured = Boolean(config.github.appId && config.github.privateKey);
   const webhookSecretConfigured = Boolean(config.github.webhookSecret);
   const installUrl = githubInstallUrl(config);
-  if (prisma) {
-    const installation = await prisma.gitHubInstallation.findFirst({
-      where: {
-        status: "approved",
-        archivedAt: null,
-        organizationId
-      },
-      orderBy: { approvedAt: "desc" }
-    });
-    const pendingApprovalCount = await prisma.gitHubInstallation.count({
-      where: {
-        status: "pending_approval",
-        archivedAt: null,
-        organizationId
-      }
-    });
-    if (installation) {
-      return {
-        connected: true,
-        credentialsConfigured,
-        accountLogin: installation.accountLogin,
-        accountType: installation.accountType,
-        githubInstallationId: installation.githubInstallationId.toString(),
-        status: installation.status,
-        pendingApprovalCount,
-        installUrl,
-        appCredentialsConfigured,
-        webhookSecretConfigured
-      };
-    }
+  const summary = await persistence.githubInstallations.summary(organizationId);
+  if (summary.installation) {
     return {
-      connected: false,
+      connected: true,
       credentialsConfigured,
-      accountLogin: undefined,
-      accountType: undefined,
-      githubInstallationId: undefined,
-      status: pendingApprovalCount > 0 ? "pending_approval" : "not_connected",
-      pendingApprovalCount,
+      accountLogin: summary.installation.accountLogin,
+      accountType: summary.installation.accountType,
+      githubInstallationId: summary.installation.githubInstallationId,
+      status: summary.installation.status,
+      pendingApprovalCount: summary.pendingApprovalCount,
       installUrl,
       appCredentialsConfigured,
       webhookSecretConfigured
@@ -3354,8 +3307,8 @@ async function githubInstallationSummary(
     accountLogin: undefined,
     accountType: undefined,
     githubInstallationId: undefined,
-    status: "not_connected",
-    pendingApprovalCount: 0,
+    status: summary.pendingApprovalCount > 0 ? "pending_approval" : "not_connected",
+    pendingApprovalCount: summary.pendingApprovalCount,
     installUrl,
     appCredentialsConfigured,
     webhookSecretConfigured
@@ -3380,36 +3333,10 @@ function githubInstallUrl(config: ReturnType<typeof loadConfig>): string | undef
 }
 
 async function listGithubInstallations(
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   organizationId: string
-): Promise<
-  Array<{
-    id: string;
-    organizationId?: string | undefined;
-    githubInstallationId: string;
-    accountLogin: string;
-    accountType: string;
-    status: string;
-    approvedBy?: string | undefined;
-    approvedAt?: string | undefined;
-    rejectedBy?: string | undefined;
-    rejectedAt?: string | undefined;
-    archivedAt?: string | undefined;
-    lastWebhookAt: string;
-    createdAt: string;
-    updatedAt: string;
-  }>
-> {
-  if (!prisma) {
-    return [];
-  }
-  const rows = await prisma.gitHubInstallation.findMany({
-    where: {
-      organizationId
-    },
-    orderBy: [{ status: "asc" }, { updatedAt: "desc" }]
-  });
-  return rows.map(githubInstallationForApi);
+): Promise<GitHubInstallationState[]> {
+  return persistence.githubInstallations.list(organizationId);
 }
 
 function githubInstallationForApi(row: GitHubInstallationRow) {
