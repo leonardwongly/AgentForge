@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AuditEventRecord, ChangeControlRecord } from "@agentforge/core";
+import type { AuditEventRecord, ChangeControlRecord, OverrideRecord } from "@agentforge/core";
 import type { GithubWebhookEnvelope } from "@agentforge/github";
 import { createInMemoryPersistencePort, hasCompleteWebhookReplayTarget } from "../src/ports.js";
 
@@ -132,6 +132,7 @@ describe("in-memory persistence port", () => {
       records: [record("r1", "org_a")],
       auditEvents: [],
       exports: [],
+      overrides: [],
       deliveries: new Set<string>(),
       queuedEvaluations: [
         {
@@ -195,5 +196,32 @@ describe("in-memory persistence port", () => {
 
     await expect(port.exportJobs.get("export-1")).resolves.toEqual(job);
     await expect(port.exportJobs.get("missing")).resolves.toBeUndefined();
+  });
+
+  it("saves overrides through the port", async () => {
+    const state = {
+      records: [],
+      auditEvents: [],
+      exports: [],
+      overrides: [],
+      deliveries: new Set<string>(),
+      queuedEvaluations: []
+    };
+    const port = createInMemoryPersistencePort(state);
+    const override: OverrideRecord = {
+      id: "override-1",
+      pullRequestId: "r1",
+      actor: "sam",
+      actorRole: "platform_admin",
+      reason: "False positive after review.",
+      scope: "pr",
+      visibleInPr: true,
+      policyVersion: "fintech@1.0.0",
+      createdAt: "2026-05-12T00:00:00.000Z"
+    };
+
+    await port.overrides.save(override);
+
+    expect(state.overrides).toEqual([override]);
   });
 });

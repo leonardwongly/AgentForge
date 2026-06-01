@@ -1,4 +1,9 @@
-import type { AuditEventRecord, ChangeControlRecord, PullRequestInput } from "@agentforge/core";
+import type {
+  AuditEventRecord,
+  ChangeControlRecord,
+  OverrideRecord,
+  PullRequestInput
+} from "@agentforge/core";
 import type { GithubWebhookEnvelope } from "@agentforge/github";
 
 // Persistence port (assessment C1/C2). Request/domain logic should depend on
@@ -37,11 +42,16 @@ export interface ExportJobStore {
   get(id: string): Promise<ExportJob | undefined>;
 }
 
+export interface OverrideStore {
+  save(override: OverrideRecord): Promise<void>;
+}
+
 export interface PersistencePort {
   records: ChangeControlRecordStore;
   auditEvents: AuditEventStore;
   webhookDeliveries: WebhookDeliveryStore;
   exportJobs: ExportJobStore;
+  overrides: OverrideStore;
 }
 
 export type WebhookDeliveryStatus =
@@ -152,6 +162,7 @@ type InMemoryPersistenceState = {
   records: ChangeControlRecord[];
   auditEvents: AuditEventRecord[];
   exports: ExportJob[];
+  overrides: OverrideRecord[];
   deliveries: Set<string>;
   queuedEvaluations: Array<{
     deliveryId: string;
@@ -167,6 +178,7 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
   const records = new Map<string, ChangeControlRecord>();
   const auditEvents: AuditEventRecord[] = [];
   const exports = new Map<string, ExportJob>();
+  const overrides = new Map<string, OverrideRecord>();
   const listRecords = () => state?.records ?? [...records.values()];
   const listAuditEvents = () => state?.auditEvents ?? auditEvents;
   const byOrg = <T extends { organizationId: string }>(items: T[], organizationId?: string): T[] =>
@@ -219,6 +231,18 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
       },
       async get(id) {
         return state ? (state.exports ?? []).find((job) => job.id === id) : exports.get(id);
+      }
+    },
+    overrides: {
+      async save(override) {
+        if (state) {
+          state.overrides = [
+            override,
+            ...state.overrides.filter((item) => item.id !== override.id)
+          ];
+        } else {
+          overrides.set(override.id, override);
+        }
       }
     },
     webhookDeliveries: {
