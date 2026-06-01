@@ -62,14 +62,20 @@ import {
 } from "./auth.js";
 import { evaluateFixturePr } from "./evaluation.js";
 import {
+  checkConclusionForRecord,
   createInMemoryPersistencePort,
   filterAndSortRecords,
   hasCompleteWebhookReplayTarget,
   pageInfo,
   paginateRecords,
   recordRequiresAction,
+  type EvaluationSnapshotStore,
+  type EvaluationSnapshotInput,
+  type EvaluationSnapshotState,
   type ExportJob,
   type OwnerMappingState,
+  type PolicyVersionSnapshotInput,
+  type PolicyVersionSnapshotState,
   type PersistencePort,
   type ReplayableDelivery,
   type RepositoryDataHandlingState,
@@ -255,6 +261,8 @@ export type AppState = {
   repositoryPolicies: Map<string, RepositoryPolicyState>;
   repositorySettings: Map<string, RepositorySettingsState>;
   ownerMappings: OwnerMappingState[];
+  policyVersionSnapshots: Map<string, PolicyVersionSnapshotState>;
+  evaluationSnapshots: EvaluationSnapshotState[];
 };
 
 type RawBodyRequest = {
@@ -870,7 +878,9 @@ export function createInitialState(): AppState {
     overrides: [],
     repositoryPolicies: new Map(),
     repositorySettings: new Map(),
-    ownerMappings: []
+    ownerMappings: [],
+    policyVersionSnapshots: new Map(),
+    evaluationSnapshots: []
   };
 }
 
@@ -1068,6 +1078,11 @@ async function saveChangeControlRecord(
 }
 
 function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): PersistencePort {
+  const evaluationSnapshots: EvaluationSnapshotStore = {
+    ensurePolicyVersion: (input) => ensurePrismaPolicyVersionSnapshot(prisma, input),
+    persist: (input) => persistPrismaEvaluationSnapshot(prisma, input)
+  };
+
   return {
     records: {
       async get(id) {
@@ -1129,7 +1144,7 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
             ...changeControlRecordData(record)
           }
         });
-        await persistEvaluationSnapshot(prisma, {
+        await evaluationSnapshots.persist({
           organizationId: organization.id,
           repositoryId: repository.id,
           pullRequestId: pullRequest.id,
@@ -1443,6 +1458,7 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         });
       }
     },
+    evaluationSnapshots,
     auditEvents: {
       async append(event) {
         state.auditEvents.push(event);
@@ -1765,15 +1781,24 @@ async function findReplayableWebhookByPullRequest(
 }
 
 async function persistEvaluationSnapshot(
-  prisma: PrismaClient,
-  input: {
-    organizationId: string;
-    repositoryId: string;
-    pullRequestId: string;
-    record: ChangeControlRecord;
-  }
+  persistence: PersistencePort,
+  input: EvaluationSnapshotInput
 ): Promise<void> {
-  const policyVersion = await ensurePolicyVersionSnapshot(prisma, input);
+  await persistence.evaluationSnapshots.persist(input);
+}
+
+async function ensurePolicyVersionSnapshot(
+  persistence: PersistencePort,
+  input: PolicyVersionSnapshotInput
+): Promise<PolicyVersionSnapshotState> {
+  return persistence.evaluationSnapshots.ensurePolicyVersion(input);
+}
+
+async function persistPrismaEvaluationSnapshot(
+  prisma: PrismaClient,
+  input: EvaluationSnapshotInput
+): Promise<void> {
+  const policyVersion = await ensurePrismaPolicyVersionSnapshot(prisma, input);
   const evaluation = await prisma.evaluation.create({
     data: {
       pullRequestId: input.pullRequestId,
@@ -1842,14 +1867,10 @@ async function persistEvaluationSnapshot(
   });
 }
 
-async function ensurePolicyVersionSnapshot(
+async function ensurePrismaPolicyVersionSnapshot(
   prisma: PrismaClient,
-  input: {
-    organizationId: string;
-    repositoryId: string;
-    record: ChangeControlRecord;
-  }
-) {
+  input: PolicyVersionSnapshotInput
+): Promise<PolicyVersionSnapshotState> {
   const existing = await prisma.policyVersion.findFirst({
     where: {
       organizationId: input.organizationId,
@@ -1858,12 +1879,12 @@ async function ensurePolicyVersionSnapshot(
     }
   });
   if (existing) {
-    return existing;
+    return policyVersionSnapshotFromRow(existing, input.repositoryId);
   }
   const policyPack = input.record.policyPackId
     ? await prisma.policyPack.findUnique({ where: { id: input.record.policyPackId } })
     : null;
-  return prisma.policyVersion.create({
+  const created = await prisma.policyVersion.create({
     data: {
       organizationId: input.organizationId,
       repositoryId: input.repositoryId,
@@ -1877,18 +1898,34 @@ async function ensurePolicyVersionSnapshot(
       createdBy: "system"
     }
   });
+  return policyVersionSnapshotFromRow(created, input.repositoryId);
 }
 
-function checkConclusionForRecord(
-  record: Pick<ChangeControlRecord, "mode" | "checkStatus">
-): "success" | "neutral" | "failure" {
-  if (record.mode === "observe") {
-    return "success";
-  }
-  if (record.mode === "warn") {
-    return "neutral";
-  }
-  return record.checkStatus === "block" ? "failure" : "success";
+function policyVersionSnapshotFromRow(
+  row: {
+    id: string;
+    organizationId: string;
+    repositoryId: string | null;
+    policyPackId: string | null;
+    version: string;
+    mode: ChangeControlRecord["mode"];
+    contentYaml: string;
+    contentHash: string;
+    createdBy: string;
+  },
+  repositoryId: string
+): PolicyVersionSnapshotState {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    repositoryId: row.repositoryId ?? repositoryId,
+    policyPackId: row.policyPackId ?? undefined,
+    version: row.version,
+    mode: row.mode,
+    contentYaml: row.contentYaml,
+    contentHash: row.contentHash,
+    createdBy: row.createdBy
+  };
 }
 
 async function recordWebhookDeliveryReceived(
