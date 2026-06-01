@@ -64,10 +64,14 @@ import { evaluateFixturePr } from "./evaluation.js";
 import {
   createInMemoryPersistencePort,
   filterAndSortRecords,
+  hasCompleteWebhookReplayTarget,
   pageInfo,
   paginateRecords,
   recordRequiresAction,
-  type PersistencePort
+  type PersistencePort,
+  type ReplayableDelivery,
+  type StoredWebhookDelivery,
+  type WebhookDeliveryStatus
 } from "./ports.js";
 import { registerApiRoutes } from "./routes/api-routes.js";
 import {
@@ -97,50 +101,6 @@ type QueueEnqueueResult = {
   jobId: string;
   deliveryId: string;
   backend: QueueBackend;
-};
-
-type WebhookDeliveryStatus =
-  | "received"
-  | "queued"
-  | "processing"
-  | "completed"
-  | "enqueue_failed"
-  | "failed";
-
-type StoredWebhookDelivery = {
-  deliveryId: string;
-  event: string;
-  action: string | null;
-  repositoryFullName: string | null;
-  organizationId?: string | null | undefined;
-  repositoryId?: string | null | undefined;
-  pullRequestNumber: number | null;
-  headSha: string | null;
-  enqueued: boolean;
-  deliveryStatus?: WebhookDeliveryStatus | string | undefined;
-  queueJobId?: string | null | undefined;
-  queuedAt?: Date | string | null | undefined;
-  processingStartedAt?: Date | string | null | undefined;
-  completedAt?: Date | string | null | undefined;
-  lastEnqueueFailureClass?: string | null | undefined;
-  lastEnqueueFailureMessage?: string | null | undefined;
-  lastEnqueueFailedAt?: Date | string | null | undefined;
-  payloadJson: unknown;
-  evaluationAttemptsMade?: number | undefined;
-  evaluationTerminalFailure?: boolean | undefined;
-  lastFailureClass?: string | null | undefined;
-  lastFailureMessage?: string | null | undefined;
-  lastFailureCorrelationId?: string | null | undefined;
-  lastFailedAt?: Date | string | null | undefined;
-  replayCount?: number | undefined;
-  lastReplayedAt?: Date | string | null | undefined;
-  lastReplayedBy?: string | null | undefined;
-  createdAt?: Date | string | undefined;
-};
-
-type ReplayableDelivery = {
-  delivery: StoredWebhookDelivery;
-  envelope: GithubWebhookEnvelope;
 };
 
 type RepositoryInstallationRow = {
@@ -859,7 +819,8 @@ export function createApp(
     evidenceSubmissionSchema,
     exportRequestSchema,
     filterAndSortRecords,
-    findReplayableDelivery,
+    findReplayableDelivery: (target: z.infer<typeof queueReplaySchema>, organizationId?: string) =>
+      findReplayableDelivery(persistence, target, organizationId),
     findRepositoryIdByFullName,
     fetchGithubInstallationAccount,
     getExportJob,
@@ -879,13 +840,18 @@ export function createApp(
       listAuditEventsForRecordExport(persistence, records),
     listGithubInstallations,
     listOwnerMappings,
-    listRecentWebhookDeliveryFailures,
+    listRecentWebhookDeliveryFailures: (organizationId?: string) =>
+      listRecentWebhookDeliveryFailures(persistence, organizationId),
     listRecords,
     listRepositories,
-    markWebhookDeliveryCompleted,
-    markWebhookDeliveryEnqueueFailed,
-    markWebhookDeliveryQueued,
-    markWebhookDeliveryReplayed,
+    markWebhookDeliveryCompleted: (deliveryId: string) =>
+      markWebhookDeliveryCompleted(persistence, deliveryId),
+    markWebhookDeliveryEnqueueFailed: (deliveryId: string, error: unknown) =>
+      markWebhookDeliveryEnqueueFailed(persistence, deliveryId, error),
+    markWebhookDeliveryQueued: (deliveryId: string, queueJobId: string) =>
+      markWebhookDeliveryQueued(persistence, deliveryId, queueJobId),
+    markWebhookDeliveryReplayed: (deliveryId: string, actor: string) =>
+      markWebhookDeliveryReplayed(persistence, deliveryId, actor),
     onboardingStepsFromRuntime,
     ownerMappingForApi,
     paginateRecords,
@@ -920,7 +886,8 @@ export function createApp(
     syncRepositoriesFromCurrentGithubInstallation,
     syncRepositoriesFromStoredInstallationEvents,
     upsertPendingGithubInstallation,
-    recordWebhookDeliveryReceived,
+    recordWebhookDeliveryReceived: (envelope: GithubWebhookEnvelope) =>
+      recordWebhookDeliveryReceived(persistence, envelope),
     recordRequiresAction,
     groupBy
   });
@@ -1713,8 +1680,177 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         });
         return rows.map(auditEventRecordFromRow);
       }
+    },
+    webhookDeliveries: {
+      async recordReceived(envelope) {
+        state.deliveries.add(envelope.deliveryId);
+        const repositoryFullName = envelope.repository?.fullName ?? null;
+        const repositoryId = repositoryFullName
+          ? await findRepositoryIdByFullName(state, prisma, repositoryFullName)
+          : undefined;
+        const organizationId = repositoryId
+          ? await repositoryOrganizationId(state, prisma, repositoryId)
+          : state.records.find((record) => record.repositoryFullName === repositoryFullName)
+              ?.organizationId;
+        const payloadJson = {
+          installationId: envelope.installationId,
+          repository: envelope.repository,
+          pullRequest: envelope.pullRequest,
+          review: envelope.review,
+          checkRun: envelope.checkRun,
+          installation: envelope.installation,
+          receivedAt: envelope.receivedAt
+        } as never;
+        const existing = await prisma.webhookDelivery.findUnique({
+          where: { deliveryId: envelope.deliveryId },
+          select: { deliveryStatus: true, enqueued: true }
+        });
+        if (existing) {
+          return {
+            duplicate: true,
+            status: webhookDeliveryStatus(existing.deliveryStatus, existing.enqueued)
+          };
+        }
+        try {
+          const created = await prisma.webhookDelivery.create({
+            data: {
+              deliveryId: envelope.deliveryId,
+              event: envelope.event,
+              action: envelope.action ?? null,
+              organizationId: organizationId ?? null,
+              repositoryId: repositoryId ?? null,
+              repositoryFullName,
+              pullRequestNumber:
+                envelope.pullRequest?.number ?? envelope.checkRun?.pullRequests[0]?.number ?? null,
+              headSha: envelope.pullRequest?.headSha ?? envelope.checkRun?.headSha ?? null,
+              enqueued: false,
+              deliveryStatus: "received",
+              payloadJson
+            },
+            select: { deliveryStatus: true, enqueued: true }
+          });
+          return {
+            duplicate: false,
+            status: webhookDeliveryStatus(created.deliveryStatus, created.enqueued)
+          };
+        } catch (error) {
+          const retryExisting = await prisma.webhookDelivery.findUnique({
+            where: { deliveryId: envelope.deliveryId },
+            select: { deliveryStatus: true, enqueued: true }
+          });
+          if (retryExisting) {
+            return {
+              duplicate: true,
+              status: webhookDeliveryStatus(retryExisting.deliveryStatus, retryExisting.enqueued)
+            };
+          }
+          throw error;
+        }
+      },
+      async markQueued(deliveryId, queueJobId) {
+        state.deliveries.add(deliveryId);
+        await prisma.webhookDelivery.updateMany({
+          where: { deliveryId },
+          data: {
+            enqueued: true,
+            deliveryStatus: "queued",
+            queueJobId,
+            queuedAt: new Date(),
+            lastEnqueueFailureClass: null,
+            lastEnqueueFailureMessage: null,
+            lastEnqueueFailedAt: null
+          }
+        });
+      },
+      async markCompleted(deliveryId) {
+        state.deliveries.add(deliveryId);
+        await prisma.webhookDelivery.updateMany({
+          where: { deliveryId },
+          data: {
+            deliveryStatus: "completed",
+            completedAt: new Date()
+          }
+        });
+      },
+      async markEnqueueFailed(deliveryId, error) {
+        state.deliveries.add(deliveryId);
+        const summary = safeErrorSummary(error);
+        await prisma.webhookDelivery.updateMany({
+          where: { deliveryId, deliveryStatus: { in: ["received", "enqueue_failed"] } },
+          data: {
+            enqueued: false,
+            deliveryStatus: "enqueue_failed",
+            lastEnqueueFailureClass: summary.errorClass,
+            lastEnqueueFailureMessage: summary.message,
+            lastEnqueueFailedAt: new Date()
+          }
+        });
+      },
+      async markReplayed(deliveryId, actor) {
+        await prisma.webhookDelivery.updateMany({
+          where: { deliveryId },
+          data: {
+            replayCount: { increment: 1 },
+            lastReplayedAt: new Date(),
+            lastReplayedBy: actor
+          }
+        });
+      },
+      async findReplayable(target, organizationId) {
+        if (!hasCompleteWebhookReplayTarget(target)) {
+          return undefined;
+        }
+        const delivery = target.deliveryId
+          ? await prisma.webhookDelivery.findFirst({
+              where: {
+                deliveryId: target.deliveryId,
+                ...(organizationId ? { organizationId } : {})
+              }
+            })
+          : await findReplayableWebhookByPullRequest(prisma, target, organizationId);
+        if (!delivery) {
+          return undefined;
+        }
+        const envelope = envelopeFromStoredWebhookDelivery(delivery);
+        return envelope ? { delivery, envelope } : undefined;
+      },
+      async listRecentFailures(organizationId) {
+        const deliveries = (await prisma.webhookDelivery.findMany({
+          where: {
+            OR: [{ lastFailedAt: { not: null } }, { lastEnqueueFailedAt: { not: null } }],
+            ...(organizationId ? { organizationId } : {})
+          },
+          orderBy: [
+            { lastEnqueueFailedAt: { sort: "desc", nulls: "last" } },
+            { lastFailedAt: { sort: "desc", nulls: "last" } }
+          ],
+          take: QUEUE_FAILED_JOB_LIMIT
+        })) as WebhookFailureRow[];
+        return deliveries.map(webhookFailureForApi);
+      }
     }
   };
+}
+
+async function findReplayableWebhookByPullRequest(
+  prisma: PrismaClient,
+  target: { repositoryFullName?: string | undefined; pullRequestNumber?: number | undefined },
+  organizationId?: string
+): Promise<StoredWebhookDelivery | null> {
+  if (!target.repositoryFullName || target.pullRequestNumber === undefined) {
+    return null;
+  }
+  return prisma.webhookDelivery.findFirst({
+    where: {
+      repositoryFullName: target.repositoryFullName,
+      pullRequestNumber: target.pullRequestNumber,
+      deliveryStatus: {
+        in: ["received", "queued", "processing", "completed", "failed", "enqueue_failed"]
+      },
+      ...(organizationId ? { organizationId } : {})
+    },
+    orderBy: { createdAt: "desc" }
+  });
 }
 
 async function persistEvaluationSnapshot(
@@ -1845,77 +1981,10 @@ function checkConclusionForRecord(
 }
 
 async function recordWebhookDeliveryReceived(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   envelope: GithubWebhookEnvelope
 ): Promise<{ duplicate: boolean; status: WebhookDeliveryStatus }> {
-  const inMemoryDuplicate = state.deliveries.has(envelope.deliveryId);
-  state.deliveries.add(envelope.deliveryId);
-  const repositoryFullName = envelope.repository?.fullName ?? null;
-  const repositoryId = repositoryFullName
-    ? await findRepositoryIdByFullName(state, prisma, repositoryFullName)
-    : undefined;
-  const organizationId = repositoryId
-    ? await repositoryOrganizationId(state, prisma, repositoryId)
-    : state.records.find((record) => record.repositoryFullName === repositoryFullName)
-        ?.organizationId;
-  if (!prisma) {
-    return { duplicate: inMemoryDuplicate, status: inMemoryDuplicate ? "queued" : "received" };
-  }
-  const payloadJson = {
-    installationId: envelope.installationId,
-    repository: envelope.repository,
-    pullRequest: envelope.pullRequest,
-    review: envelope.review,
-    checkRun: envelope.checkRun,
-    installation: envelope.installation,
-    receivedAt: envelope.receivedAt
-  } as never;
-  const existing = await prisma.webhookDelivery.findUnique({
-    where: { deliveryId: envelope.deliveryId },
-    select: { deliveryStatus: true, enqueued: true }
-  });
-  if (existing) {
-    return {
-      duplicate: true,
-      status: webhookDeliveryStatus(existing.deliveryStatus, existing.enqueued)
-    };
-  }
-  try {
-    const created = await prisma.webhookDelivery.create({
-      data: {
-        deliveryId: envelope.deliveryId,
-        event: envelope.event,
-        action: envelope.action ?? null,
-        organizationId: organizationId ?? null,
-        repositoryId: repositoryId ?? null,
-        repositoryFullName,
-        pullRequestNumber:
-          envelope.pullRequest?.number ?? envelope.checkRun?.pullRequests[0]?.number ?? null,
-        headSha: envelope.pullRequest?.headSha ?? envelope.checkRun?.headSha ?? null,
-        enqueued: false,
-        deliveryStatus: "received",
-        payloadJson
-      },
-      select: { deliveryStatus: true, enqueued: true }
-    });
-    return {
-      duplicate: false,
-      status: webhookDeliveryStatus(created.deliveryStatus, created.enqueued)
-    };
-  } catch (error) {
-    const retryExisting = await prisma.webhookDelivery.findUnique({
-      where: { deliveryId: envelope.deliveryId },
-      select: { deliveryStatus: true, enqueued: true }
-    });
-    if (retryExisting) {
-      return {
-        duplicate: true,
-        status: webhookDeliveryStatus(retryExisting.deliveryStatus, retryExisting.enqueued)
-      };
-    }
-    throw error;
-  }
+  return persistence.webhookDeliveries.recordReceived(envelope);
 }
 
 function webhookDeliveryStatus(value: string, enqueued: boolean): WebhookDeliveryStatus {
@@ -1941,68 +2010,26 @@ function isRecoverableWebhookDeliveryForEnqueue(status: WebhookDeliveryStatus): 
 }
 
 async function markWebhookDeliveryQueued(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   deliveryId: string,
   queueJobId: string
 ): Promise<void> {
-  state.deliveries.add(deliveryId);
-  if (!prisma) {
-    return;
-  }
-  await prisma.webhookDelivery.updateMany({
-    where: { deliveryId },
-    data: {
-      enqueued: true,
-      deliveryStatus: "queued",
-      queueJobId,
-      queuedAt: new Date(),
-      lastEnqueueFailureClass: null,
-      lastEnqueueFailureMessage: null,
-      lastEnqueueFailedAt: null
-    }
-  });
+  await persistence.webhookDeliveries.markQueued(deliveryId, queueJobId);
 }
 
 async function markWebhookDeliveryCompleted(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   deliveryId: string
 ): Promise<void> {
-  state.deliveries.add(deliveryId);
-  if (!prisma) {
-    return;
-  }
-  await prisma.webhookDelivery.updateMany({
-    where: { deliveryId },
-    data: {
-      deliveryStatus: "completed",
-      completedAt: new Date()
-    }
-  });
+  await persistence.webhookDeliveries.markCompleted(deliveryId);
 }
 
 async function markWebhookDeliveryEnqueueFailed(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   deliveryId: string,
   error: unknown
 ): Promise<void> {
-  state.deliveries.add(deliveryId);
-  if (!prisma) {
-    return;
-  }
-  const summary = safeErrorSummary(error);
-  await prisma.webhookDelivery.updateMany({
-    where: { deliveryId, deliveryStatus: { in: ["received", "enqueue_failed"] } },
-    data: {
-      enqueued: false,
-      deliveryStatus: "enqueue_failed",
-      lastEnqueueFailureClass: summary.errorClass,
-      lastEnqueueFailureMessage: summary.message,
-      lastEnqueueFailedAt: new Date()
-    }
-  });
+  await persistence.webhookDeliveries.markEnqueueFailed(deliveryId, error);
 }
 
 async function processGithubInstallationWebhook(
@@ -2714,81 +2741,11 @@ function runtimeCapabilities(input: { postgres: boolean; redisQueue: boolean }):
 }
 
 async function findReplayableDelivery(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   target: z.infer<typeof queueReplaySchema>,
   organizationId?: string
 ): Promise<ReplayableDelivery | undefined> {
-  const inMemoryDelivery = replayableDeliveryFromState(state, target, organizationId);
-  if (inMemoryDelivery) {
-    return inMemoryDelivery;
-  }
-  if (!prisma) {
-    return undefined;
-  }
-
-  const delivery = target.deliveryId
-    ? await prisma.webhookDelivery.findFirst({
-        where: { deliveryId: target.deliveryId, ...(organizationId ? { organizationId } : {}) }
-      })
-    : await prisma.webhookDelivery.findFirst({
-        where: {
-          repositoryFullName: target.repositoryFullName!,
-          pullRequestNumber: target.pullRequestNumber!,
-          deliveryStatus: {
-            in: ["received", "queued", "processing", "completed", "failed", "enqueue_failed"]
-          },
-          ...(organizationId ? { organizationId } : {})
-        },
-        orderBy: { createdAt: "desc" }
-      });
-  if (!delivery) {
-    return undefined;
-  }
-  const envelope = envelopeFromStoredWebhookDelivery(delivery);
-  return envelope ? { delivery, envelope } : undefined;
-}
-
-function replayableDeliveryFromState(
-  state: AppState,
-  target: z.infer<typeof queueReplaySchema>,
-  organizationId?: string
-): ReplayableDelivery | undefined {
-  const candidates = [...state.queuedEvaluations].reverse();
-  const queued = target.deliveryId
-    ? candidates.find((item) => item.deliveryId === target.deliveryId)
-    : candidates.find(
-        (item) =>
-          item.envelope.repository?.fullName === target.repositoryFullName &&
-          item.envelope.pullRequest?.number === target.pullRequestNumber
-      );
-  if (!queued) {
-    return undefined;
-  }
-  const matchingRecord = state.records.find(
-    (record) => record.repositoryFullName === queued.envelope.repository?.fullName
-  );
-  const deliveryOrganizationId = matchingRecord?.organizationId ?? "org_local";
-  if (organizationId && deliveryOrganizationId !== organizationId) {
-    return undefined;
-  }
-  return {
-    envelope: queued.envelope,
-    delivery: {
-      deliveryId: queued.deliveryId,
-      event: queued.envelope.event,
-      action: queued.envelope.action ?? null,
-      organizationId: deliveryOrganizationId,
-      repositoryId: matchingRecord?.repositoryId ?? null,
-      repositoryFullName: queued.envelope.repository?.fullName ?? null,
-      pullRequestNumber: queued.envelope.pullRequest?.number ?? null,
-      headSha: queued.envelope.pullRequest?.headSha ?? queued.envelope.checkRun?.headSha ?? null,
-      enqueued: true,
-      deliveryStatus: "queued",
-      payloadJson: {},
-      createdAt: queued.queuedAt
-    }
-  };
+  return persistence.webhookDeliveries.findReplayable(target, organizationId);
 }
 
 function envelopeFromStoredWebhookDelivery(
@@ -2816,42 +2773,22 @@ function envelopeFromStoredWebhookDelivery(
 }
 
 async function markWebhookDeliveryReplayed(
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   deliveryId: string,
   actor: string
 ): Promise<void> {
-  if (!prisma) {
-    return;
-  }
-  await prisma.webhookDelivery.updateMany({
-    where: { deliveryId },
-    data: {
-      replayCount: { increment: 1 },
-      lastReplayedAt: new Date(),
-      lastReplayedBy: actor
-    }
-  });
+  await persistence.webhookDeliveries.markReplayed(deliveryId, actor);
 }
 
 async function listRecentWebhookDeliveryFailures(
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   organizationId?: string
 ): Promise<Array<Record<string, unknown>>> {
-  if (!prisma) {
-    return [];
-  }
-  const deliveries = (await prisma.webhookDelivery.findMany({
-    where: {
-      OR: [{ lastFailedAt: { not: null } }, { lastEnqueueFailedAt: { not: null } }],
-      ...(organizationId ? { organizationId } : {})
-    },
-    orderBy: [
-      { lastEnqueueFailedAt: { sort: "desc", nulls: "last" } },
-      { lastFailedAt: { sort: "desc", nulls: "last" } }
-    ],
-    take: QUEUE_FAILED_JOB_LIMIT
-  })) as WebhookFailureRow[];
-  return deliveries.map((delivery) => ({
+  return persistence.webhookDeliveries.listRecentFailures(organizationId);
+}
+
+function webhookFailureForApi(delivery: WebhookFailureRow): Record<string, unknown> {
+  return {
     deliveryId: delivery.deliveryId,
     deliveryStatus: delivery.deliveryStatus,
     queueJobId: delivery.queueJobId,
@@ -2870,7 +2807,7 @@ async function listRecentWebhookDeliveryFailures(
     replayCount: delivery.replayCount,
     lastReplayedAt: dateString(delivery.lastReplayedAt),
     lastReplayedBy: delivery.lastReplayedBy
-  }));
+  };
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

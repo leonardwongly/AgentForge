@@ -1,4 +1,5 @@
 import type { AuditEventRecord, ChangeControlRecord, PullRequestInput } from "@agentforge/core";
+import type { GithubWebhookEnvelope } from "@agentforge/github";
 
 // Persistence port (assessment C1/C2). Request/domain logic should depend on
 // this seam instead of branching on in-memory vs Prisma throughout app.ts. The
@@ -18,9 +19,84 @@ export interface AuditEventStore {
   listForRecordExport(records: ChangeControlRecord[]): Promise<AuditEventRecord[]>;
 }
 
+export interface WebhookDeliveryStore {
+  recordReceived(envelope: GithubWebhookEnvelope): Promise<WebhookDeliveryReceipt>;
+  markQueued(deliveryId: string, queueJobId: string): Promise<void>;
+  markCompleted(deliveryId: string): Promise<void>;
+  markEnqueueFailed(deliveryId: string, error: unknown): Promise<void>;
+  markReplayed(deliveryId: string, actor: string): Promise<void>;
+  findReplayable(
+    target: WebhookReplayTarget,
+    organizationId?: string
+  ): Promise<ReplayableDelivery | undefined>;
+  listRecentFailures(organizationId?: string): Promise<Array<Record<string, unknown>>>;
+}
+
 export interface PersistencePort {
   records: ChangeControlRecordStore;
   auditEvents: AuditEventStore;
+  webhookDeliveries: WebhookDeliveryStore;
+}
+
+export type WebhookDeliveryStatus =
+  | "received"
+  | "queued"
+  | "processing"
+  | "completed"
+  | "enqueue_failed"
+  | "failed";
+
+export type WebhookDeliveryReceipt = {
+  duplicate: boolean;
+  status: WebhookDeliveryStatus;
+};
+
+export type StoredWebhookDelivery = {
+  deliveryId: string;
+  event: string;
+  action: string | null;
+  repositoryFullName: string | null;
+  organizationId?: string | null | undefined;
+  repositoryId?: string | null | undefined;
+  pullRequestNumber: number | null;
+  headSha: string | null;
+  enqueued: boolean;
+  deliveryStatus?: WebhookDeliveryStatus | string | undefined;
+  queueJobId?: string | null | undefined;
+  queuedAt?: Date | string | null | undefined;
+  processingStartedAt?: Date | string | null | undefined;
+  completedAt?: Date | string | null | undefined;
+  lastEnqueueFailureClass?: string | null | undefined;
+  lastEnqueueFailureMessage?: string | null | undefined;
+  lastEnqueueFailedAt?: Date | string | null | undefined;
+  payloadJson: unknown;
+  evaluationAttemptsMade?: number | undefined;
+  evaluationTerminalFailure?: boolean | undefined;
+  lastFailureClass?: string | null | undefined;
+  lastFailureMessage?: string | null | undefined;
+  lastFailureCorrelationId?: string | null | undefined;
+  lastFailedAt?: Date | string | null | undefined;
+  replayCount?: number | undefined;
+  lastReplayedAt?: Date | string | null | undefined;
+  lastReplayedBy?: string | null | undefined;
+  createdAt?: Date | string | undefined;
+};
+
+export type ReplayableDelivery = {
+  delivery: StoredWebhookDelivery;
+  envelope: GithubWebhookEnvelope;
+};
+
+export type WebhookReplayTarget = {
+  deliveryId?: string | undefined;
+  repositoryFullName?: string | undefined;
+  pullRequestNumber?: number | undefined;
+};
+
+export function hasCompleteWebhookReplayTarget(target: WebhookReplayTarget): boolean {
+  return Boolean(
+    target.deliveryId || (target.repositoryFullName && target.pullRequestNumber !== undefined)
+  );
 }
 
 export type RecordPageQuery = {
@@ -52,6 +128,12 @@ export type RecordPage = {
 type InMemoryPersistenceState = {
   records: ChangeControlRecord[];
   auditEvents: AuditEventRecord[];
+  deliveries: Set<string>;
+  queuedEvaluations: Array<{
+    deliveryId: string;
+    envelope: GithubWebhookEnvelope;
+    queuedAt: string;
+  }>;
 };
 
 // The C2 test double: a single in-memory adapter behind the port so domain
@@ -100,6 +182,75 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
       },
       async listForRecordExport(records) {
         return auditEventsForRecordExport(listAuditEvents(), records);
+      }
+    },
+    webhookDeliveries: {
+      async recordReceived(envelope) {
+        if (!state) {
+          return { duplicate: false, status: "received" };
+        }
+        const duplicate = state.deliveries.has(envelope.deliveryId);
+        state.deliveries.add(envelope.deliveryId);
+        return { duplicate, status: duplicate ? "queued" : "received" };
+      },
+      async markQueued(deliveryId) {
+        state?.deliveries.add(deliveryId);
+      },
+      async markCompleted(deliveryId) {
+        state?.deliveries.add(deliveryId);
+      },
+      async markEnqueueFailed(deliveryId) {
+        state?.deliveries.add(deliveryId);
+      },
+      async markReplayed() {
+        return;
+      },
+      async findReplayable(target, organizationId) {
+        if (!state) {
+          return undefined;
+        }
+        if (!hasCompleteWebhookReplayTarget(target)) {
+          return undefined;
+        }
+        const candidates = [...state.queuedEvaluations].reverse();
+        const queued = target.deliveryId
+          ? candidates.find((item) => item.deliveryId === target.deliveryId)
+          : candidates.find(
+              (item) =>
+                item.envelope.repository?.fullName === target.repositoryFullName &&
+                item.envelope.pullRequest?.number === target.pullRequestNumber
+            );
+        if (!queued) {
+          return undefined;
+        }
+        const matchingRecord = state.records.find(
+          (record) => record.repositoryFullName === queued.envelope.repository?.fullName
+        );
+        const deliveryOrganizationId = matchingRecord?.organizationId ?? "org_local";
+        if (organizationId && deliveryOrganizationId !== organizationId) {
+          return undefined;
+        }
+        return {
+          envelope: queued.envelope,
+          delivery: {
+            deliveryId: queued.deliveryId,
+            event: queued.envelope.event,
+            action: queued.envelope.action ?? null,
+            organizationId: deliveryOrganizationId,
+            repositoryId: matchingRecord?.repositoryId ?? null,
+            repositoryFullName: queued.envelope.repository?.fullName ?? null,
+            pullRequestNumber: queued.envelope.pullRequest?.number ?? null,
+            headSha:
+              queued.envelope.pullRequest?.headSha ?? queued.envelope.checkRun?.headSha ?? null,
+            enqueued: true,
+            deliveryStatus: "queued",
+            payloadJson: {},
+            createdAt: queued.queuedAt
+          }
+        };
+      },
+      async listRecentFailures() {
+        return [];
       }
     }
   };

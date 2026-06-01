@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AuditEventRecord, ChangeControlRecord } from "@agentforge/core";
-import { createInMemoryPersistencePort } from "../src/ports.js";
+import type { GithubWebhookEnvelope } from "@agentforge/github";
+import { createInMemoryPersistencePort, hasCompleteWebhookReplayTarget } from "../src/ports.js";
 
 function record(id: string, organizationId: string): ChangeControlRecord {
   return {
@@ -35,6 +36,35 @@ function audit(id: string, organizationId: string): AuditEventRecord {
     targetId: "t",
     source: "api",
     createdAt: "2026-05-12T00:00:00.000Z"
+  };
+}
+
+function envelope(deliveryId: string): GithubWebhookEnvelope {
+  return {
+    deliveryId,
+    event: "pull_request",
+    action: "opened",
+    installationId: 123,
+    repository: {
+      id: 456,
+      fullName: "acme/app",
+      owner: "acme",
+      name: "app",
+      defaultBranch: "main"
+    },
+    pullRequest: {
+      id: 789,
+      number: 1,
+      title: "Change",
+      authorLogin: "sam",
+      baseBranch: "main",
+      headBranch: "feature",
+      headSha: "sha",
+      body: "",
+      state: "open",
+      merged: false
+    },
+    receivedAt: "2026-05-12T00:00:00.000Z"
   };
 }
 
@@ -95,5 +125,54 @@ describe("in-memory persistence port", () => {
     expect(await port.auditEvents.listForRecordExport([record("r1", "org_a")])).toMatchObject([
       { id: "a1" }
     ]);
+  });
+
+  it("records webhook delivery lifecycle and finds tenant-scoped replays", async () => {
+    const state = {
+      records: [record("r1", "org_a")],
+      auditEvents: [],
+      deliveries: new Set<string>(),
+      queuedEvaluations: [
+        {
+          deliveryId: "delivery-1",
+          envelope: envelope("delivery-1"),
+          queuedAt: "2026-05-12T00:00:00.000Z"
+        }
+      ]
+    };
+    const port = createInMemoryPersistencePort(state);
+
+    await expect(port.webhookDeliveries.recordReceived(envelope("delivery-1"))).resolves.toEqual({
+      duplicate: false,
+      status: "received"
+    });
+    await expect(port.webhookDeliveries.recordReceived(envelope("delivery-1"))).resolves.toEqual({
+      duplicate: true,
+      status: "queued"
+    });
+    await expect(
+      port.webhookDeliveries.findReplayable({ deliveryId: "delivery-1" }, "org_a")
+    ).resolves.toMatchObject({
+      delivery: {
+        deliveryId: "delivery-1",
+        organizationId: "org_a",
+        repositoryFullName: "acme/app",
+        pullRequestNumber: 1
+      }
+    });
+    await expect(
+      port.webhookDeliveries.findReplayable(
+        { repositoryFullName: "acme/app", pullRequestNumber: 1 },
+        "org_b"
+      )
+    ).resolves.toBeUndefined();
+    await expect(
+      port.webhookDeliveries.findReplayable({ repositoryFullName: "acme/app" }, "org_a")
+    ).resolves.toBeUndefined();
+    expect(hasCompleteWebhookReplayTarget({ repositoryFullName: "acme/app" })).toBe(false);
+    expect(
+      hasCompleteWebhookReplayTarget({ repositoryFullName: "acme/app", pullRequestNumber: 1 })
+    ).toBe(true);
+    await expect(port.webhookDeliveries.listRecentFailures("org_a")).resolves.toEqual([]);
   });
 });
