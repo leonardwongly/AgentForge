@@ -48,6 +48,36 @@ describe("in-memory persistence port", () => {
     expect(await port.records.get("missing")).toBeUndefined();
     expect(await port.records.list()).toHaveLength(2);
     expect(await port.records.list({ organizationId: "org_a" })).toHaveLength(1);
+
+    const page = await port.records.page({
+      limit: 1,
+      offset: 0,
+      organizationId: undefined,
+      repositoryId: undefined,
+      status: undefined,
+      lifecycle: undefined,
+      mode: undefined,
+      policyVersion: undefined,
+      queue: undefined,
+      sort: "updated_desc"
+    });
+    expect(page.records).toHaveLength(1);
+    expect(page.pageInfo).toMatchObject({ limit: 1, offset: 0, total: 2, hasMore: true });
+
+    const tenantPage = await port.records.page({
+      limit: 10,
+      offset: 0,
+      organizationId: "org_a",
+      repositoryId: undefined,
+      status: undefined,
+      lifecycle: undefined,
+      mode: undefined,
+      policyVersion: undefined,
+      queue: undefined,
+      sort: "updated_desc"
+    });
+    expect(tenantPage.records.map((item) => item.id)).toEqual(["r1"]);
+    expect(tenantPage.pageInfo).toMatchObject({ total: 1, hasMore: false });
   });
 
   it("appends and lists audit events with tenant filtering", async () => {
