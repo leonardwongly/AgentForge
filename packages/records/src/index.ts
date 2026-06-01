@@ -808,7 +808,6 @@ function auditEventBelongsToRecord(event: AuditEventRecord, record: ChangeContro
 function isRepositoryLifecycleAuditEvent(event: AuditEventRecord): boolean {
   return (
     event.action === "policy_changed" ||
-    event.action === "policy_previewed" ||
     event.action === "repository_settings_changed" ||
     event.action === "retention_changed" ||
     event.action === "owner_mapping_changed"

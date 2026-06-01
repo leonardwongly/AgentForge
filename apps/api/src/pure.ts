@@ -2,8 +2,14 @@
 // slice toward a thinner API composition root (assessment C1/C2). Pure code is
 // unit-testable without Prisma/Redis, unlike the request handlers in app.ts.
 
-export function countBy<T>(items: T[], keyFor: (item: T) => string): Record<string, number> {
+export function countBy<T>(
+  items: readonly T[] | null | undefined,
+  keyFor: (item: T) => string
+): Record<string, number> {
   const counts: Record<string, number> = {};
+  if (!items) {
+    return counts;
+  }
   for (const item of items) {
     const key = keyFor(item);
     counts[key] = (counts[key] ?? 0) + 1;
@@ -13,7 +19,10 @@ export function countBy<T>(items: T[], keyFor: (item: T) => string): Record<stri
 
 // groupBy counted occurrences identically to countBy in app.ts; keep the name
 // as a thin alias so call sites are unchanged while the duplication is removed.
-export function groupBy<T>(items: T[], getKey: (item: T) => string): Record<string, number> {
+export function groupBy<T>(
+  items: readonly T[] | null | undefined,
+  getKey: (item: T) => string
+): Record<string, number> {
   return countBy(items, getKey);
 }
 

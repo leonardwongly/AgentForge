@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PullRequestInput } from "@agentforge/core";
+import { hashPolicy } from "@agentforge/policy";
 import { buildLlmAdvisoryPrompt } from "@agentforge/security";
 import { resolveApiActor } from "../src/auth.js";
 import { createApp, createInitialState } from "../src/index.js";
@@ -232,6 +233,23 @@ describe("security and audit hardening", () => {
       error: "Repository must be registered before persisted policy preview"
     });
     await app.close();
+
+    const inMemoryApp = createApp(createInitialState());
+    const inMemoryResponse = await inMemoryApp.inject({
+      method: "POST",
+      url: "/api/policies/preview",
+      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr(), persist: true }),
+      headers: {
+        "content-type": "application/json",
+        ...authenticatedActorHeaders("alex", "platform_admin")
+      }
+    });
+
+    expect(inMemoryResponse.statusCode).toBe(404);
+    expect(inMemoryResponse.json()).toEqual({
+      error: "Repository must be registered before persisted policy preview"
+    });
+    await inMemoryApp.close();
   });
 
   it("requires actor and tenant scope before policy preview reads stored repository state", async () => {
@@ -314,10 +332,11 @@ describe("security and audit hardening", () => {
     expect(storedPreview.json().result.mode).toBe("observe");
     expect(storedPreview.json().persisted).toBe(false);
 
+    const previewOverrideYaml = policyYaml.replace("mode: enforce", "mode: observe");
     const authenticatedFixturePreview = await app.inject({
       method: "POST",
       url: "/api/policies/preview",
-      payload: JSON.stringify({ contentYaml: policyYaml, pr: sensitivePr() }),
+      payload: JSON.stringify({ contentYaml: previewOverrideYaml, pr: sensitivePr() }),
       headers: {
         "content-type": "application/json",
         ...actorHeaders("auditor-a", "auditor", "org-a")
@@ -334,6 +353,7 @@ describe("security and audit hardening", () => {
           repositoryId,
           actor: "auditor-a",
           actorRole: "auditor",
+          targetId: hashPolicy(previewOverrideYaml),
           metadataJson: expect.objectContaining({
             repositoryFullName: "acme/payments",
             previewPersisted: false,
@@ -452,8 +472,12 @@ describe("security and audit hardening", () => {
   });
 
   it("rejects raw local actor headers in production even when they spoof a valid actor", async () => {
+    const state = createInitialState();
+    const seeded = await createPreviewRecord({ state });
+    await seeded.app.close();
+
     setProductionProxyAuthEnv();
-    const { app, state } = await createPreviewRecord();
+    const app = createApp(state);
     const record = state.records[0]!;
     const evidence = record.requiredEvidence[0]!;
 
@@ -485,8 +509,12 @@ describe("security and audit hardening", () => {
   });
 
   it("accepts authenticated proxy actor headers in production when proxy trust is enabled", async () => {
+    const state = createInitialState();
+    const seeded = await createPreviewRecord({ state });
+    await seeded.app.close();
+
     setProductionProxyAuthEnv();
-    const { app, state } = await createPreviewRecord();
+    const app = createApp(state);
     const record = state.records[0]!;
     const evidence = record.requiredEvidence[0]!;
 

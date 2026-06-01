@@ -19,6 +19,7 @@ import {
 import {
   builtinPolicyPacks,
   getPolicyPack,
+  hashPolicy,
   parsePolicyYaml,
   validatePolicyYaml
 } from "@agentforge/policy";
@@ -1530,7 +1531,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         if (repositoryId && !repositoryOrganization) {
           return reply.code(404).send({ error: "Repository not found" });
         }
-        if (body.persist && !repositoryId && config.nodeEnv === "production" && prisma) {
+        if (body.persist && !repositoryId && config.nodeEnv === "production") {
           return reply
             .code(404)
             .send({ error: "Repository must be registered before persisted policy preview" });
@@ -1567,6 +1568,9 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         }
         const output = evaluateFixturePr(evaluationInput);
         if (!body.persist && actor && repositoryId && activePolicy && repositoryOrganization) {
+          const previewContentHash = body.contentYaml
+            ? hashPolicy(body.contentYaml)
+            : activePolicy.contentHash;
           await audit({
             organizationId: repositoryOrganization,
             repositoryId,
@@ -1574,12 +1578,13 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
             actorRole: actor.role,
             action: "policy_previewed",
             targetType: "policy",
-            targetId: activePolicy.contentHash,
+            targetId: previewContentHash,
             policyVersion: output.result.policyVersion,
             policyPackId: output.result.policyPackId,
             policyPackVersion: output.result.policyPackVersion,
             requestId: request.id,
             metadataJson: {
+              contentHash: previewContentHash,
               mode: output.result.mode,
               status: output.result.status,
               policyVersion: output.result.policyVersion,

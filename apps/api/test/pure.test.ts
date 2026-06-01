@@ -16,6 +16,11 @@ describe("api pure helpers", () => {
     expect(groupBy(items, (value) => value)).toEqual(expected);
   });
 
+  it("countBy and groupBy tolerate missing item arrays", () => {
+    expect(countBy(null, (value: string) => value)).toEqual({});
+    expect(groupBy(undefined, (value: string) => value)).toEqual({});
+  });
+
   it("percent rounds and guards divide-by-zero", () => {
     expect(percent(1, 4)).toBe(25);
     expect(percent(1, 3)).toBe(33);
