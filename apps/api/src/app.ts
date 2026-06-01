@@ -64,6 +64,7 @@ import { evaluateFixturePr } from "./evaluation.js";
 import {
   createInMemoryPersistencePort,
   filterAndSortRecords,
+  hasCompleteWebhookReplayTarget,
   pageInfo,
   paginateRecords,
   recordRequiresAction,
@@ -1796,6 +1797,9 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         });
       },
       async findReplayable(target, organizationId) {
+        if (!hasCompleteWebhookReplayTarget(target)) {
+          return undefined;
+        }
         const delivery = target.deliveryId
           ? await prisma.webhookDelivery.findFirst({
               where: {
@@ -1803,17 +1807,7 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
                 ...(organizationId ? { organizationId } : {})
               }
             })
-          : await prisma.webhookDelivery.findFirst({
-              where: {
-                repositoryFullName: target.repositoryFullName!,
-                pullRequestNumber: target.pullRequestNumber!,
-                deliveryStatus: {
-                  in: ["received", "queued", "processing", "completed", "failed", "enqueue_failed"]
-                },
-                ...(organizationId ? { organizationId } : {})
-              },
-              orderBy: { createdAt: "desc" }
-            });
+          : await findReplayableWebhookByPullRequest(prisma, target, organizationId);
         if (!delivery) {
           return undefined;
         }
@@ -1836,6 +1830,27 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
       }
     }
   };
+}
+
+async function findReplayableWebhookByPullRequest(
+  prisma: PrismaClient,
+  target: { repositoryFullName?: string | undefined; pullRequestNumber?: number | undefined },
+  organizationId?: string
+): Promise<StoredWebhookDelivery | null> {
+  if (!target.repositoryFullName || target.pullRequestNumber === undefined) {
+    return null;
+  }
+  return prisma.webhookDelivery.findFirst({
+    where: {
+      repositoryFullName: target.repositoryFullName,
+      pullRequestNumber: target.pullRequestNumber,
+      deliveryStatus: {
+        in: ["received", "queued", "processing", "completed", "failed", "enqueue_failed"]
+      },
+      ...(organizationId ? { organizationId } : {})
+    },
+    orderBy: { createdAt: "desc" }
+  });
 }
 
 async function persistEvaluationSnapshot(

@@ -93,6 +93,12 @@ export type WebhookReplayTarget = {
   pullRequestNumber?: number | undefined;
 };
 
+export function hasCompleteWebhookReplayTarget(target: WebhookReplayTarget): boolean {
+  return Boolean(
+    target.deliveryId || (target.repositoryFullName && target.pullRequestNumber !== undefined)
+  );
+}
+
 export type RecordPageQuery = {
   limit: number;
   offset: number;
@@ -201,6 +207,9 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
       },
       async findReplayable(target, organizationId) {
         if (!state) {
+          return undefined;
+        }
+        if (!hasCompleteWebhookReplayTarget(target)) {
           return undefined;
         }
         const candidates = [...state.queuedEvaluations].reverse();

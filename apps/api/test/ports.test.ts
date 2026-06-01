@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AuditEventRecord, ChangeControlRecord } from "@agentforge/core";
 import type { GithubWebhookEnvelope } from "@agentforge/github";
-import { createInMemoryPersistencePort } from "../src/ports.js";
+import { createInMemoryPersistencePort, hasCompleteWebhookReplayTarget } from "../src/ports.js";
 
 function record(id: string, organizationId: string): ChangeControlRecord {
   return {
@@ -166,6 +166,13 @@ describe("in-memory persistence port", () => {
         "org_b"
       )
     ).resolves.toBeUndefined();
+    await expect(
+      port.webhookDeliveries.findReplayable({ repositoryFullName: "acme/app" }, "org_a")
+    ).resolves.toBeUndefined();
+    expect(hasCompleteWebhookReplayTarget({ repositoryFullName: "acme/app" })).toBe(false);
+    expect(
+      hasCompleteWebhookReplayTarget({ repositoryFullName: "acme/app", pullRequestNumber: 1 })
+    ).toBe(true);
     await expect(port.webhookDeliveries.listRecentFailures("org_a")).resolves.toEqual([]);
   });
 });
