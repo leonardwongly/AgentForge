@@ -73,6 +73,10 @@ import {
   type EvaluationSnapshotInput,
   type EvaluationSnapshotState,
   type ExportJob,
+  type GitHubInstallationDecision,
+  type GitHubInstallationState,
+  type GitHubInstallationVerifyInput,
+  type GithubRepositoryRef,
   type OwnerMappingState,
   type PolicyVersionSnapshotInput,
   type PolicyVersionSnapshotState,
@@ -172,12 +176,6 @@ type RecordPage = {
   pageInfo: PageInfo;
 };
 
-type GithubRepositoryRef = {
-  id: number;
-  fullName: string;
-  githubRepositoryId?: bigint | undefined;
-};
-
 type RepositorySummaryRow = {
   id: string;
   organizationId: string;
@@ -263,6 +261,12 @@ export type AppState = {
   ownerMappings: OwnerMappingState[];
   policyVersionSnapshots: Map<string, PolicyVersionSnapshotState>;
   evaluationSnapshots: EvaluationSnapshotState[];
+  githubInstallations: GitHubInstallationState[];
+  githubInstallationEvents: Array<{
+    githubInstallationId: string;
+    installation: NonNullable<GithubWebhookEnvelope["installation"]>;
+    createdAt: string;
+  }>;
 };
 
 type RawBodyRequest = {
@@ -778,7 +782,8 @@ export function createApp(
     apiCache,
     audit,
     auditReevaluation,
-    approveGithubInstallation,
+    approveGithubInstallation: (input: GitHubInstallationDecision) =>
+      approveGithubInstallation(persistence, input),
     codeownersPreviewSchema,
     collectPrometheusMetrics,
     compliancePackageRequestSchema,
@@ -802,7 +807,8 @@ export function createApp(
     getRepositoryPolicy,
     githubCredentialsConfigured,
     githubInstallationDecisionSchema,
-    githubInstallationSummary,
+    githubInstallationSummary: (organizationId: string) =>
+      githubInstallationSummary(persistence, config, organizationId),
     githubInstallationVerifySchema,
     githubInstallUrl,
     headerValue,
@@ -810,7 +816,8 @@ export function createApp(
     listAuditEvents: (organizationId?: string) => listAuditEvents(persistence, organizationId),
     listAuditEventsForRecordExport: (records: ChangeControlRecord[]) =>
       listAuditEventsForRecordExport(persistence, records),
-    listGithubInstallations,
+    listGithubInstallations: (organizationId: string) =>
+      listGithubInstallations(persistence, organizationId),
     listOwnerMappings,
     listRecentWebhookDeliveryFailures: (organizationId?: string) =>
       listRecentWebhookDeliveryFailures(persistence, organizationId),
@@ -830,7 +837,8 @@ export function createApp(
     policyPreviewSchema,
     policyUpdateSchema,
     prisma,
-    processGithubInstallationWebhook,
+    processGithubInstallationWebhook: (envelope: GithubWebhookEnvelope) =>
+      processGithubInstallationWebhook(state, persistence, envelope, config),
     queueOperationalStatus,
     queueReplaySchema,
     recordPageQuerySchema,
@@ -838,7 +846,8 @@ export function createApp(
     recordsForAction,
     recordsVisibleTo,
     recomputeRequirementStatus,
-    rejectGithubInstallation,
+    rejectGithubInstallation: (input: GitHubInstallationDecision) =>
+      rejectGithubInstallation(persistence, input),
     repositoryOrganizationId: getRepositoryOrganizationId,
     repositoryReadinessScore,
     repositorySettingsPatchSchema,
@@ -856,9 +865,14 @@ export function createApp(
     saveRepositorySettings,
     state,
     storagePolicy,
-    syncRepositoriesFromCurrentGithubInstallation,
-    syncRepositoriesFromStoredInstallationEvents,
-    upsertPendingGithubInstallation,
+    syncRepositoriesFromCurrentGithubInstallation: (
+      installation: Parameters<typeof syncRepositoriesFromCurrentGithubInstallation>[3]
+    ) => syncRepositoriesFromCurrentGithubInstallation(state, persistence, config, installation),
+    syncRepositoriesFromStoredInstallationEvents: (
+      installation: Parameters<typeof syncRepositoriesFromStoredInstallationEvents>[2]
+    ) => syncRepositoriesFromStoredInstallationEvents(state, persistence, installation),
+    upsertPendingGithubInstallation: (input: GitHubInstallationVerifyInput) =>
+      upsertPendingGithubInstallation(persistence, input),
     recordWebhookDeliveryReceived: (envelope: GithubWebhookEnvelope) =>
       recordWebhookDeliveryReceived(persistence, envelope),
     recordRequiresAction,
@@ -880,7 +894,9 @@ export function createInitialState(): AppState {
     repositorySettings: new Map(),
     ownerMappings: [],
     policyVersionSnapshots: new Map(),
-    evaluationSnapshots: []
+    evaluationSnapshots: [],
+    githubInstallations: [],
+    githubInstallationEvents: []
   };
 }
 
@@ -1456,6 +1472,53 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
           }
           return output;
         });
+      },
+      async listGithubInstallationRepositories({ organizationId, accountLogin }) {
+        const rows = (await prisma.repository.findMany({
+          where: {
+            organizationId,
+            fullName: { startsWith: `${accountLogin}/` }
+          },
+          select: { fullName: true, githubRepositoryId: true }
+        })) as RepositoryInstallationRow[];
+        return rows.map((row) => ({
+          fullName: row.fullName,
+          githubRepositoryId: row.githubRepositoryId.toString()
+        }));
+      },
+      async syncGithubInstallation({ organizationId, installation }) {
+        await ensureOrganization(prisma, organizationId);
+        for (const repo of installation.repositoriesAdded) {
+          if (!repo.fullName) {
+            continue;
+          }
+          const repository = await ensureRepository(
+            prisma,
+            {
+              organizationId,
+              repositoryId: repositoryIdFromFullName(repo.fullName),
+              fullName: repo.fullName,
+              defaultBranch: "main",
+              githubRepositoryId: githubRepositoryBigInt(repo)
+            },
+            { forceUnarchive: true }
+          );
+          state.repositorySettings.set(repository.id, {
+            repositoryId: repository.id,
+            organizationId,
+            enabled: repository.enabled,
+            mode: repository.mode ?? undefined,
+            updatedAt: new Date().toISOString()
+          });
+        }
+        await archiveRemovedRepositoriesInPrisma(
+          prisma,
+          organizationId,
+          installation.repositoriesRemoved
+        );
+      },
+      async archiveGithubRepositories({ organizationId, repositoriesRemoved }) {
+        await archiveRemovedRepositoriesInPrisma(prisma, organizationId, repositoriesRemoved);
       }
     },
     evaluationSnapshots,
@@ -1755,6 +1818,221 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         })) as WebhookFailureRow[];
         return deliveries.map(webhookFailureForApi);
       }
+    },
+    githubInstallations: {
+      async upsertPending(input) {
+        await ensureOrganization(prisma, input.organizationId);
+        const existing = await prisma.gitHubInstallation.findUnique({
+          where: { githubInstallationId: BigInt(input.githubInstallationId) }
+        });
+        if (existing?.organizationId && existing.organizationId !== input.organizationId) {
+          return undefined;
+        }
+        if (!existing && !input.accountLogin) {
+          return undefined;
+        }
+        const status = existing?.status === "approved" ? "approved" : "pending_approval";
+        const data = {
+          organizationId: input.organizationId,
+          accountLogin:
+            input.accountLogin ??
+            existing?.accountLogin ??
+            `installation-${input.githubInstallationId}`,
+          accountType: input.accountType ?? existing?.accountType ?? "Organization",
+          status,
+          approvedBy: status === "approved" ? (existing?.approvedBy ?? null) : null,
+          approvedAt: status === "approved" ? (existing?.approvedAt ?? null) : null,
+          rejectedBy: null,
+          rejectedAt: null,
+          archivedAt: null,
+          lastWebhookAt: new Date()
+        };
+        const row = existing
+          ? await prisma.gitHubInstallation.update({
+              where: { id: existing.id },
+              data
+            })
+          : await prisma.gitHubInstallation.create({
+              data: {
+                ...data,
+                organizationId: input.organizationId,
+                archivedAt: null,
+                githubInstallationId: BigInt(input.githubInstallationId)
+              }
+            });
+        return githubInstallationForApi(row);
+      },
+      async approve(input) {
+        await ensureOrganization(prisma, input.organizationId);
+        const existing = await prisma.gitHubInstallation.findFirst({
+          where: { id: input.id, organizationId: input.organizationId }
+        });
+        if (!existing) {
+          return undefined;
+        }
+        const row = await prisma.gitHubInstallation.update({
+          where: { id: existing.id },
+          data: {
+            organizationId: input.organizationId,
+            status: "approved",
+            approvedBy: input.actor,
+            approvedAt: new Date(),
+            rejectedBy: null,
+            rejectedAt: null,
+            archivedAt: null
+          }
+        });
+        return githubInstallationForApi(row);
+      },
+      async reject(input) {
+        const existing = await prisma.gitHubInstallation.findFirst({
+          where: { id: input.id, organizationId: input.organizationId }
+        });
+        if (!existing) {
+          return undefined;
+        }
+        const row = await prisma.gitHubInstallation.update({
+          where: { id: existing.id },
+          data: {
+            status: "rejected",
+            approvedBy: null,
+            approvedAt: null,
+            rejectedBy: input.actor,
+            rejectedAt: new Date(),
+            archivedAt: new Date()
+          }
+        });
+        return githubInstallationForApi(row);
+      },
+      async list(organizationId) {
+        const rows = await prisma.gitHubInstallation.findMany({
+          where: { organizationId },
+          orderBy: [{ status: "asc" }, { updatedAt: "desc" }]
+        });
+        return rows.map(githubInstallationForApi);
+      },
+      async summary(organizationId) {
+        const installation = await prisma.gitHubInstallation.findFirst({
+          where: {
+            status: "approved",
+            archivedAt: null,
+            organizationId
+          },
+          orderBy: { approvedAt: "desc" }
+        });
+        const pendingApprovalCount = await prisma.gitHubInstallation.count({
+          where: {
+            status: "pending_approval",
+            archivedAt: null,
+            organizationId
+          }
+        });
+        return {
+          installation: installation ? githubInstallationForApi(installation) : undefined,
+          pendingApprovalCount
+        };
+      },
+      async recordWebhook(envelope) {
+        const installation = envelope.installation;
+        if (!installation) {
+          return undefined;
+        }
+        const existing = await prisma.gitHubInstallation.findUnique({
+          where: { githubInstallationId: BigInt(installation.id) }
+        });
+        const now = new Date();
+        const archiveAction =
+          envelope.event === "installation" &&
+          (envelope.action === "deleted" || envelope.action === "suspend");
+        const status = archiveAction
+          ? "archived"
+          : existing?.status === "approved"
+            ? "approved"
+            : "pending_approval";
+        const approvedBy = status === "approved" ? (existing?.approvedBy ?? null) : null;
+        const approvedAt = status === "approved" ? (existing?.approvedAt ?? null) : null;
+        const row = await prisma.gitHubInstallation.upsert({
+          where: { githubInstallationId: BigInt(installation.id) },
+          update: {
+            accountLogin:
+              installation.accountLogin ||
+              existing?.accountLogin ||
+              `installation-${installation.id}`,
+            accountType: installation.accountType || existing?.accountType || "Organization",
+            status,
+            approvedBy,
+            approvedAt,
+            rejectedBy: null,
+            rejectedAt: null,
+            archivedAt: archiveAction ? now : null,
+            lastWebhookAt: now
+          },
+          create: {
+            githubInstallationId: BigInt(installation.id),
+            accountLogin: installation.accountLogin || `installation-${installation.id}`,
+            accountType: installation.accountType || "Organization",
+            status,
+            approvedBy,
+            approvedAt,
+            rejectedBy: null,
+            rejectedAt: null,
+            archivedAt: archiveAction ? now : null,
+            lastWebhookAt: now
+          }
+        });
+        return githubInstallationForApi(row);
+      },
+      async listStoredInstallationEvents(githubInstallationId) {
+        const pageSize = 250;
+        let cursor: string | undefined;
+        const githubInstallationIdNumber = Number(githubInstallationId);
+        const installationIdFilters = [
+          {
+            payloadJson: {
+              path: ["installation", "id"],
+              equals: githubInstallationId
+            }
+          },
+          ...(Number.isSafeInteger(githubInstallationIdNumber)
+            ? [
+                {
+                  payloadJson: {
+                    path: ["installation", "id"],
+                    equals: githubInstallationIdNumber
+                  }
+                }
+              ]
+            : [])
+        ];
+        const events: Array<NonNullable<GithubWebhookEnvelope["installation"]>> = [];
+        for (;;) {
+          const deliveries = await prisma.webhookDelivery.findMany({
+            where: {
+              event: { in: ["installation", "installation_repositories"] },
+              OR: installationIdFilters
+            },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            take: pageSize,
+            ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
+          });
+          if (deliveries.length === 0) {
+            return events;
+          }
+          for (const delivery of deliveries) {
+            const payload = delivery.payloadJson as {
+              installation?: GithubWebhookEnvelope["installation"];
+            } | null;
+            const stored = payload?.installation;
+            if (stored?.id && String(stored.id) === githubInstallationId) {
+              events.push(stored);
+            }
+          }
+          if (deliveries.length < pageSize) {
+            return events;
+          }
+          cursor = deliveries.at(-1)?.id;
+        }
+      }
     }
   };
 }
@@ -1982,63 +2260,29 @@ async function markWebhookDeliveryEnqueueFailed(
 
 async function processGithubInstallationWebhook(
   state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   envelope: GithubWebhookEnvelope,
   config?: ReturnType<typeof loadConfig>
 ): Promise<void> {
   const installation = envelope.installation;
-  if (!installation || !prisma) {
+  if (!installation) {
     return;
   }
-  const existing = await prisma.gitHubInstallation.findUnique({
-    where: { githubInstallationId: BigInt(installation.id) }
-  });
-  const now = new Date();
   const archiveAction =
     envelope.event === "installation" &&
     (envelope.action === "deleted" || envelope.action === "suspend");
-  const status = archiveAction
-    ? "archived"
-    : existing?.status === "approved"
-      ? "approved"
-      : "pending_approval";
-  const approvedBy = status === "approved" ? (existing?.approvedBy ?? null) : null;
-  const approvedAt = status === "approved" ? (existing?.approvedAt ?? null) : null;
-  const row = await prisma.gitHubInstallation.upsert({
-    where: { githubInstallationId: BigInt(installation.id) },
-    update: {
-      accountLogin:
-        installation.accountLogin || existing?.accountLogin || `installation-${installation.id}`,
-      accountType: installation.accountType || existing?.accountType || "Organization",
-      status,
-      approvedBy,
-      approvedAt,
-      rejectedBy: null,
-      rejectedAt: null,
-      archivedAt: archiveAction ? now : null,
-      lastWebhookAt: now
-    },
-    create: {
-      githubInstallationId: BigInt(installation.id),
-      accountLogin: installation.accountLogin || `installation-${installation.id}`,
-      accountType: installation.accountType || "Organization",
-      status,
-      approvedBy,
-      approvedAt,
-      rejectedBy: null,
-      rejectedAt: null,
-      archivedAt: archiveAction ? now : null,
-      lastWebhookAt: now
-    }
-  });
+  const row = await persistence.githubInstallations.recordWebhook(envelope);
+  if (!row) {
+    return;
+  }
   if (
     row.organizationId &&
     !archiveAction &&
     row.status === "approved" &&
     config &&
-    (await syncRepositoriesFromCurrentGithubInstallation(state, prisma, config, {
+    (await syncRepositoriesFromCurrentGithubInstallation(state, persistence, config, {
       organizationId: row.organizationId,
-      githubInstallationId: row.githubInstallationId.toString(),
+      githubInstallationId: row.githubInstallationId,
       accountLogin: row.accountLogin,
       accountType: row.accountType
     }))
@@ -2046,59 +2290,22 @@ async function processGithubInstallationWebhook(
     return;
   }
   if (row.organizationId && !archiveAction) {
-    await syncRepositoriesFromInstallation(state, prisma, row.organizationId, installation);
+    await syncRepositoriesFromInstallation(state, persistence, row.organizationId, installation);
   }
   if (row.organizationId && installation.repositoriesRemoved.length > 0) {
-    await archiveRemovedRepositories(prisma, row.organizationId, installation.repositoriesRemoved);
+    await archiveRemovedRepositories(
+      persistence,
+      row.organizationId,
+      installation.repositoriesRemoved
+    );
   }
 }
 
 async function upsertPendingGithubInstallation(
-  prisma: PrismaClient | undefined,
-  input: z.infer<typeof githubInstallationVerifySchema> & { organizationId: string }
+  persistence: PersistencePort,
+  input: GitHubInstallationVerifyInput
 ) {
-  if (!prisma) {
-    throw new Error("GitHub installation verification requires the Postgres runtime store.");
-  }
-  const id = BigInt(input.githubInstallationId);
-  await ensureOrganization(prisma, input.organizationId);
-  const existing = await prisma.gitHubInstallation.findUnique({
-    where: { githubInstallationId: id }
-  });
-  if (existing?.organizationId && existing.organizationId !== input.organizationId) {
-    return undefined;
-  }
-  if (!existing && !input.accountLogin) {
-    return undefined;
-  }
-  const status = existing?.status === "approved" ? "approved" : "pending_approval";
-  const data = {
-    organizationId: input.organizationId,
-    accountLogin:
-      input.accountLogin ?? existing?.accountLogin ?? `installation-${input.githubInstallationId}`,
-    accountType: input.accountType ?? existing?.accountType ?? "Organization",
-    status,
-    approvedBy: status === "approved" ? (existing?.approvedBy ?? null) : null,
-    approvedAt: status === "approved" ? (existing?.approvedAt ?? null) : null,
-    rejectedBy: null,
-    rejectedAt: null,
-    archivedAt: null,
-    lastWebhookAt: new Date()
-  };
-  const row = existing
-    ? await prisma.gitHubInstallation.update({
-        where: { id: existing.id },
-        data
-      })
-    : await prisma.gitHubInstallation.create({
-        data: {
-          ...data,
-          organizationId: input.organizationId,
-          archivedAt: null,
-          githubInstallationId: id
-        }
-      });
-  return githubInstallationForApi(row);
+  return persistence.githubInstallations.upsertPending(input);
 }
 
 async function fetchGithubInstallationAccount(
@@ -2229,7 +2436,7 @@ function githubInstallationRepositoryPageState(input: {
 
 async function syncRepositoriesFromCurrentGithubInstallation(
   state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   config: ReturnType<typeof loadConfig>,
   input: {
     organizationId?: string | undefined;
@@ -2238,7 +2445,7 @@ async function syncRepositoriesFromCurrentGithubInstallation(
     accountType?: string | undefined;
   }
 ): Promise<boolean> {
-  if (!prisma || !input.organizationId || !input.accountLogin) {
+  if (!input.organizationId || !input.accountLogin) {
     return false;
   }
   const repositories = await fetchGithubInstallationRepositories(
@@ -2252,26 +2459,23 @@ async function syncRepositoriesFromCurrentGithubInstallation(
     repositories.map((repository) => githubRepositoryBigInt(repository).toString())
   );
   const currentNames = new Set(repositories.map((repository) => repository.fullName));
-  const existingRepositories = (await prisma.repository.findMany({
-    where: {
-      organizationId: input.organizationId,
-      fullName: { startsWith: `${input.accountLogin}/` }
-    },
-    select: { fullName: true, githubRepositoryId: true }
-  })) as RepositoryInstallationRow[];
+  const existingRepositories = await persistence.repositories.listGithubInstallationRepositories({
+    organizationId: input.organizationId,
+    accountLogin: input.accountLogin
+  });
   const staleRepositories = existingRepositories
     .filter(
       (repository) =>
-        !currentRepositoryIds.has(repository.githubRepositoryId.toString()) &&
+        !currentRepositoryIds.has(repository.githubRepositoryId) &&
         !currentNames.has(repository.fullName)
     )
     .map((repository) => ({
       id: 0,
       fullName: repository.fullName,
-      githubRepositoryId: repository.githubRepositoryId
+      githubRepositoryId: BigInt(repository.githubRepositoryId)
     }));
 
-  await syncRepositoriesFromInstallation(state, prisma, input.organizationId, {
+  await syncRepositoriesFromInstallation(state, persistence, input.organizationId, {
     id: Number(input.githubInstallationId),
     accountLogin: input.accountLogin,
     accountType: input.accountType === "User" ? "User" : "Organization",
@@ -2279,137 +2483,60 @@ async function syncRepositoriesFromCurrentGithubInstallation(
     repositoriesRemoved: staleRepositories
   });
   if (staleRepositories.length > 0) {
-    await archiveRemovedRepositories(prisma, input.organizationId, staleRepositories);
+    await archiveRemovedRepositories(persistence, input.organizationId, staleRepositories);
   }
   return true;
 }
 
 async function approveGithubInstallation(
-  prisma: PrismaClient | undefined,
-  input: { id: string; organizationId: string; actor: string }
+  persistence: PersistencePort,
+  input: GitHubInstallationDecision
 ) {
-  if (!prisma) {
-    throw new Error("GitHub installation approval requires the Postgres runtime store.");
-  }
-  await ensureOrganization(prisma, input.organizationId);
-  const existing = await prisma.gitHubInstallation.findFirst({
-    where: { id: input.id, organizationId: input.organizationId }
-  });
-  if (!existing) {
-    return undefined;
-  }
-  const row = await prisma.gitHubInstallation.update({
-    where: { id: existing.id },
-    data: {
-      organizationId: input.organizationId,
-      status: "approved",
-      approvedBy: input.actor,
-      approvedAt: new Date(),
-      rejectedBy: null,
-      rejectedAt: null,
-      archivedAt: null
-    }
-  });
-  return githubInstallationForApi(row);
+  return persistence.githubInstallations.approve(input);
 }
 
 async function rejectGithubInstallation(
-  prisma: PrismaClient | undefined,
-  input: { id: string; organizationId: string; actor: string }
+  persistence: PersistencePort,
+  input: GitHubInstallationDecision
 ) {
-  if (!prisma) {
-    throw new Error("GitHub installation rejection requires the Postgres runtime store.");
-  }
-  const existing = await prisma.gitHubInstallation.findFirst({
-    where: { id: input.id, organizationId: input.organizationId }
-  });
-  if (!existing) {
-    return undefined;
-  }
-  const row = await prisma.gitHubInstallation.update({
-    where: { id: existing.id },
-    data: {
-      status: "rejected",
-      approvedBy: null,
-      approvedAt: null,
-      rejectedBy: input.actor,
-      rejectedAt: new Date(),
-      archivedAt: new Date()
-    }
-  });
-  return githubInstallationForApi(row);
+  return persistence.githubInstallations.reject(input);
 }
 
 async function syncRepositoriesFromStoredInstallationEvents(
   state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   installation: { organizationId?: string | undefined; githubInstallationId: string }
 ): Promise<void> {
-  if (!prisma || !installation.organizationId) {
+  if (!installation.organizationId) {
     return;
   }
-  const pageSize = 250;
-  let cursor: string | undefined;
-  for (;;) {
-    const deliveries = await prisma.webhookDelivery.findMany({
-      where: { event: { in: ["installation", "installation_repositories"] } },
-      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      take: pageSize,
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
-    });
-    if (deliveries.length === 0) {
-      return;
-    }
-    for (const delivery of deliveries) {
-      const payload = delivery.payloadJson as {
-        installation?: GithubWebhookEnvelope["installation"];
-      } | null;
-      const stored = payload?.installation;
-      if (stored?.id && String(stored.id) === installation.githubInstallationId) {
-        await syncRepositoriesFromInstallation(state, prisma, installation.organizationId, stored);
-      }
-    }
-    if (deliveries.length < pageSize) {
-      return;
-    }
-    cursor = deliveries.at(-1)?.id;
+  const events = await persistence.githubInstallations.listStoredInstallationEvents(
+    installation.githubInstallationId
+  );
+  for (const stored of events) {
+    await syncRepositoriesFromInstallation(state, persistence, installation.organizationId, stored);
   }
 }
 
 async function syncRepositoriesFromInstallation(
   state: AppState,
-  prisma: PrismaClient,
+  persistence: PersistencePort,
   organizationId: string,
   installation: NonNullable<GithubWebhookEnvelope["installation"]>
 ): Promise<void> {
-  await ensureOrganization(prisma, organizationId);
-  for (const repo of installation.repositoriesAdded) {
-    if (!repo.fullName) {
-      continue;
-    }
-    const repository = await ensureRepository(
-      prisma,
-      {
-        organizationId,
-        repositoryId: repositoryIdFromFullName(repo.fullName),
-        fullName: repo.fullName,
-        defaultBranch: "main",
-        githubRepositoryId: githubRepositoryBigInt(repo)
-      },
-      { forceUnarchive: true }
-    );
-    state.repositorySettings.set(repository.id, {
-      repositoryId: repository.id,
-      organizationId,
-      enabled: repository.enabled,
-      mode: repository.mode ?? undefined,
-      updatedAt: new Date().toISOString()
-    });
-  }
-  await archiveRemovedRepositories(prisma, organizationId, installation.repositoriesRemoved);
+  void state;
+  await persistence.repositories.syncGithubInstallation({ organizationId, installation });
 }
 
 async function archiveRemovedRepositories(
+  persistence: PersistencePort,
+  organizationId: string,
+  repositoriesRemoved: GithubRepositoryRef[]
+): Promise<void> {
+  await persistence.repositories.archiveGithubRepositories({ organizationId, repositoriesRemoved });
+}
+
+async function archiveRemovedRepositoriesInPrisma(
   prisma: PrismaClient,
   organizationId: string,
   repositoriesRemoved: GithubRepositoryRef[]
@@ -2682,7 +2809,7 @@ function runtimeCapabilities(input: { postgres: boolean; redisQueue: boolean }):
   return {
     durableRecords: input.postgres,
     durableWebhookReplay: input.postgres,
-    manualGitHubInstallationApproval: input.postgres,
+    manualGitHubInstallationApproval: true,
     queueBackedEvaluations: input.redisQueue,
     productionReady: input.postgres && input.redisQueue
   };
@@ -2913,16 +3040,52 @@ function auditEventSource(value: string): AuditEventRecord["source"] {
 }
 
 export const testInternals = {
-  approveGithubInstallation,
+  approveGithubInstallation: (
+    prisma: PrismaClient,
+    input: GitHubInstallationDecision,
+    state: AppState = createInitialState()
+  ) => approveGithubInstallation(createPrismaPersistencePort(state, prisma), input),
   ensureRepository,
   fetchGithubInstallationAccount,
   fetchGithubInstallationRepositories,
   githubInstallationRepositoryPageState,
-  listGithubInstallations,
-  processGithubInstallationWebhook,
-  rejectGithubInstallation,
-  syncRepositoriesFromStoredInstallationEvents,
-  upsertPendingGithubInstallation
+  listGithubInstallations: (
+    prisma: PrismaClient,
+    organizationId: string,
+    state: AppState = createInitialState()
+  ) => listGithubInstallations(createPrismaPersistencePort(state, prisma), organizationId),
+  processGithubInstallationWebhook: (
+    state: AppState,
+    prisma: PrismaClient,
+    envelope: GithubWebhookEnvelope,
+    config?: ReturnType<typeof loadConfig>
+  ) =>
+    processGithubInstallationWebhook(
+      state,
+      createPrismaPersistencePort(state, prisma),
+      envelope,
+      config
+    ),
+  rejectGithubInstallation: (
+    prisma: PrismaClient,
+    input: GitHubInstallationDecision,
+    state: AppState = createInitialState()
+  ) => rejectGithubInstallation(createPrismaPersistencePort(state, prisma), input),
+  syncRepositoriesFromStoredInstallationEvents: (
+    state: AppState,
+    prisma: PrismaClient,
+    installation: { organizationId?: string | undefined; githubInstallationId: string }
+  ) =>
+    syncRepositoriesFromStoredInstallationEvents(
+      state,
+      createPrismaPersistencePort(state, prisma),
+      installation
+    ),
+  upsertPendingGithubInstallation: (
+    prisma: PrismaClient,
+    input: GitHubInstallationVerifyInput,
+    state: AppState = createInitialState()
+  ) => upsertPendingGithubInstallation(createPrismaPersistencePort(state, prisma), input)
 };
 
 async function saveOverrideRecord(
@@ -3121,7 +3284,7 @@ function humanizeIdentifier(value: string): string {
 }
 
 async function githubInstallationSummary(
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   config: ReturnType<typeof loadConfig>,
   organizationId: string
 ) {
@@ -3129,44 +3292,16 @@ async function githubInstallationSummary(
   const appCredentialsConfigured = Boolean(config.github.appId && config.github.privateKey);
   const webhookSecretConfigured = Boolean(config.github.webhookSecret);
   const installUrl = githubInstallUrl(config);
-  if (prisma) {
-    const installation = await prisma.gitHubInstallation.findFirst({
-      where: {
-        status: "approved",
-        archivedAt: null,
-        organizationId
-      },
-      orderBy: { approvedAt: "desc" }
-    });
-    const pendingApprovalCount = await prisma.gitHubInstallation.count({
-      where: {
-        status: "pending_approval",
-        archivedAt: null,
-        organizationId
-      }
-    });
-    if (installation) {
-      return {
-        connected: true,
-        credentialsConfigured,
-        accountLogin: installation.accountLogin,
-        accountType: installation.accountType,
-        githubInstallationId: installation.githubInstallationId.toString(),
-        status: installation.status,
-        pendingApprovalCount,
-        installUrl,
-        appCredentialsConfigured,
-        webhookSecretConfigured
-      };
-    }
+  const summary = await persistence.githubInstallations.summary(organizationId);
+  if (summary.installation) {
     return {
-      connected: false,
+      connected: true,
       credentialsConfigured,
-      accountLogin: undefined,
-      accountType: undefined,
-      githubInstallationId: undefined,
-      status: pendingApprovalCount > 0 ? "pending_approval" : "not_connected",
-      pendingApprovalCount,
+      accountLogin: summary.installation.accountLogin,
+      accountType: summary.installation.accountType,
+      githubInstallationId: summary.installation.githubInstallationId,
+      status: summary.installation.status,
+      pendingApprovalCount: summary.pendingApprovalCount,
       installUrl,
       appCredentialsConfigured,
       webhookSecretConfigured
@@ -3178,8 +3313,8 @@ async function githubInstallationSummary(
     accountLogin: undefined,
     accountType: undefined,
     githubInstallationId: undefined,
-    status: "not_connected",
-    pendingApprovalCount: 0,
+    status: summary.pendingApprovalCount > 0 ? "pending_approval" : "not_connected",
+    pendingApprovalCount: summary.pendingApprovalCount,
     installUrl,
     appCredentialsConfigured,
     webhookSecretConfigured
@@ -3204,36 +3339,10 @@ function githubInstallUrl(config: ReturnType<typeof loadConfig>): string | undef
 }
 
 async function listGithubInstallations(
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   organizationId: string
-): Promise<
-  Array<{
-    id: string;
-    organizationId?: string | undefined;
-    githubInstallationId: string;
-    accountLogin: string;
-    accountType: string;
-    status: string;
-    approvedBy?: string | undefined;
-    approvedAt?: string | undefined;
-    rejectedBy?: string | undefined;
-    rejectedAt?: string | undefined;
-    archivedAt?: string | undefined;
-    lastWebhookAt: string;
-    createdAt: string;
-    updatedAt: string;
-  }>
-> {
-  if (!prisma) {
-    return [];
-  }
-  const rows = await prisma.gitHubInstallation.findMany({
-    where: {
-      organizationId
-    },
-    orderBy: [{ status: "asc" }, { updatedAt: "desc" }]
-  });
-  return rows.map(githubInstallationForApi);
+): Promise<GitHubInstallationState[]> {
+  return persistence.githubInstallations.list(organizationId);
 }
 
 function githubInstallationForApi(row: GitHubInstallationRow) {
