@@ -60,6 +60,9 @@ export interface OverrideStore {
 
 export interface RepositoryStore {
   organizationId(repositoryId: string): Promise<string | undefined>;
+  findIdByFullName(fullName: string): Promise<string | undefined>;
+  modeOverride(repositoryId: string): Promise<ChangeControlRecord["mode"] | undefined>;
+  defaultDataHandling(defaults: RepositoryDataHandlingState): Promise<RepositoryDataHandlingState>;
   listSummaries(
     defaultMode: ChangeControlRecord["mode"],
     organizationId?: string
@@ -92,6 +95,10 @@ export interface EvaluationSnapshotStore {
   persist(input: EvaluationSnapshotInput): Promise<void>;
 }
 
+export interface MetricStore {
+  domainCounts(): Promise<DomainMetricCounts>;
+}
+
 export interface PersistencePort {
   records: ChangeControlRecordStore;
   auditEvents: AuditEventStore;
@@ -101,6 +108,7 @@ export interface PersistencePort {
   overrides: OverrideStore;
   repositories: RepositoryStore;
   evaluationSnapshots: EvaluationSnapshotStore;
+  metrics: MetricStore;
 }
 
 export type WebhookDeliveryStatus =
@@ -377,6 +385,14 @@ export type EvaluationSnapshotState = {
   };
 };
 
+export type DomainMetricCounts = {
+  webhookDeliveriesByStatus: Record<string, number>;
+  recordsByStatus: Record<string, number>;
+  checkRuns: number;
+  exports: number;
+  auditEventsByAction: Record<string, number>;
+};
+
 export type RecordPageQuery = {
   limit: number;
   offset: number;
@@ -450,6 +466,7 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
   }> = [];
   const listRecords = () => state?.records ?? [...records.values()];
   const listAuditEvents = () => state?.auditEvents ?? auditEvents;
+  const listExports = () => state?.exports ?? [...exports.values()];
   const policyMap = () => state?.repositoryPolicies ?? repositoryPolicies;
   const settingsMap = () => state?.repositorySettings ?? repositorySettings;
   const listOwnerMappings = () => state?.ownerMappings ?? ownerMappings;
@@ -572,6 +589,15 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
           settingsMap().get(repositoryId)?.organizationId ??
           listRecords().find((record) => record.repositoryId === repositoryId)?.organizationId
         );
+      },
+      async findIdByFullName(fullName) {
+        return listRecords().find((record) => record.repositoryFullName === fullName)?.repositoryId;
+      },
+      async modeOverride(repositoryId) {
+        return settingsMap().get(repositoryId)?.mode;
+      },
+      async defaultDataHandling(defaults) {
+        return defaults;
       },
       async listSummaries(defaultMode, organizationId) {
         const repositories = new Map<string, RepositorySummary>();
@@ -1065,6 +1091,19 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
           .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
           .map((event) => event.installation);
       }
+    },
+    metrics: {
+      async domainCounts() {
+        return {
+          webhookDeliveriesByStatus: {
+            recorded: state?.deliveries.size ?? 0
+          },
+          recordsByStatus: countItemsBy(listRecords(), (record) => record.checkStatus),
+          checkRuns: 0,
+          exports: listExports().length,
+          auditEventsByAction: countItemsBy(listAuditEvents(), (event) => event.action)
+        };
+      }
     }
   };
 }
@@ -1146,6 +1185,14 @@ export function checkConclusionForRecord(
     return "neutral";
   }
   return record.checkStatus === "block" ? "failure" : "success";
+}
+
+function countItemsBy<T>(items: T[], getKey: (item: T) => string): Record<string, number> {
+  return items.reduce<Record<string, number>>((accumulator, item) => {
+    const key = getKey(item);
+    accumulator[key] = (accumulator[key] ?? 0) + 1;
+    return accumulator;
+  }, {});
 }
 
 export function filterAndSortRecords(

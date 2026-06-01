@@ -69,6 +69,7 @@ import {
   pageInfo,
   paginateRecords,
   recordRequiresAction,
+  type DomainMetricCounts,
   type EvaluationSnapshotStore,
   type EvaluationSnapshotInput,
   type EvaluationSnapshotState,
@@ -614,6 +615,7 @@ export function createApp(
   const persistence = prisma
     ? createPrismaPersistencePort(state, prisma)
     : createInMemoryPersistencePort(state);
+  const runtimeStore = prisma ? "postgres" : "in_memory";
   const listRecords = (filter?: { organizationId?: string }) =>
     listChangeControlRecords(persistence, filter);
   const getRecord = (id: string) => getChangeControlRecord(persistence, id);
@@ -785,11 +787,18 @@ export function createApp(
     approveGithubInstallation: (input: GitHubInstallationDecision) =>
       approveGithubInstallation(persistence, input),
     codeownersPreviewSchema,
-    collectPrometheusMetrics,
+    collectPrometheusMetrics: () =>
+      collectPrometheusMetrics({
+        persistence,
+        runtimeStore,
+        state,
+        evaluationQueue,
+        config
+      }),
     compliancePackageRequestSchema,
     config,
     dashboardSummary,
-    defaultDataHandlingSettings,
+    defaultDataHandlingSettings: () => defaultDataHandlingSettings(persistence, config),
     enqueueMergeGuardEvaluation,
     evaluationQueue,
     evidenceRejectionSchema,
@@ -798,12 +807,14 @@ export function createApp(
     filterAndSortRecords,
     findReplayableDelivery: (target: z.infer<typeof queueReplaySchema>, organizationId?: string) =>
       findReplayableDelivery(persistence, target, organizationId),
-    findRepositoryIdByFullName,
+    findRepositoryIdByFullName: (fullName: string) =>
+      findRepositoryIdByFullName(persistence, fullName),
     fetchGithubInstallationAccount,
     getExportJob: (id: string) => getExportJob(persistence, id),
     getRecord,
     getRecordPolicyConfig,
-    getRepositoryModeOverride,
+    getRepositoryModeOverride: (repositoryId: string) =>
+      getRepositoryModeOverride(persistence, repositoryId),
     getRepositoryPolicy,
     githubCredentialsConfigured,
     githubInstallationDecisionSchema,
@@ -837,6 +848,7 @@ export function createApp(
     policyPreviewSchema,
     policyUpdateSchema,
     prisma,
+    runtimeStore,
     processGithubInstallationWebhook: (envelope: GithubWebhookEnvelope) =>
       processGithubInstallationWebhook(state, persistence, envelope, config),
     queueOperationalStatus,
@@ -965,24 +977,10 @@ async function listConfiguredOwnerMappings(
 }
 
 async function defaultDataHandlingSettings(
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   config: ReturnType<typeof loadConfig>
 ): Promise<RepositoryDataHandlingState> {
-  if (prisma) {
-    const retention = await prisma.retentionSetting.findFirst({
-      orderBy: { createdAt: "desc" }
-    });
-    if (retention) {
-      return {
-        sourceCodeStorage: retention.sourceCodeStorage,
-        fullDiffRetention: normalizeFullDiffRetention(retention.fullDiffRetention),
-        redactSecrets: retention.redactSecrets,
-        llmFeatures: retention.llmFeatures,
-        auditRecordRetentionDays: retention.auditRecordRetentionDays
-      };
-    }
-  }
-  return dataHandlingDefaults(config);
+  return persistence.repositories.defaultDataHandling(dataHandlingDefaults(config));
 }
 
 function dataHandlingDefaults(config: ReturnType<typeof loadConfig>): RepositoryDataHandlingState {
@@ -1264,6 +1262,35 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
           select: { organizationId: true }
         });
         return repository?.organizationId;
+      },
+      async findIdByFullName(fullName) {
+        const repository = await prisma.repository.findFirst({
+          where: { fullName },
+          select: { id: true }
+        });
+        return repository?.id;
+      },
+      async modeOverride(repositoryId) {
+        const repository = await prisma.repository.findUnique({
+          where: { id: repositoryId },
+          select: { mode: true }
+        });
+        return repository?.mode || undefined;
+      },
+      async defaultDataHandling(defaults) {
+        const retention = await prisma.retentionSetting.findFirst({
+          orderBy: { createdAt: "desc" }
+        });
+        if (!retention) {
+          return defaults;
+        }
+        return {
+          sourceCodeStorage: retention.sourceCodeStorage,
+          fullDiffRetention: normalizeFullDiffRetention(retention.fullDiffRetention),
+          redactSecrets: retention.redactSecrets,
+          llmFeatures: retention.llmFeatures,
+          auditRecordRetentionDays: retention.auditRecordRetentionDays
+        };
       },
       async listSummaries(defaultMode, organizationId) {
         const rows = await prisma.repository.findMany({
@@ -1670,7 +1697,12 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         state.deliveries.add(envelope.deliveryId);
         const repositoryFullName = envelope.repository?.fullName ?? null;
         const repositoryId = repositoryFullName
-          ? await findRepositoryIdByFullName(state, prisma, repositoryFullName)
+          ? (
+              await prisma.repository.findFirst({
+                where: { fullName: repositoryFullName },
+                select: { id: true }
+              })
+            )?.id
           : undefined;
         const repository = repositoryId
           ? await prisma.repository.findUnique({
@@ -2032,6 +2064,37 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
           }
           cursor = deliveries.at(-1)?.id;
         }
+      }
+    },
+    metrics: {
+      async domainCounts() {
+        const [webhookGroups, recordGroups, checkRuns, exports, auditEventGroups] =
+          (await Promise.all([
+            prisma.webhookDelivery.groupBy({ by: ["deliveryStatus"], _count: { _all: true } }),
+            prisma.changeControlRecord.groupBy({ by: ["checkStatus"], _count: { _all: true } }),
+            prisma.checkRun.count(),
+            prisma.exportJob.count(),
+            prisma.auditEvent.groupBy({ by: ["action"], _count: { _all: true } })
+          ])) as [
+            Array<CountGroup<"deliveryStatus">>,
+            Array<CountGroup<"checkStatus">>,
+            number,
+            number,
+            Array<CountGroup<"action">>
+          ];
+        return {
+          webhookDeliveriesByStatus: Object.fromEntries(
+            webhookGroups.map((group) => [group.deliveryStatus, group._count._all])
+          ),
+          recordsByStatus: Object.fromEntries(
+            recordGroups.map((group) => [String(group.checkStatus), group._count._all])
+          ),
+          checkRuns,
+          exports,
+          auditEventsByAction: Object.fromEntries(
+            auditEventGroups.map((group) => [group.action, group._count._all])
+          )
+        };
       }
     }
   };
@@ -2680,8 +2743,9 @@ async function queueOperationalStatus(input: {
 }
 
 async function collectPrometheusMetrics(input: {
+  persistence: PersistencePort;
+  runtimeStore: "postgres" | "in_memory";
   state: AppState;
-  prisma: PrismaClient | undefined;
   evaluationQueue: Queue<MergeGuardEvaluationJobPayload> | undefined;
   config: ReturnType<typeof loadConfig>;
 }): Promise<string> {
@@ -2692,7 +2756,7 @@ async function collectPrometheusMetrics(input: {
   const lines: string[] = [
     "# HELP agentforge_runtime_store Runtime persistence backend. 1 means active.",
     "# TYPE agentforge_runtime_store gauge",
-    metricLine("agentforge_runtime_store", { backend: input.prisma ? "postgres" : "in_memory" }, 1),
+    metricLine("agentforge_runtime_store", { backend: input.runtimeStore }, 1),
     "# HELP agentforge_github_app_configured GitHub App credentials configured. 1 means configured.",
     "# TYPE agentforge_github_app_configured gauge",
     metricLine(
@@ -2714,7 +2778,7 @@ async function collectPrometheusMetrics(input: {
     lines.push(metricLine("agentforge_queue_jobs", { state: stateName }, count));
   }
 
-  const domainCounts = await domainMetricCounts(input.state, input.prisma);
+  const domainCounts = await domainMetricCounts(input.persistence);
   lines.push(
     "# HELP agentforge_webhook_deliveries_total GitHub webhook deliveries recorded by status.",
     "# TYPE agentforge_webhook_deliveries_total gauge"
@@ -2749,54 +2813,8 @@ async function collectPrometheusMetrics(input: {
   return `${lines.join("\n")}\n`;
 }
 
-async function domainMetricCounts(
-  state: AppState,
-  prisma: PrismaClient | undefined
-): Promise<{
-  webhookDeliveriesByStatus: Record<string, number>;
-  recordsByStatus: Record<string, number>;
-  checkRuns: number;
-  exports: number;
-  auditEventsByAction: Record<string, number>;
-}> {
-  if (!prisma) {
-    return {
-      webhookDeliveriesByStatus: {
-        recorded: state.deliveries.size
-      },
-      recordsByStatus: countBy(state.records, (record) => record.checkStatus),
-      checkRuns: 0,
-      exports: state.exports.length,
-      auditEventsByAction: countBy(state.auditEvents, (event) => event.action)
-    };
-  }
-
-  const [webhookGroups, recordGroups, checkRuns, exports, auditEventGroups] = (await Promise.all([
-    prisma.webhookDelivery.groupBy({ by: ["deliveryStatus"], _count: { _all: true } }),
-    prisma.changeControlRecord.groupBy({ by: ["checkStatus"], _count: { _all: true } }),
-    prisma.checkRun.count(),
-    prisma.exportJob.count(),
-    prisma.auditEvent.groupBy({ by: ["action"], _count: { _all: true } })
-  ])) as [
-    Array<CountGroup<"deliveryStatus">>,
-    Array<CountGroup<"checkStatus">>,
-    number,
-    number,
-    Array<CountGroup<"action">>
-  ];
-  return {
-    webhookDeliveriesByStatus: Object.fromEntries(
-      webhookGroups.map((group) => [group.deliveryStatus, group._count._all])
-    ),
-    recordsByStatus: Object.fromEntries(
-      recordGroups.map((group) => [String(group.checkStatus), group._count._all])
-    ),
-    checkRuns,
-    exports,
-    auditEventsByAction: Object.fromEntries(
-      auditEventGroups.map((group) => [group.action, group._count._all])
-    )
-  };
+async function domainMetricCounts(persistence: PersistencePort): Promise<DomainMetricCounts> {
+  return persistence.metrics.domainCounts();
 }
 
 function runtimeCapabilities(input: { postgres: boolean; redisQueue: boolean }): {
@@ -3230,41 +3248,17 @@ function stableBigInt(value: string): bigint {
 }
 
 async function findRepositoryIdByFullName(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   fullName: string
 ): Promise<string | undefined> {
-  const inMemory = state.records.find((record) => record.repositoryFullName === fullName);
-  if (inMemory) {
-    return inMemory.repositoryId;
-  }
-  if (!prisma) {
-    return undefined;
-  }
-  const repository = await prisma.repository.findFirst({
-    where: { fullName },
-    select: { id: true }
-  });
-  return repository?.id;
+  return persistence.repositories.findIdByFullName(fullName);
 }
 
 async function getRepositoryModeOverride(
-  state: AppState,
-  prisma: PrismaClient | undefined,
+  persistence: PersistencePort,
   repositoryId: string
 ): Promise<ChangeControlRecord["mode"] | undefined> {
-  const inMemory = state.repositorySettings.get(repositoryId)?.mode;
-  if (inMemory) {
-    return inMemory;
-  }
-  if (!prisma) {
-    return undefined;
-  }
-  const repository = await prisma.repository.findUnique({
-    where: { id: repositoryId },
-    select: { mode: true }
-  });
-  return repository?.mode ?? undefined;
+  return persistence.repositories.modeOverride(repositoryId);
 }
 
 function repositoryIdFromFullName(fullName: string): string {

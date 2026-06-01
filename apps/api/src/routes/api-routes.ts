@@ -209,17 +209,9 @@ type ResolvedApiRouteContext = {
     organizationId: string;
     actor: string;
   }) => Promise<GithubInstallation | undefined>;
-  collectPrometheusMetrics: (input: {
-    state: AppState;
-    prisma: PrismaClient | undefined;
-    evaluationQueue: EvaluationQueue;
-    config: ApiConfig;
-  }) => Promise<string>;
+  collectPrometheusMetrics: () => Promise<string>;
   config: ApiConfig;
-  defaultDataHandlingSettings: (
-    prisma: PrismaClient | undefined,
-    config: ApiConfig
-  ) => Promise<Record<string, unknown>>;
+  defaultDataHandlingSettings: () => Promise<Record<string, unknown>>;
   enqueueMergeGuardEvaluation: (input: {
     state: AppState;
     evaluationQueue: EvaluationQueue;
@@ -236,11 +228,7 @@ type ResolvedApiRouteContext = {
     target: QueueReplayTarget,
     organizationId?: string
   ) => Promise<ReplayableDelivery | undefined>;
-  findRepositoryIdByFullName: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
-    fullName: string
-  ) => Promise<string | undefined>;
+  findRepositoryIdByFullName: (fullName: string) => Promise<string | undefined>;
   getExportJob: (id: string) => Promise<ExportJob | undefined>;
   getRecord: (id: string) => Promise<ChangeControlRecord | undefined>;
   getRecordPolicyConfig: (record: ChangeControlRecord) => Promise<{
@@ -252,8 +240,6 @@ type ResolvedApiRouteContext = {
     };
   }>;
   getRepositoryModeOverride: (
-    state: AppState,
-    prisma: PrismaClient | undefined,
     repositoryId: string
   ) => Promise<ChangeControlRecord["mode"] | undefined>;
   getRepositoryPolicy: (repositoryId: string) => Promise<RepositoryPolicyState | undefined>;
@@ -283,6 +269,7 @@ type ResolvedApiRouteContext = {
   }) => unknown;
   ownerMappingForApi: (mapping: OwnerMapping) => Record<string, unknown>;
   prisma: PrismaClient | undefined;
+  runtimeStore: "postgres" | "in_memory";
   processGithubInstallationWebhook: (envelope: GithubWebhookEnvelope) => Promise<void>;
   queueOperationalStatus: (input: {
     state: AppState;
@@ -474,6 +461,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     policyPreviewSchema,
     policyUpdateSchema,
     prisma,
+    runtimeStore,
     processGithubInstallationWebhook,
     queueOperationalStatus,
     queueReplaySchema,
@@ -540,7 +528,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           status: ready ? "ready" : "not_ready",
           database: config.databaseUrl ? "configured" : "not_configured",
           workerQueue: config.redisUrl ? "configured" : "in_memory",
-          runtimeStore: prisma ? "postgres" : "in_memory",
+          runtimeStore,
           queue,
           version: AGENTFORGE_VERSION
         });
@@ -568,7 +556,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           return operationalAccess;
         }
 
-        const body = await collectPrometheusMetrics({ state, prisma, evaluationQueue, config });
+        const body = await collectPrometheusMetrics();
         return reply.header("content-type", "text/plain; version=0.0.4; charset=utf-8").send(body);
       }
     );
@@ -839,7 +827,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       );
       const githubInstallation = await githubInstallationSummary(actor.organizationId);
       return safe({
-        runtimeStore: prisma ? "postgres" : "in_memory",
+        runtimeStore,
         githubInstallation,
         auth: {
           builtInGithubOAuthConfigured: Boolean(
@@ -848,7 +836,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           trustedProxyConfigured: config.auth.apiTrustProxyHeaders
         },
         repositories,
-        dataHandling: await defaultDataHandlingSettings(prisma, config),
+        dataHandling: await defaultDataHandlingSettings(),
         ownerMappings: ownerMappings.map(ownerMappingForApi),
         routingDiagnostics: routingDiagnosticsFromOwnerMappings(
           ownerMappings,
@@ -1405,7 +1393,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         }
         const repositoryId =
           requiresStoredPolicyAccess || actor
-            ? await findRepositoryIdByFullName(state, prisma, body.pr.repositoryFullName)
+            ? await findRepositoryIdByFullName(body.pr.repositoryFullName)
             : undefined;
         const repositoryOrganization = repositoryId
           ? await repositoryOrganizationId(repositoryId)
@@ -1443,7 +1431,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         };
         if (repositoryId) {
           evaluationInput.repositoryId = repositoryId;
-          const modeOverride = await getRepositoryModeOverride(state, prisma, repositoryId);
+          const modeOverride = await getRepositoryModeOverride(repositoryId);
           if (modeOverride) {
             evaluationInput.modeOverride = modeOverride;
           }
