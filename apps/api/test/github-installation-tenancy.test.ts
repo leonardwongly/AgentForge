@@ -257,8 +257,39 @@ function createPrismaMock(
     },
     webhookDelivery: {
       findMany: vi.fn(
-        async ({ take, cursor }: { take: number; cursor?: { id: string } | undefined }) => {
-          const sorted = [...deliveries].sort((left, right) => {
+        async ({
+          take,
+          cursor,
+          where
+        }: {
+          take: number;
+          cursor?: { id: string } | undefined;
+          where?: {
+            event?: { in?: string[] };
+            OR?: Array<{ payloadJson?: { path?: string[]; equals?: unknown } }>;
+          };
+        }) => {
+          const eventFilter = where?.event?.in;
+          const installationIdFilters =
+            where?.OR?.map((filter) => filter.payloadJson?.equals).filter(
+              (value) => value !== undefined
+            ) ?? [];
+          const scopedDeliveries = deliveries.filter((delivery) => {
+            if (eventFilter && !eventFilter.includes(delivery.event)) {
+              return false;
+            }
+            const payload = delivery.payloadJson as
+              | { installation?: { id?: string | number | bigint } }
+              | null
+              | undefined;
+            if (installationIdFilters.length === 0) {
+              return true;
+            }
+            return installationIdFilters.some(
+              (expected) => String(payload?.installation?.id) === String(expected)
+            );
+          });
+          const sorted = [...scopedDeliveries].sort((left, right) => {
             const createdDelta = left.createdAt.getTime() - right.createdAt.getTime();
             return createdDelta === 0 ? left.id.localeCompare(right.id) : createdDelta;
           });
@@ -600,6 +631,21 @@ describe("GitHub installation repository replay", () => {
       { organizationId: "org-a", githubInstallationId: "12345" }
     );
 
+    expect(prisma.webhookDelivery.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          event: { in: ["installation", "installation_repositories"] },
+          OR: expect.arrayContaining([
+            {
+              payloadJson: {
+                path: ["installation", "id"],
+                equals: 12345
+              }
+            }
+          ])
+        })
+      })
+    );
     expect(repositoryUpserts).toHaveLength(251);
     expect(repositoryUpserts[0]).toMatchObject({
       create: { fullName: "acme/repo-000" }
