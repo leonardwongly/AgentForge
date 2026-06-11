@@ -13,7 +13,16 @@ coverage/
 playwright-report/
 test-results/
 .playwright-mcp/
+.qoder/
 .DS_Store
+.env.backup*
+.env.bak
+.env.old
+*.pem
+*.key
+*.jks
+*.keystore
+artifacts/
 packages/db/prisma/generated/
 
 # Mobile local/generated outputs
@@ -25,4 +34,3 @@ apps/android/local.properties
 apps/ios/**/DerivedData/
 apps/ios/**/*.xcuserdata/
 apps/ios/**/*.xcuserstate
-artifacts/

@@ -145,6 +145,7 @@ describe("deterministic detectors", () => {
   });
 
   it("keeps credential-shaped quoted env values and long base64-like values critical", () => {
+    const stripeLikeToken = "sk_live_" + "abcdefghijklmnopqrstuvwx1234567890";
     const facts = extractVerifiedFacts(
       {
         repositoryFullName: "acme/payments",
@@ -159,7 +160,9 @@ describe("deterministic detectors", () => {
             filename: "config/prod.env",
             status: "modified",
             patch:
-              "+SESSION_SECRET='rL8PZ1hGx7sQw9Nf4Mb2Vc6Xd8Yt3Ka5Le0Ru9Pi2Zo='\n+UNICODE_TOKEN = sk_live_abcdefghijklmnopqrstuvwx1234567890\n+DATABASE_URL=postgresql://service:prodSecret123456789@localhost:15432/app"
+              "+SESSION_SECRET='rL8PZ1hGx7sQw9Nf4Mb2Vc6Xd8Yt3Ka5Le0Ru9Pi2Zo='\n" +
+              `+UNICODE_TOKEN = ${stripeLikeToken}\n` +
+              "+DATABASE_URL=postgresql://service:prodSecret123456789@localhost:15432/app"
           },
           {
             filename: "docs/setup.md",
@@ -185,7 +188,7 @@ describe("deterministic detectors", () => {
       ])
     );
     expect(JSON.stringify(facts)).not.toContain("rL8PZ1hGx7sQ");
-    expect(JSON.stringify(facts)).not.toContain("sk_live_abcdefghijkl");
+    expect(JSON.stringify(facts)).not.toContain(stripeLikeToken.slice(0, 20));
     expect(JSON.stringify(facts)).not.toContain("prodSecret");
   });
 

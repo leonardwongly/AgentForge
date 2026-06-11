@@ -1,11 +1,13 @@
+# Local development only. All ports are bound to 127.0.0.1 to prevent
+# network exposure on shared or public interfaces (AF-SEC-008).
 services:
   postgres:
     image: postgres:16-alpine
     # Local development only. Do not reuse these credentials outside loopback-bound Compose services.
     environment:
-      POSTGRES_DB: agentforge
-      POSTGRES_USER: agentforge
-      POSTGRES_PASSWORD: agentforge
+      POSTGRES_DB: ${POSTGRES_DB:-agentforge}
+      POSTGRES_USER: ${POSTGRES_USER:-agentforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentforge}
     ports:
       - "127.0.0.1:15432:5432"
     volumes:
@@ -18,13 +20,20 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    command:
+      [
+        "redis-server",
+        "--appendonly",
+        "yes",
+        "--requirepass",
+        "${REDIS_PASSWORD:-agentforge-local-redis}"
+      ]
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-agentforge-local-redis}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -34,8 +43,8 @@ services:
     command: ["server", "/data", "--console-address", ":9001"]
     # Local development only. Use managed object storage and rotated secrets in deployed environments.
     environment:
-      MINIO_ROOT_USER: agentforge
-      MINIO_ROOT_PASSWORD: agentforge-local
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-agentforge}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-agentforge-local}
     ports:
       - "127.0.0.1:9000:9000"
       - "127.0.0.1:9001:9001"

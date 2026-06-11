@@ -56,8 +56,15 @@ const disallowedTrackedPatterns = [
 
 const secretPatterns = [
   { name: "GitHub token", pattern: /ghp_[A-Za-z0-9_]{20,}/u },
+  { name: "GitHub OAuth token", pattern: /gho_[A-Za-z0-9_]{20,}/u },
   { name: "GitHub fine-grained token", pattern: /github_pat_[A-Za-z0-9_]{20,}/u },
+  { name: "Slack token", pattern: /xox[bpras]-[0-9]{10,}/u },
+  { name: "Stripe live secret key", pattern: /sk_live_[A-Za-z0-9]{20,}/u },
+  { name: "Stripe live restricted key", pattern: /rk_live_[A-Za-z0-9]{20,}/u },
+  { name: "SendGrid token", pattern: /SG\.[A-Za-z0-9_-]{22,}/u },
   { name: "npm token", pattern: /npm_[A-Za-z0-9]{20,}/u },
+  { name: "PyPI token", pattern: /pypi-[A-Za-z0-9_-]{50,}/u },
+  { name: "OpenAI API key", pattern: /sk-[A-Za-z0-9]{20,}/u },
   { name: "AWS access key", pattern: /AKIA[0-9A-Z]{16}/u },
   { name: "Private key block", pattern: new RegExp("-----BEGIN .*PRIVATE " + "KEY-----", "u") }
 ];

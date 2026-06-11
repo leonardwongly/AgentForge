@@ -130,6 +130,17 @@ export function requireOrganizationAccess(
   };
 }
 
+/**
+ * Resolve an authenticated actor or fall back to a system identity.
+ *
+ * Internal only: do not call this from HTTP route handlers.
+ * Use `requireApiActor()` for all request-scoped authentication.
+ * This function exists only for internal/worker callers that already
+ * operate in a trusted context (AF-SEC-002).
+ *
+ * @deprecated Use `requireApiActor()` in routes. This function must
+ * never be invoked in HTTP request handlers.
+ */
 export function actorOrSystem(request: FastifyRequest): ApiActor {
   return (
     resolveApiActor(request) ?? {
