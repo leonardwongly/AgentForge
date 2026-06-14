@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "ioredis": "5.10.1"
+    "ioredis": "5.11.1"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
