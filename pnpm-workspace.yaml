@@ -11,3 +11,8 @@ allowBuilds:
 overrides:
   postcss: 8.5.14
   qs: 6.15.2
+  # Security: force esbuild >= 0.28.1 to remediate GHSA (Deno-module binary
+  # integrity RCE, high) and the Windows dev-server arbitrary file read (low).
+  # tsx/vitest pull esbuild transitively at 0.27.x; this override pins the fixed
+  # version across the workspace regardless of their declared ranges.
+  esbuild: 0.28.1
