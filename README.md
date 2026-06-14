@@ -93,7 +93,7 @@ The repository uses:
 - Turbo for build/typecheck orchestration.
 - Vitest for unit and API integration tests.
 - Playwright for dashboard E2E smoke tests.
-- Prisma `6.19.3` with PostgreSQL.
+- Prisma `7.8.0` with PostgreSQL (via the `@prisma/adapter-pg` driver adapter).
 - Fastify `5`, Next.js `16`, React `19`, BullMQ, Redis, and zod.
 
 ## Quick Start

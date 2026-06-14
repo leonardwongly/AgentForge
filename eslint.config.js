@@ -8,6 +8,7 @@ export default [
       "**/dist/**",
       "**/.next/**",
       "**/node_modules/**",
+      "**/generated/**",
       "**/coverage/**",
       "**/playwright-report/**",
       "**/test-results/**",

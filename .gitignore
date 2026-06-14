@@ -24,6 +24,7 @@ test-results/
 *.keystore
 artifacts/
 packages/db/prisma/generated/
+packages/db/src/generated/
 
 # Mobile local/generated outputs
 apps/android/.gradle/

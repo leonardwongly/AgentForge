@@ -62,7 +62,8 @@ vi.mock("@agentforge/db", () => {
     );
   }
   return {
-    PrismaClient: MockPrismaClient
+    PrismaClient: MockPrismaClient,
+    createPrismaClient: () => new MockPrismaClient()
   };
 });
 
