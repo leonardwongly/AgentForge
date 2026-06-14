@@ -42,8 +42,8 @@ jobs:
       - run: corepack enable
       - run: corepack prepare pnpm@11.1.1 --activate
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec prisma generate --schema packages/db/prisma/schema.prisma
-      - run: pnpm exec prisma migrate deploy --schema packages/db/prisma/schema.prisma
+      - run: pnpm db:generate
+      - run: pnpm db:deploy
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck

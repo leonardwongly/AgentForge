@@ -12,7 +12,7 @@ import {
   type PullRequestInput,
   type VerifiedFact
 } from "@agentforge/core";
-import { PrismaClient } from "@agentforge/db";
+import { createPrismaClient, type PrismaClient } from "@agentforge/db";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/detectors";
 import {
   buildCheckRunPayload,
@@ -344,7 +344,7 @@ function getWorkerPrisma(config: ReturnType<typeof loadConfig>): PrismaClient | 
   if (!config.databaseUrl || config.nodeEnv === "test") {
     return undefined;
   }
-  workerPrisma ??= new PrismaClient({ datasourceUrl: config.databaseUrl });
+  workerPrisma ??= createPrismaClient(config.databaseUrl);
   return workerPrisma;
 }
 

@@ -1,7 +1,10 @@
-import { PrismaClient } from "@prisma/client";
 import { builtinPolicyPacks, parsePolicyYaml } from "@agentforge/policy";
 
-const prisma = new PrismaClient();
+import { createPrismaClient } from "../src/index.js";
+
+const prisma = createPrismaClient(
+  process.env.DATABASE_URL ?? "postgresql://agentforge:agentforge@localhost:15432/agentforge"
+);
 
 async function main(): Promise<void> {
   for (const pack of builtinPolicyPacks) {

@@ -21,7 +21,7 @@ import {
   RedisCacheManager,
   getMembershipCacheKey
 } from "@agentforge/core";
-import { PrismaClient } from "@agentforge/db";
+import { createPrismaClient, type PrismaClient } from "@agentforge/db";
 import {
   createGithubAppToken,
   createGithubInstallationToken,
@@ -591,7 +591,7 @@ export function createApp(
   const prisma = Object.hasOwn(overrides, "prisma")
     ? overrides.prisma
     : config.databaseUrl && config.nodeEnv !== "test"
-      ? new PrismaClient({ datasourceUrl: config.databaseUrl })
+      ? createPrismaClient(config.databaseUrl)
       : undefined;
   const apiCache = new RedisCacheManager(
     config.redisUrl && config.nodeEnv !== "test" ? config.redisUrl : undefined
