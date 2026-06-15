@@ -119,15 +119,21 @@ function classifyMatch(
     };
   }
 
-  if (
-    (kind === "api_key_assignment" || kind === "high_entropy" || kind === "bearer_token") &&
-    isObviousPlaceholder(value)
-  ) {
-    return {
-      category: "local_placeholder",
-      risk: "low",
-      reason: "placeholder or local development value"
-    };
+  if (kind === "api_key_assignment" || kind === "high_entropy" || kind === "bearer_token") {
+    if (isNonSecretReference(value, kind)) {
+      return {
+        category: "local_placeholder",
+        risk: "low",
+        reason: "non-secret reference (environment variable, template expression, or content hash)"
+      };
+    }
+    if (isObviousPlaceholder(value)) {
+      return {
+        category: "local_placeholder",
+        risk: "low",
+        reason: "placeholder or local development value"
+      };
+    }
   }
 
   return {
@@ -156,6 +162,27 @@ function isLocalServiceUrl(value: string): boolean {
 function isObviousPlaceholder(value: string): boolean {
   const inspected = inspectSecretValue(value).toLowerCase();
   return isPlaceholderToken(inspected);
+}
+
+function isNonSecretReference(value: string, kind: RedactionMatch["kind"]): boolean {
+  const trimmed = value.trim();
+  // Template / interpolation expressions: GitHub Actions ${{ ... }}, shell/JS ${ ... }
+  if (/\$\{\{?/.test(trimmed)) {
+    return true;
+  }
+  // Environment-variable reads - the literal secret never appears in source.
+  if (/(?:process\.env|import\.meta\.env|os\.environ|Deno\.env\.get|ENV\[)/.test(trimmed)) {
+    return true;
+  }
+  // Bare high-entropy hex runs are almost always content hashes or pinned commit
+  // SHAs (e.g. pinned GitHub Actions), not credentials.
+  if (
+    kind === "high_entropy" &&
+    (/^[0-9a-f]{40}$/iu.test(trimmed) || /^[0-9a-f]{64}$/iu.test(trimmed))
+  ) {
+    return true;
+  }
+  return false;
 }
 
 function isPlaceholderToken(value: string): boolean {

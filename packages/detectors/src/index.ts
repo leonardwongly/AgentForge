@@ -732,16 +732,62 @@ function matchingGovernedPath(file: ChangedFile, patterns: string[]): string | u
   return undefined;
 }
 
+const PACKAGE_JSON_DEPENDENCY_SECTIONS = new Set([
+  "dependencies",
+  "devDependencies",
+  "peerDependencies",
+  "optionalDependencies"
+]);
+
+/** A package.json version specifier has no whitespace and looks like a range, tag, or protocol. */
+function looksLikeVersionSpecifier(value: string): boolean {
+  if (/\s/u.test(value)) {
+    return false;
+  }
+  return (
+    /^(?:[\^~><=]|v?\d)/u.test(value) ||
+    /^(?:workspace|npm|git|github|file|link|patch|https?|portal):/u.test(value) ||
+    /^(?:\*|latest|next|canary|beta|alpha|rc)$/iu.test(value)
+  );
+}
+
 function parseDependencyLinesFromPatch(patch: string, prefix: "+" | "-"): Map<string, string> {
   const dependencies = new Map<string, string>();
+  // Track the enclosing package.json section so scripts/engines/config entries are
+  // not misread as dependencies. Section headers and braces are read from context and
+  // changed lines alike; a hunk boundary resets the (now unknown) scope.
+  let section: string | undefined;
   for (const rawLine of patch.split(/\r?\n/)) {
+    if (rawLine.startsWith("@@")) {
+      section = undefined;
+      continue;
+    }
+    const content = rawLine.replace(/^[+\- ]/u, "").trim();
+    const header = /^"(?<key>[\w.-]+)"\s*:\s*\{/u.exec(content);
+    if (header?.groups?.key) {
+      section = header.groups.key;
+    } else if (content === "}" || content === "},") {
+      section = undefined;
+    }
+
     if (!rawLine.startsWith(prefix) || rawLine.startsWith(`${prefix}${prefix}${prefix}`)) {
       continue;
     }
     const line = rawLine.slice(1).trim();
     const jsonMatch = /^"(?<name>@?[\w./-]+)"\s*:\s*"(?<version>[^"]+)"/u.exec(line);
     if (jsonMatch?.groups?.name && jsonMatch.groups.version) {
-      dependencies.set(jsonMatch.groups.name, jsonMatch.groups.version);
+      const inDependencySection =
+        section !== undefined && PACKAGE_JSON_DEPENDENCY_SECTIONS.has(section);
+      const knownSection = section !== undefined;
+      // Known dependency section: always a dependency. Known non-dependency section
+      // (scripts, engines, ...): never. Section unknown (header outside the patch
+      // window): only when the value is shaped like a version, not a shell command.
+      if (knownSection && !inDependencySection) {
+        continue;
+      }
+      if (inDependencySection || looksLikeVersionSpecifier(jsonMatch.groups.version)) {
+        dependencies.set(jsonMatch.groups.name, jsonMatch.groups.version);
+      }
       continue;
     }
     const requirementMatch =
