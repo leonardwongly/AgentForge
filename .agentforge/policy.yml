@@ -1,0 +1,98 @@
+# AgentForge self-governance policy.
+#
+# This is AgentForge governing its own repository: the deterministic engine
+# (detectors + this policy) evaluates every pull request in CI and publishes
+# the "AgentForge Merge Guard" check.
+#
+# Mode is `warn` on purpose. CI can detect findings and surface what *would*
+# block, but evidence can only be *approved* through the dashboard (which
+# requires the deployed API + Postgres). Until that is running, `warn`
+# evaluates and reports without an unsatisfiable hard block. Flip `mode` to
+# `enforce` once the dashboard is available to approve evidence.
+version: 1
+policy_pack_id: agentforge-self
+policy_pack_version: 1.0.0
+agentforge:
+  mode: warn
+  apply_to:
+    - all_pull_requests
+agent_assisted:
+  stricter_controls: true
+  detection_signals:
+    - bot_author
+    - branch_pattern
+    - ai_label
+    - commit_metadata
+    - pr_body_marker
+sensitive_paths:
+  auth_and_security:
+    paths:
+      - "apps/api/src/auth.ts"
+      - "packages/security/**"
+      - "packages/config/**"
+    required_reviewers:
+      - "security-team"
+    required_evidence:
+      - "security_note"
+  governance_engine:
+    paths:
+      - "packages/policy/**"
+      - "packages/detectors/**"
+      - "packages/records/**"
+      - "packages/reviewers/**"
+      - "packages/evidence/**"
+    required_reviewers:
+      - "agentforge-maintainers"
+    required_evidence:
+      - "manual_attestation"
+  ci_and_deploy:
+    paths:
+      - ".github/workflows/**"
+      - "scripts/**"
+    required_reviewers:
+      - "platform-team"
+    required_evidence:
+      - "ci_change_reason"
+    block_for_agent_assisted: true
+tests:
+  deleted_tests:
+    action: block
+    required_evidence:
+      - "deleted_test_explanation"
+  skipped_tests:
+    action: block
+    required_evidence:
+      - "deleted_test_explanation"
+dependencies:
+  new_package:
+    action: require_review
+    required_reviewers:
+      - "security-team"
+    required_evidence:
+      - "dependency_justification"
+  major_version_bump:
+    action: require_review
+    required_reviewers:
+      - "security-team"
+database:
+  migrations:
+    paths:
+      - "packages/db/prisma/migrations/**"
+    required_reviewers:
+      - "database-owner"
+    required_evidence:
+      - "rollback_plan"
+      - "migration_dry_run"
+overrides:
+  allowed_roles:
+    - "engineering_manager"
+    - "platform_admin"
+  require_reason: true
+  visible_in_pr: true
+  audit: true
+data_retention:
+  source_code_storage: false
+  full_diff_retention: "disabled"
+  redact_secrets: true
+  llm_features: false
+  audit_record_retention: "365d"
