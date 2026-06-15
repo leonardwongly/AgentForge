@@ -14,7 +14,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: merge-guard-${{ github.workflow }}-${{ github.ref }}
@@ -39,3 +39,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: pnpm merge-guard
+      - name: Upload Change Control Record
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: merge-guard-change-control-record
+          path: merge-guard-record.json
+          if-no-files-found: warn
+          retention-days: 90
