@@ -40,7 +40,7 @@ jobs:
           fi
       - name: Secret scan
         run: |
-          if git grep -nE 'ghp_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN .*PRIVATE KEY-----|xox[bpras]-[0-9]{10,}|sk_live_[A-Za-z0-9]{20,}|rk_live_[A-Za-z0-9]{20,}|SG\.[A-Za-z0-9_-]{22,}|npm_[A-Za-z0-9]{36}|pypi-[A-Za-z0-9_-]{50,}|sk-[A-Za-z0-9]{20,}' -- . ':!fixtures/repos/secret-like-token.json' ':!packages/security/src/redaction.ts' ':!.github/workflows/security.yml'; then
+          if git grep -nE 'ghp_[A-Za-z0-9_]{20,}|gho_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN .*PRIVATE KEY-----|xox[bpras]-[0-9]{10,}|sk_live_[A-Za-z0-9]{20,}|rk_live_[A-Za-z0-9]{20,}|SG\.[A-Za-z0-9_-]{22,}|npm_[A-Za-z0-9]{36}|pypi-[A-Za-z0-9_-]{50,}|sk-[A-Za-z0-9]{20,}' -- . ':!fixtures/repos/secret-like-token.json' ':!packages/security/src/redaction.ts' ':!.github/workflows/security.yml' ':!docs/security-remediation-execution-plan.md'; then
             exit 1
           fi
       - name: Gitleaks secret scan

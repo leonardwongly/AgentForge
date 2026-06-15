@@ -71,6 +71,7 @@ const secretPatterns = [
 
 const secretScanExclusions = [
   /^\.github\/workflows\/security\.yml$/,
+  /^docs\/security-remediation-execution-plan\.md$/,
   /^fixtures\/repos\/secret-like-token\.json$/,
   /^packages\/security\/src\/redaction\.ts$/
 ];

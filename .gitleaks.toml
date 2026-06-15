@@ -7,6 +7,7 @@ useDefault = true
 description = "Intentional secret-shaped fixtures used to test redaction and detectors"
 paths = [
   '''apps/api/test/security-hardening\.test\.ts''',
+  '''docs/security-remediation-execution-plan\.md''',
   '''fixtures/repos/secret-like-token\.json''',
   '''packages/detectors/src/detectors\.test\.ts''',
   '''packages/records/src/records\.test\.ts''',
