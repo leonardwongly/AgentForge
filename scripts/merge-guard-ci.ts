@@ -193,6 +193,12 @@ function statusBadge(status: string): string {
   return status === "block" ? "BLOCK" : status === "warn" ? "WARN" : "PASS";
 }
 
+/** Escape a value for a Markdown table cell (backslash, pipe, newlines) and cap length. */
+function mdCell(value: string, max = 200): string {
+  const escaped = value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, " ").trim();
+  return escaped.length > max ? `${escaped.slice(0, max - 3)}...` : escaped;
+}
+
 function buildSummary(pr: PullRequestInput, result: ReturnType<typeof evaluateMergeGuard>): string {
   const lines: string[] = [];
   lines.push("## AgentForge Merge Guard");
@@ -212,7 +218,7 @@ function buildSummary(pr: PullRequestInput, result: ReturnType<typeof evaluateMe
     lines.push("| --- | --- | --- | --- |");
     for (const finding of result.findings) {
       lines.push(
-        `| \`${finding.type}\` | ${finding.path ?? "-"} | ${finding.severity ?? "-"} | ${finding.evidence.replace(/\|/g, "\\|").slice(0, 120)} |`
+        `| \`${finding.type}\` | ${mdCell(finding.path ?? "-")} | ${finding.severity ?? "-"} | ${mdCell(finding.evidence, 160)} |`
       );
     }
   }
@@ -332,4 +338,7 @@ async function main(): Promise<void> {
   process.exit(result.status === "block" ? 1 : 0);
 }
 
-void main();
+main().catch((error: unknown) => {
+  console.error("AgentForge Merge Guard failed:", error);
+  process.exit(1);
+});
