@@ -16,3 +16,7 @@ overrides:
   # tsx/vitest pull esbuild transitively at 0.27.x; this override pins the fixed
   # version across the workspace regardless of their declared ranges.
   esbuild: 0.28.1
+  # Security: force @hono/node-server >= 1.19.13 (GHSA-92pp-h63x-v22m, serveStatic
+  # middleware bypass via repeated slashes). Pulled transitively by Prisma 7 via
+  # prisma -> @prisma/dev (dev-only tooling); pinned to the patched 1.19.x.
+  "@hono/node-server": 1.19.14
