@@ -265,6 +265,74 @@ describe("deterministic detectors", () => {
     );
   });
 
+  it("treats env-var reads, pinned action SHAs, and template expressions as advisory, not critical", () => {
+    const facts = extractVerifiedFacts(
+      {
+        repositoryFullName: "acme/app",
+        pullRequestNumber: 18,
+        title: "Wire CI token",
+        authorLogin: "sam",
+        baseBranch: "main",
+        headBranch: "ci/token",
+        headSha: "sha18",
+        changedFiles: [
+          {
+            filename: "scripts/ci.ts",
+            status: "modified",
+            patch: "+const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;"
+          },
+          {
+            filename: ".github/workflows/build.yml",
+            status: "modified",
+            patch:
+              "+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3\n" +
+              "+        env:\n+          GITHUB_TOKEN: ${{ github.token }}"
+          }
+        ]
+      },
+      fintechConfig()
+    ).filter((fact) => fact.type === "secret_like_value_detected");
+
+    // Env-var reads, pinned SHAs, and ${{ }} expressions are not credentials: never critical.
+    expect(facts.every((fact) => fact.severity === "low")).toBe(true);
+    expect(
+      facts.some(
+        (fact) =>
+          fact.severity === "critical" || fact.metadata?.secretCategory === "credential_like"
+      )
+    ).toBe(false);
+  });
+
+  it("ignores package.json scripts entries but still flags real dependency additions from patches", () => {
+    const facts = extractVerifiedFacts(
+      {
+        repositoryFullName: "acme/app",
+        pullRequestNumber: 19,
+        title: "Add a script and a dependency",
+        authorLogin: "sam",
+        baseBranch: "main",
+        headBranch: "chore/scripts",
+        headSha: "sha19",
+        changedFiles: [
+          {
+            filename: "package.json",
+            status: "modified",
+            patch:
+              '@@\n   "scripts": {\n+    "merge-guard": "tsx scripts/merge-guard-ci.ts",\n     "build": "tsc"\n   },\n' +
+              '   "dependencies": {\n+    "left-pad": "2.0.0",\n     "zod": "4.4.3"\n   }'
+          }
+        ]
+      },
+      fintechConfig()
+    );
+    const addedPackages = facts
+      .filter((fact) => fact.type === "dependency_added")
+      .map((fact) => fact.metadata?.package);
+
+    expect(addedPackages).toContain("left-pad");
+    expect(addedPackages).not.toContain("merge-guard");
+  });
+
   it("handles a 500-file PR without unbounded detector work", () => {
     const pr: PullRequestInput = {
       repositoryFullName: "acme/large-pr",
