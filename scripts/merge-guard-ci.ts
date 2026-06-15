@@ -17,7 +17,7 @@
  * (i.e. enforce mode with unresolved requirements); `warn`/`pass` exit 0.
  */
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 import type {
   ChangedFile,
@@ -30,6 +30,10 @@ import {
   getPolicyPack,
   parsePolicyYaml
 } from "../packages/policy/src/index.ts";
+import { createChangeControlRecord } from "../packages/records/src/index.ts";
+import type { MetadataStoragePolicy } from "../packages/security/src/index.ts";
+
+const COMMENT_MARKER = "<!-- agentforge-merge-guard -->";
 
 interface GhReview {
   user?: { login?: string };
@@ -177,6 +181,40 @@ async function fetchReviews(repo: string, prNumber: number): Promise<PullRequest
       }));
   } catch {
     return [];
+  }
+}
+
+/** Create or update a single sticky PR comment carrying the Merge Guard verdict. */
+async function upsertPrComment(repo: string, prNumber: number, body: string): Promise<void> {
+  const token = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN;
+  if (!token || !prNumber) {
+    return;
+  }
+  const headers = {
+    authorization: `Bearer ${token}`,
+    accept: "application/vnd.github+json",
+    "user-agent": "agentforge-merge-guard",
+    "content-type": "application/json"
+  };
+  const base = `https://api.github.com/repos/${repo}`;
+  const payload = JSON.stringify({ body: `${COMMENT_MARKER}\n${body}` });
+  try {
+    const listRes = await fetch(`${base}/issues/${prNumber}/comments?per_page=100`, { headers });
+    if (listRes.ok) {
+      const comments = (await listRes.json()) as Array<{ id: number; body?: string }>;
+      const existing = comments.find((comment) => (comment.body ?? "").includes(COMMENT_MARKER));
+      if (existing) {
+        await fetch(`${base}/issues/comments/${existing.id}`, {
+          method: "PATCH",
+          headers,
+          body: payload
+        });
+        return;
+      }
+    }
+    await fetch(`${base}/issues/${prNumber}/comments`, { method: "POST", headers, body: payload });
+  } catch (error) {
+    console.error("AgentForge Merge Guard: failed to post PR comment:", error);
   }
 }
 
@@ -331,10 +369,35 @@ async function main(): Promise<void> {
     }
   }
   console.log(summary);
+
+  // Durable, redacted Change Control Record - the product's core auditable output.
+  const storagePolicy: MetadataStoragePolicy = {
+    sourceCodeStorage: false,
+    fullDiffRetention: "disabled",
+    redactSecrets: true
+  };
+  const record = createChangeControlRecord({
+    organizationId: `github:${repositoryFullName.split("/")[0] ?? "local"}`,
+    repositoryId: repositoryFullName,
+    pr: fullInput,
+    policyResult: result,
+    storagePolicy
+  });
+  const recordPath = process.env.MERGE_GUARD_RECORD_PATH ?? "merge-guard-record.json";
+  try {
+    writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`);
+    console.log(`Change Control Record written to ${recordPath}`);
+  } catch (error) {
+    console.error("AgentForge Merge Guard: failed to write Change Control Record:", error);
+  }
+
+  if (pr) {
+    await upsertPrComment(repositoryFullName, input.pullRequestNumber ?? 0, summary);
+  }
+
   console.log(
     `\nAgentForge Merge Guard decision: ${result.status.toUpperCase()} (mode=${result.mode}, findings=${result.findings.length})`
   );
-
   process.exit(result.status === "block" ? 1 : 0);
 }
 

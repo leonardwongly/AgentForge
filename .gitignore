@@ -35,3 +35,4 @@ apps/android/local.properties
 apps/ios/**/DerivedData/
 apps/ios/**/*.xcuserdata/
 apps/ios/**/*.xcuserstate
+merge-guard-record.json
