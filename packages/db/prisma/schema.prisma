@@ -59,6 +59,8 @@ model Organization {
   usageEvents       UsageEvent[]
   retentionSettings RetentionSetting?
   ownerMappings     OwnerMapping[]
+  webhookDeliveries WebhookDelivery[]
+  exportJobs        ExportJob[]
 
   @@index([slug])
 }
@@ -312,6 +314,7 @@ model WebhookDelivery {
   lastReplayedAt            DateTime?
   lastReplayedBy            String?
   createdAt                 DateTime  @default(now())
+  organization              Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([event, action, createdAt])
   @@index([organizationId, createdAt])
@@ -333,6 +336,7 @@ model ExportJob {
   truncated            Boolean  @default(false)
   content              String
   createdAt            DateTime @default(now())
+  organization         Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId, createdAt])
   @@index([actor, createdAt])
@@ -357,7 +361,7 @@ model ChangeControlRecord {
   decisionJson          Json?
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
-  pullRequest           PullRequest      @relation(fields: [pullRequestId], references: [id], onDelete: Cascade)
+  pullRequest           PullRequest      @relation(fields: [pullRequestId], references: [id], onDelete: Restrict)
 
   @@index([repositoryFullName, pullRequestNumber])
   @@index([checkStatus, updatedAt])
@@ -386,7 +390,7 @@ model AuditEvent {
   policyPackVersion String?
   metadataJson      Json?
   createdAt         DateTime     @default(now())
-  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   repository        Repository?  @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
   pullRequest       PullRequest? @relation(fields: [pullRequestId], references: [id], onDelete: SetNull)
 

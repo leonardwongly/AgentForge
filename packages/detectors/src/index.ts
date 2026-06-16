@@ -30,6 +30,11 @@ const defaultOptions: Required<DetectorOptions> = {
   maxFiles: 1_000
 };
 
+// Secret scanning runs regexes over attacker-controlled diff additions. Scanning
+// megabytes is low value and a CPU-DoS amplifier, so the slice fed to the secret
+// scanner is capped well below maxPatchBytes.
+const SECRET_SCAN_MAX_BYTES = 65_536;
+
 const defaultCiWorkflowPaths = [
   ".github/workflows/**",
   ".gitlab-ci.yml",
@@ -442,7 +447,11 @@ export function detectSecretLikeValues(
   const merged = { ...defaultOptions, ...options };
   const facts: VerifiedFact[] = [];
   for (const file of files) {
-    const additions = addedLines(boundedPatch(file.patch, merged.maxPatchBytes));
+    const allAdditions = addedLines(boundedPatch(file.patch, merged.maxPatchBytes));
+    const additions =
+      allAdditions.length > SECRET_SCAN_MAX_BYTES
+        ? allAdditions.slice(0, SECRET_SCAN_MAX_BYTES)
+        : allAdditions;
     const found = detectSecrets(additions);
     for (const match of found) {
       const classification = classifySecretFinding(match, file.filename);

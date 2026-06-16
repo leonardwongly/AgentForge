@@ -100,7 +100,7 @@ describe("API route plugin contracts", () => {
           content: "*.ts @platform\n/docs/ @docs-team",
           changedPaths: ["src/app.ts", "docs/readme.md"]
         }),
-        headers: { "content-type": "application/json" }
+        headers: { "content-type": "application/json", ...actorHeaders() }
       });
       expect(codeowners.statusCode).toBe(200);
       expect(codeowners.json()).toMatchObject({ suggestions: expect.any(Array) });

@@ -12,7 +12,7 @@ import {
   type PullRequestInput,
   type VerifiedFact
 } from "@agentforge/core";
-import { createPrismaClient, type PrismaClient } from "@agentforge/db";
+import { createPrismaClient, runWithOrgContext, type PrismaClient } from "@agentforge/db";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/detectors";
 import {
   buildCheckRunPayload,
@@ -221,12 +221,14 @@ export async function processMergeGuardEvaluationJob(
   }
 
   const persistedRecord = prisma
-    ? await ensureWorkerRecord({
-        prisma,
-        record,
-        pr,
-        envelope: data.envelope
-      })
+    ? await runWithOrgContext(runtime.organizationId, () =>
+        ensureWorkerRecord({
+          prisma,
+          record,
+          pr,
+          envelope: data.envelope
+        })
+      )
     : undefined;
   const checkRun = buildCheckRunPayload(pr, result);
   const published = await publishCheckOnce({
@@ -246,15 +248,17 @@ export async function processMergeGuardEvaluationJob(
   });
 
   if (prisma) {
-    await persistWorkerRecord({
-      prisma,
-      record,
-      pr,
-      checkConclusion: checkRun.conclusion,
-      publishedCheckRunId: published.id,
-      envelope: data.envelope,
-      persistedRecord
-    });
+    await runWithOrgContext(runtime.organizationId, () =>
+      persistWorkerRecord({
+        prisma,
+        record,
+        pr,
+        checkConclusion: checkRun.conclusion,
+        publishedCheckRunId: published.id,
+        envelope: data.envelope,
+        persistedRecord
+      })
+    );
   }
 
   return {

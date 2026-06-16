@@ -383,28 +383,46 @@ function codeownersEmailOwner(owner: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(owner.trim());
 }
 
+const GLOBSTAR_SEGMENTS = "(?:[^/]+/)*";
+const GLOBSTAR_ANY = ".*";
+
 function globToRegexBody(glob: string): string {
-  let body = "";
+  const tokens: string[] = [];
+  const push = (token: string): void => {
+    // Collapse consecutive identical unbounded star groups. A pattern like
+    // "**/**/foo" would otherwise emit adjacent "(?:[^/]+/)*(?:[^/]+/)*foo" — the
+    // classic ambiguous-partition gadget that makes a non-matching path backtrack
+    // super-linearly (cubic). Collapsing is exactly semantics-preserving because
+    // R*R* === R* and .*.* === .* (AF-SEC ReDoS hardening; the globstar count and
+    // pattern-length caps remain as defense-in-depth).
+    if (
+      (token === GLOBSTAR_SEGMENTS || token === GLOBSTAR_ANY) &&
+      tokens[tokens.length - 1] === token
+    ) {
+      return;
+    }
+    tokens.push(token);
+  };
   for (let index = 0; index < glob.length; index += 1) {
     const char = glob[index];
     const next = glob[index + 1];
     if (char === "*" && next === "*") {
       if (glob[index + 2] === "/") {
-        body += "(?:[^/]+/)*";
+        push(GLOBSTAR_SEGMENTS);
         index += 2;
       } else {
-        body += ".*";
+        push(GLOBSTAR_ANY);
         index += 1;
       }
     } else if (char === "*") {
-      body += "[^/]*";
+      push("[^/]*");
     } else if (char === "?") {
-      body += "[^/]";
+      push("[^/]");
     } else {
-      body += escapeRegex(char ?? "");
+      push(escapeRegex(char ?? ""));
     }
   }
-  return body;
+  return tokens.join("");
 }
 
 function normalizePath(path: string): string {

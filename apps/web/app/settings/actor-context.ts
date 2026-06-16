@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { readDashboardSessionFromCookieHeader } from "../auth/session";
 
 export type DashboardActorContext = {
@@ -29,12 +30,36 @@ const rolePattern = /^[a-z][a-z0-9_-]{0,63}$/u;
 const organizationPattern = /^[A-Za-z0-9_.-]{1,128}$/u;
 const localOrganizationId = "org_local";
 
+const SIGNATURE_WINDOW_SECONDS = 5 * 60;
+// Best-effort in-process replay cache for signed inbound identity headers.
+// Per-instance only; the timestamp window bounds replay regardless.
+const seenDashboardSignatures = new Map<string, number>();
+
+function registerDashboardSignatureUse(signature: string, nowMs: number): boolean {
+  if (seenDashboardSignatures.size > 20_000) {
+    for (const [key, expiry] of seenDashboardSignatures) {
+      if (expiry <= nowMs) {
+        seenDashboardSignatures.delete(key);
+      }
+    }
+  }
+  const existing = seenDashboardSignatures.get(signature);
+  if (existing !== undefined && existing > nowMs) {
+    return false;
+  }
+  seenDashboardSignatures.set(signature, nowMs + SIGNATURE_WINDOW_SECONDS * 1000);
+  return true;
+}
+
 export function resolveDashboardActorContext(
   input: ActorContextInput = {}
 ): DashboardActorContext | undefined {
   const env = input.env ?? process.env;
   if (env.AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS === "true" && input.headers) {
-    const fromHeaders = dashboardActorFromTrustedHeaders(input.headers);
+    const fromHeaders = dashboardActorFromTrustedHeaders(
+      input.headers,
+      env.AGENTFORGE_DASHBOARD_PROXY_SECRET
+    );
     if (fromHeaders) {
       return fromHeaders;
     }
@@ -62,15 +87,60 @@ export function dashboardActorErrorMessage(): string {
 }
 
 function dashboardActorFromTrustedHeaders(
-  headers: HeaderReader
+  headers: HeaderReader,
+  secret: string | undefined,
+  now: number = Date.now()
 ): DashboardActorContext | undefined {
-  const login = safeActorValue(headers.get("x-agentforge-authenticated-actor"));
-  const role = safeRoleValue(headers.get("x-agentforge-authenticated-role"));
-  const organizationId = safeOrganizationValue(
-    headers.get("x-agentforge-authenticated-organization")
-  );
-  return login && role && organizationId
-    ? { login, role, organizationId, source: "trusted_headers" }
+  // Fail closed: trusted identity headers are honored ONLY when the ingress
+  // proxy signs them with the shared secret (same HMAC-SHA256 scheme the API
+  // uses). Without this, anyone able to reach the dashboard directly could
+  // spoof x-agentforge-authenticated-* headers and the dashboard would re-sign
+  // them for the API (AF-SEC M1).
+  if (!secret) {
+    return undefined;
+  }
+  const login = headers.get("x-agentforge-authenticated-actor")?.trim() || undefined;
+  const role = headers.get("x-agentforge-authenticated-role")?.trim() || undefined;
+  const organizationId =
+    headers.get("x-agentforge-authenticated-organization")?.trim() || undefined;
+  const timestampStr = headers.get("x-agentforge-signature-timestamp")?.trim() || undefined;
+  const signatureStr = headers.get("x-agentforge-signature")?.trim() || undefined;
+  const nonceStr = headers.get("x-agentforge-signature-nonce")?.trim() || undefined;
+  if (!login || !role || !organizationId || !timestampStr || !signatureStr) {
+    return undefined;
+  }
+  const timestamp = Number.parseInt(timestampStr, 10);
+  if (
+    Number.isNaN(timestamp) ||
+    Math.abs(Math.floor(now / 1000) - timestamp) > SIGNATURE_WINDOW_SECONDS
+  ) {
+    return undefined;
+  }
+  if (!/^[a-fA-F0-9]+$/u.test(signatureStr)) {
+    return undefined;
+  }
+  const payload = nonceStr
+    ? [timestampStr, nonceStr, login, role, organizationId].join(":")
+    : [timestampStr, login, role, organizationId].join(":");
+  const expected = createHmac("sha256", secret).update(payload).digest("hex");
+  const provided = Buffer.from(signatureStr, "hex");
+  const expectedBuf = Buffer.from(expected, "hex");
+  if (provided.length !== expectedBuf.length || !timingSafeEqual(provided, expectedBuf)) {
+    return undefined;
+  }
+  if (nonceStr && !registerDashboardSignatureUse(signatureStr, now)) {
+    return undefined;
+  }
+  const safeLogin = safeActorValue(login);
+  const safeRole = safeRoleValue(role);
+  const safeOrganizationId = safeOrganizationValue(organizationId);
+  return safeLogin && safeRole && safeOrganizationId
+    ? {
+        login: safeLogin,
+        role: safeRole,
+        organizationId: safeOrganizationId,
+        source: "trusted_headers"
+      }
     : undefined;
 }
 

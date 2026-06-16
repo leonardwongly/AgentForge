@@ -63,7 +63,9 @@ vi.mock("@agentforge/db", () => {
   }
   return {
     PrismaClient: MockPrismaClient,
-    createPrismaClient: () => new MockPrismaClient()
+    createPrismaClient: () => new MockPrismaClient(),
+    runWithOrgContext: <T>(_organizationId: string, callback: () => Promise<T> | T) =>
+      Promise.resolve(callback())
   };
 });
 

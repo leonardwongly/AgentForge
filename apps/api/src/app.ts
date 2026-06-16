@@ -21,7 +21,7 @@ import {
   RedisCacheManager,
   getMembershipCacheKey
 } from "@agentforge/core";
-import { createPrismaClient, type PrismaClient } from "@agentforge/db";
+import { createPrismaClient, enterOrgContext, type PrismaClient } from "@agentforge/db";
 import {
   createGithubAppToken,
   createGithubInstallationToken,
@@ -58,6 +58,7 @@ import {
   requireApiActor,
   requireOrganizationAccess,
   requireRole,
+  resolveApiActor,
   type ApiActor
 } from "./auth.js";
 import { evaluateFixturePr } from "./evaluation.js";
@@ -437,6 +438,13 @@ const recordScopedActionSchema = z
     recordId: z.string().trim().min(1).max(240).optional()
   })
   .strict();
+const overrideRequestSchema = z.object({
+  // actorRole is intentionally ignored by the handler (the authenticated actor's
+  // role is authoritative); accepted here only so legacy clients are not rejected.
+  actorRole: z.string().trim().max(64).optional(),
+  reason: z.string().trim().max(1_000).optional(),
+  scope: z.enum(["pr", "finding", "evidence", "reviewer"]).optional()
+});
 const dataHandlingPatchSchema = z
   .object({
     sourceCodeStorage: z.boolean().optional(),
@@ -683,9 +691,15 @@ export function createApp(
         actorRole: actor.role
       }
     });
-  const recordsForAction = async (recordId?: string): Promise<ChangeControlRecord[]> => {
+  const recordsForAction = async (
+    organizationId: string,
+    recordId?: string
+  ): Promise<ChangeControlRecord[]> => {
     if (!recordId) {
-      return listRecords();
+      // Scope the fallback to the actor's organization so an omitted recordId can
+      // never enumerate other tenants' records (defense-in-depth for the
+      // per-iteration org check at the call sites) (AF-SEC L4 fix).
+      return listRecords({ organizationId });
     }
     const record = await getRecord(recordId);
     return record ? [record] : [];
@@ -760,6 +774,38 @@ export function createApp(
   void app.register(rateLimit, {
     max: config.nodeEnv === "test" ? 1_000 : 120,
     timeWindow: "1 minute"
+  });
+
+  // Global error handler: log full detail server-side (the logger redact list
+  // scrubs secrets) but never serialize raw error messages or stack traces to
+  // clients. Routes that need specific client messages set them explicitly; this
+  // only catches otherwise-uncaught errors (AF-SEC L3 fix).
+  app.setErrorHandler((error, request, reply) => {
+    const statusCode =
+      typeof (error as { statusCode?: number }).statusCode === "number"
+        ? (error as { statusCode: number }).statusCode
+        : 500;
+    request.log.error({ err: error, requestId: request.id, statusCode }, "Unhandled request error");
+    const clientMessage =
+      statusCode >= 500 ? "Internal server error" : "Request could not be processed";
+    return reply.code(statusCode).send({ error: clientMessage, requestId: request.id });
+  });
+
+  // Bind the authenticated actor's organization to the async context so the
+  // Prisma RLS extension scopes tenant tables to it (AF-SEC M4 defense-in-depth).
+  // Best-effort and fail-open: unauthenticated routes (webhooks, health) and any
+  // resolution error simply leave the context unset, which the RLS policies treat
+  // permissively — route-level requireOrganizationAccess remains the primary check.
+  app.addHook("onRequest", async (request) => {
+    try {
+      const actor = resolveApiActor(request);
+      if (actor) {
+        enterOrgContext(actor.organizationId);
+      }
+    } catch {
+      // Identity resolution problems are surfaced by the route's requireApiActor;
+      // never let context-binding fail a request.
+    }
   });
 
   app.addHook("onClose", async () => {
@@ -855,6 +901,7 @@ export function createApp(
     queueReplaySchema,
     recordPageQuerySchema,
     recordScopedActionSchema,
+    overrideRequestSchema,
     recordsForAction,
     recordsVisibleTo,
     recomputeRequirementStatus,

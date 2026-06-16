@@ -54,6 +54,7 @@ const envSchema = z.object({
   EXPORT_STORAGE_REGION: optionalStringFromEnv,
   SESSION_SECRET: optionalStringFromEnv,
   AGENTFORGE_API_PROXY_SECRET: optionalStringFromEnv,
+  AGENTFORGE_DASHBOARD_PROXY_SECRET: optionalStringFromEnv,
   AGENTFORGE_API_TRUST_PROXY_HEADERS: booleanFromEnv.default(false),
   AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS: booleanFromEnv.default(false),
   AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: booleanFromEnv.default(false),
@@ -96,6 +97,7 @@ export type AgentForgeConfig = {
     dashboardAllowLocalActor: boolean;
     proxyStripsIdentityHeaders: boolean;
     apiProxySecret: string | undefined;
+    dashboardProxySecret: string | undefined;
   };
   dashboard: {
     organizationId: string | undefined;
@@ -138,7 +140,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConf
       dashboardTrustProxyHeaders: parsed.AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS ?? false,
       dashboardAllowLocalActor: parsed.AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR ?? false,
       proxyStripsIdentityHeaders: parsed.AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS ?? false,
-      apiProxySecret: parsed.AGENTFORGE_API_PROXY_SECRET
+      apiProxySecret: parsed.AGENTFORGE_API_PROXY_SECRET,
+      dashboardProxySecret: parsed.AGENTFORGE_DASHBOARD_PROXY_SECRET
     },
     dashboard: {
       organizationId: parsed.AGENTFORGE_DASHBOARD_ORGANIZATION
@@ -222,6 +225,11 @@ function validateProductionConfig(config: AgentForgeConfig): void {
   }
   if (!config.auth.dashboardTrustProxyHeaders) {
     errors.push("AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS must be true in production.");
+  }
+  if (config.auth.dashboardTrustProxyHeaders && !config.auth.dashboardProxySecret) {
+    errors.push(
+      "AGENTFORGE_DASHBOARD_PROXY_SECRET must be configured when AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS is enabled so inbound identity headers are cryptographically verified."
+    );
   }
   if (config.auth.apiAllowLocalActorHeaders) {
     errors.push("AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS must be false in production.");

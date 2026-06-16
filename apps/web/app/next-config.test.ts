@@ -1,56 +1,24 @@
 import { pathToFileURL } from "node:url";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
-const mutableEnvKeys = ["NODE_ENV", "API_BASE_URL"] as const;
-const originalEnv = new Map<string, string | undefined>(
-  mutableEnvKeys.map((key) => [key, process.env[key]])
-);
-const mutableEnv = process.env as Record<string, string | undefined>;
-
-describe("Next.js security headers", () => {
-  afterEach(() => {
-    for (const key of mutableEnvKeys) {
-      const originalValue = originalEnv.get(key);
-      if (originalValue === undefined) {
-        delete mutableEnv[key];
-      } else {
-        mutableEnv[key] = originalValue;
-      }
-    }
-  });
-
-  it("enforces production CSP without eval or broad connect-src", async () => {
-    mutableEnv.NODE_ENV = "production";
-    mutableEnv.API_BASE_URL = "https://api.agentforge.example";
-
+describe("Next.js static security headers", () => {
+  it("sets hardening headers and delegates CSP to middleware", async () => {
     const config = await loadNextConfig();
     const headers = await config.headers();
     const headerEntries = headers[0]?.headers ?? [];
-    const csp = headerEntries.find((header) => header.key === "Content-Security-Policy");
+    const keys = headerEntries.map((header) => header.key);
 
-    expect(csp?.value).toBeDefined();
-    expect(
-      headerEntries.some((header) => header.key === "Content-Security-Policy-Report-Only")
-    ).toBe(false);
-    expect(csp!.value).toContain("connect-src 'self' https://api.agentforge.example");
-    expect(cspDirective(csp!.value, "connect-src")).not.toContain("https:");
-    expect(csp!.value).not.toContain("'unsafe-eval'");
-  });
+    expect(keys).toContain("X-Frame-Options");
+    expect(keys).toContain("X-Content-Type-Options");
+    expect(keys).toContain("Cross-Origin-Opener-Policy");
+    expect(keys).toContain("Permissions-Policy");
 
-  it("keeps development CSP report-only with localhost API access", async () => {
-    mutableEnv.NODE_ENV = "development";
-    mutableEnv.API_BASE_URL = "http://localhost:4000";
-
-    const config = await loadNextConfig();
-    const headers = await config.headers();
-    const headerEntries = headers[0]?.headers ?? [];
-    const csp = headerEntries.find(
-      (header) => header.key === "Content-Security-Policy-Report-Only"
-    );
-
-    expect(csp?.value).toContain("connect-src 'self' http://localhost:4000");
-    expect(csp?.value).toContain("'unsafe-eval'");
+    // The CSP is emitted per-request by middleware.ts with a fresh nonce, so the
+    // static config must NOT also emit one (that would produce a conflicting,
+    // nonce-less policy).
+    expect(keys).not.toContain("Content-Security-Policy");
+    expect(keys).not.toContain("Content-Security-Policy-Report-Only");
   });
 });
 
@@ -65,12 +33,4 @@ async function loadNextConfig(): Promise<{
     };
   };
   return mod.default;
-}
-
-function cspDirective(value: string, name: string): string[] {
-  const directive = value
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(`${name} `));
-  return directive?.split(/\s+/u).slice(1) ?? [];
 }

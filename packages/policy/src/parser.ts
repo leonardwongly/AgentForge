@@ -13,7 +13,11 @@ export function parsePolicyYaml(contentYaml: string): ParsedPolicy {
   const result = policyConfigSchema.safeParse(parsed);
   if (!result.success) {
     return {
-      config: policyConfigSchema.parse({ version: 1, agentforge: { mode: "observe" } }),
+      // Fail closed: an unparseable policy defaults to the strictest mode rather
+      // than "observe" (which never blocks). Callers must still inspect `errors`
+      // and reject the policy, but if a future caller uses `config` without
+      // checking, this fails in the safe (enforcing) direction (AF-SEC fix).
+      config: policyConfigSchema.parse({ version: 1, agentforge: { mode: "enforce" } }),
       contentHash: hashPolicy(contentYaml),
       errors: result.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`)
     };

@@ -11,7 +11,7 @@ import {
   verifyGithubSignature,
   type GithubAdapterClient
 } from "./index.js";
-import { type PolicyResult, RedisCacheManager } from "@agentforge/core";
+import { type PolicyResult, RedisCacheManager, getFileContentCacheKey } from "@agentforge/core";
 
 describe("github integration", () => {
   it("validates webhook signatures", () => {
@@ -197,7 +197,7 @@ describe("github integration", () => {
     const secret = `ghp_${"x".repeat(36)}`;
     const currentPackage = Buffer.from(JSON.stringify({ token: secret })).toString("base64");
     const headSha = "a".repeat(40);
-    const cacheKey = `agentforge:cache:file-content:acme:payments:${headSha}:package.json`;
+    const cacheKey = getFileContentCacheKey("acme", "payments", headSha, "package.json");
     const client: GithubAdapterClient = {
       pulls: {
         get: async () => ({

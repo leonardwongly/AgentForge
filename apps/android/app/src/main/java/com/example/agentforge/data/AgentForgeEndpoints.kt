@@ -46,5 +46,5 @@ object EndpointValidator {
   }
 
   private fun String.isLocalDevelopmentHost(): Boolean =
-    this == "localhost" || this == "127.0.0.1" || this == "10.0.2.2" || this.endsWith(".local")
+    this == "localhost" || this == "127.0.0.1" || this == "10.0.2.2"
 }

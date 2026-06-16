@@ -311,6 +311,7 @@ function checkProductionAuthDocs(): CheckResult {
     "SESSION_SECRET",
     "GITHUB_WEBHOOK_SECRET",
     "AGENTFORGE_API_PROXY_SECRET",
+    "AGENTFORGE_DASHBOARD_PROXY_SECRET",
     "AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR",
     "Do not use local actor"
   ];

@@ -7,6 +7,12 @@ export type RedactionMatch = {
     | "bearer_token"
     | "database_url"
     | "api_key_assignment"
+    | "slack_token"
+    | "google_api_key"
+    | "stripe_key"
+    | "sendgrid_key"
+    | "openai_key"
+    | "npm_token"
     | "high_entropy";
   category: "credential_like" | "local_placeholder";
   risk: "high" | "low";
@@ -18,14 +24,30 @@ export type RedactionMatch = {
 
 const REDACTION = "[REDACTED]";
 
+// Upper bound on input length scanned by detectSecrets. Secret scanning of very
+// large blobs (e.g. a 1MB diff) is low value and a DoS amplifier; detection is
+// truncated to this many characters. redactSecrets is NOT truncated (it must
+// never emit an un-redacted tail) and instead relies on every pattern being
+// linear-time (no unbounded backtracking).
+const MAX_SECRET_SCAN_LENGTH = 65_536;
+
 const patterns: Array<{ kind: RedactionMatch["kind"]; regex: RegExp }> = [
   {
+    // Bounded inner quantifier ({0,N}?) keeps this linear-time. An unbounded
+    // `[\s\S]*?` allowed a quadratic (O(n^2)) ReDoS when many unterminated
+    // BEGIN markers appeared in attacker-controlled input (AF-SEC ReDoS fix).
     kind: "private_key",
-    regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g
+    regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{0,16384}?-----END [A-Z ]*PRIVATE KEY-----/g
   },
   { kind: "github_token", regex: /\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b/g },
   { kind: "aws_access_key", regex: /\bAKIA[0-9A-Z]{16}\b/g },
   { kind: "jwt", regex: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
+  { kind: "slack_token", regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
+  { kind: "stripe_key", regex: /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}\b/g },
+  { kind: "sendgrid_key", regex: /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/g },
+  { kind: "openai_key", regex: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g },
+  { kind: "google_api_key", regex: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  { kind: "npm_token", regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
   { kind: "bearer_token", regex: /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b/gi },
   {
     kind: "database_url",
@@ -51,10 +73,12 @@ export function redactSecrets(input: string): string {
 }
 
 export function detectSecrets(input: string): RedactionMatch[] {
+  const scanned =
+    input.length > MAX_SECRET_SCAN_LENGTH ? input.slice(0, MAX_SECRET_SCAN_LENGTH) : input;
   const matches: RedactionMatch[] = [];
   for (const { kind, regex } of patterns) {
     regex.lastIndex = 0;
-    for (const match of input.matchAll(regex)) {
+    for (const match of scanned.matchAll(regex)) {
       const value = match[0];
       matches.push({ kind, value, redacted: preservePrefix(value), ...classifyMatch(kind, value) });
     }

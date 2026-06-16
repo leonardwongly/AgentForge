@@ -46,9 +46,29 @@ jobs:
       - name: Gitleaks secret scan
         env:
           GITLEAKS_VERSION: 8.28.0
+          # Optional hard pin: set to the known-good sha256 of the linux_x64
+          # tarball for full supply-chain assurance. When set it is enforced in
+          # addition to the published checksums file.
+          GITLEAKS_PINNED_SHA256: ""
         run: |
-          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
-          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
-          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          asset="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL "${base}/${asset}" -o /tmp/gitleaks.tar.gz
+          curl -sSfL "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" -o /tmp/gitleaks_checksums.txt
+          # Verify the downloaded tarball against the release-published checksums.
+          expected="$(grep " ${asset}\$" /tmp/gitleaks_checksums.txt | awk '{print $1}')"
+          if [ -z "${expected}" ]; then
+            echo "::error::No checksum entry found for ${asset}"; exit 1
+          fi
+          if [ -n "${GITLEAKS_PINNED_SHA256}" ] && [ "${GITLEAKS_PINNED_SHA256}" != "${expected}" ]; then
+            echo "::error::Published checksum does not match pinned digest"; exit 1
+          fi
+          echo "${expected}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          # Extract and run as the unprivileged runner user (no sudo / no root install).
+          mkdir -p "${RUNNER_TEMP}/bin"
+          tar -xzf /tmp/gitleaks.tar.gz -C "${RUNNER_TEMP}/bin" gitleaks
+          chmod +x "${RUNNER_TEMP}/bin/gitleaks"
+          export PATH="${RUNNER_TEMP}/bin:${PATH}"
           gitleaks detect --source . --redact --config .gitleaks.toml --verbose
       - run: pnpm --filter @agentforge/security test

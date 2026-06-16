@@ -46,6 +46,7 @@ describe("GitHub OAuth runtime config", () => {
       AGENTFORGE_API_TRUST_PROXY_HEADERS: "true",
       AGENTFORGE_API_PROXY_SECRET: "test-proxy-secret-987654",
       AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+      AGENTFORGE_DASHBOARD_PROXY_SECRET: "test-dashboard-proxy-secret-987654",
       AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS: "true"
     });
 

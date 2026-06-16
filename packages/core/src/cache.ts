@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Redis } from "ioredis";
 
 export interface CacheBackend {
@@ -121,8 +122,19 @@ export class RedisCacheManager implements CacheBackend {
   }
 }
 
+// Cache key components are encoded (and the free-form repo path is hashed) so
+// that distinct inputs can never collapse to the same key. Previously the path
+// was sanitized with a lossy `/`->`_` replacement, allowing `a/package.json`
+// and `a_package.json` to collide; and components were joined with ":" without
+// escaping, so a value containing ":" could forge another key (AF-SEC fix).
+function encodeKeyPart(value: string): string {
+  return encodeURIComponent(value.toLowerCase());
+}
+
 export function getMembershipCacheKey(org: string, teamSlug: string, username: string): string {
-  return `agentforge:cache:membership:${org.toLowerCase()}:${teamSlug.toLowerCase()}:${username.toLowerCase()}`;
+  return `agentforge:cache:membership:${encodeKeyPart(org)}:${encodeKeyPart(teamSlug)}:${encodeKeyPart(
+    username
+  )}`;
 }
 
 export function getFileContentCacheKey(
@@ -131,6 +143,10 @@ export function getFileContentCacheKey(
   ref: string,
   path: string
 ): string {
-  const sanitizedPath = path.replace(/[^a-zA-Z0-9_.-]/g, "_");
-  return `agentforge:cache:file-content:${owner.toLowerCase()}:${repo.toLowerCase()}:${ref.toLowerCase()}:${sanitizedPath}`;
+  // Hash the raw (case-sensitive) path: collision-resistant and fixed length,
+  // so no two distinct paths share a key and the path cannot inject delimiters.
+  const pathHash = createHash("sha256").update(path).digest("hex");
+  return `agentforge:cache:file-content:${encodeKeyPart(owner)}:${encodeKeyPart(repo)}:${encodeKeyPart(
+    ref
+  )}:${pathHash}`;
 }

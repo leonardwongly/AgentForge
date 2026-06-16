@@ -288,7 +288,7 @@ type ResolvedApiRouteContext = {
     githubConnected: boolean;
     ownerMappingsConfigured: boolean;
   }) => unknown;
-  recordsForAction: (recordId?: string) => Promise<ChangeControlRecord[]>;
+  recordsForAction: (organizationId: string, recordId?: string) => Promise<ChangeControlRecord[]>;
   recordsVisibleTo: (actor: ApiActor) => Promise<ChangeControlRecord[]>;
   recordRequiresAction: (record: ChangeControlRecord) => boolean;
   filterAndSortRecords: (
@@ -350,6 +350,11 @@ type ResolvedApiRouteContext = {
   queueReplaySchema: RouteSchema<QueueReplayTarget>;
   recordPageQuerySchema: RouteSchema<RecordPageQuery>;
   recordScopedActionSchema: RouteSchema<RecordScopedAction>;
+  overrideRequestSchema: RouteSchema<{
+    actorRole?: string | undefined;
+    reason?: string | undefined;
+    scope?: "pr" | "finding" | "evidence" | "reviewer" | undefined;
+  }>;
   repositorySettingsPatchSchema: RouteSchema<RepositorySettingsPatch>;
 };
 
@@ -467,6 +472,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     queueReplaySchema,
     recordPageQuerySchema,
     recordScopedActionSchema,
+    overrideRequestSchema,
     recordsForAction,
     recordsVisibleTo,
     recomputeRequirementStatus,
@@ -1168,6 +1174,10 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
   void app.register(async function policyRoutes(app) {
     app.get("/api/policy-packs", async () => ({ policyPacks: builtinPolicyPacks }));
     app.post("/api/codeowners/preview", async (request, reply) => {
+      const actor = requireReadActor(request, reply);
+      if (!actor) {
+        return;
+      }
       const parsed = codeownersPreviewSchema.safeParse(request.body ?? {});
       if (!parsed.success) {
         return reply.code(400).send({
@@ -1579,14 +1589,14 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     );
 
     app.post("/api/pull-requests/:id/evidence", async (request, reply) => {
+      const actor = requireApiActor(request);
+      if (isAuthzFailure(actor)) {
+        return handleAuthzFailure(request, reply, actor);
+      }
       const params = request.params as { id: string };
       const record = await getRecord(params.id);
       if (!record) {
         return reply.code(404).send({ error: "Change Control Record not found" });
-      }
-      const actor = requireApiActor(request);
-      if (isAuthzFailure(actor)) {
-        return handleAuthzFailure(request, reply, actor);
       }
       const tenantAccess = requireOrganizationAccess(
         actor,
@@ -1688,7 +1698,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           }))
         });
       }
-      for (const record of await recordsForAction(parsedBody.data.recordId)) {
+      for (const record of await recordsForAction(actor.organizationId, parsedBody.data.recordId)) {
         const tenantAccess = requireOrganizationAccess(
           actor,
           record.organizationId,
@@ -1761,7 +1771,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           }))
         });
       }
-      for (const record of await recordsForAction(parsedBody.data.recordId)) {
+      for (const record of await recordsForAction(actor.organizationId, parsedBody.data.recordId)) {
         const tenantAccess = requireOrganizationAccess(
           actor,
           record.organizationId,
@@ -1830,7 +1840,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           }))
         });
       }
-      for (const record of await recordsForAction(parsedBody.data.recordId)) {
+      for (const record of await recordsForAction(actor.organizationId, parsedBody.data.recordId)) {
         const tenantAccess = requireOrganizationAccess(
           actor,
           record.organizationId,
@@ -1884,18 +1894,24 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.post("/api/pull-requests/:id/override", async (request, reply) => {
-      const record = await getRecord((request.params as { id: string }).id);
-      if (!record) {
-        return reply.code(404).send({ error: "Change Control Record not found" });
-      }
-      const body = request.body as {
-        actorRole?: string;
-        reason?: string;
-        scope?: "pr" | "finding" | "evidence" | "reviewer";
-      };
       const actor = requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
+      }
+      const parsedBody = overrideRequestSchema.safeParse(request.body ?? {});
+      if (!parsedBody.success) {
+        return reply.code(400).send({
+          error: "Invalid override request",
+          details: parsedBody.error.issues.map((issue) => ({
+            path: issue.path.join("."),
+            message: issue.message
+          }))
+        });
+      }
+      const body = parsedBody.data;
+      const record = await getRecord((request.params as { id: string }).id);
+      if (!record) {
+        return reply.code(404).send({ error: "Change Control Record not found" });
       }
       const tenantAccess = requireOrganizationAccess(actor, record.organizationId, "Override");
       if (!tenantAccess.ok) {

@@ -16,6 +16,13 @@ import {
 import { loadRepositories } from "./data";
 import "./globals.css";
 
+// This dashboard renders authenticated, per-request live data (it reads request
+// identity and fetches Change Control state with `cache: "no-store"`). Force
+// dynamic rendering for the whole route tree so Next.js does not attempt to
+// statically prerender these pages at build time (which fails under the Next 16 /
+// React 19 client-hook dispatcher during export).
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "AgentForge Merge Guard",
   description: "Deterministic, evidence-based pull request change control.",

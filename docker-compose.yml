@@ -2,7 +2,7 @@
 # network exposure on shared or public interfaces (AF-SEC-008).
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
     # Local development only. Do not reuse these credentials outside loopback-bound Compose services.
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-agentforge}
@@ -19,7 +19,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     command:
       [
         "redis-server",
@@ -39,7 +39,7 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
     command: ["server", "/data", "--console-address", ":9001"]
     # Local development only. Use managed object storage and rotated secrets in deployed environments.
     environment:

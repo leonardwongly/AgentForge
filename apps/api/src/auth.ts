@@ -22,6 +22,30 @@ const rolePattern = /^[a-z][a-z0-9_-]{0,63}$/u;
 const organizationPattern = /^[A-Za-z0-9_.-]{1,128}$/u;
 const localOrganizationId = "org_local";
 
+const SIGNATURE_REPLAY_WINDOW_SECONDS = 5 * 60;
+// Best-effort in-process replay cache. Each signed request carries a unique
+// nonce; once a signature is seen it is rejected until its window expires.
+// NOTE: this is per-instance. Multi-instance API deployments behind a load
+// balancer should use sticky routing or a shared store for cross-instance
+// replay protection; the timestamp window still bounds replay regardless.
+const seenSignatures = new Map<string, number>();
+
+function registerSignatureUse(signature: string, nowMs: number): boolean {
+  if (seenSignatures.size > 20_000) {
+    for (const [key, expiry] of seenSignatures) {
+      if (expiry <= nowMs) {
+        seenSignatures.delete(key);
+      }
+    }
+  }
+  const existing = seenSignatures.get(signature);
+  if (existing !== undefined && existing > nowMs) {
+    return false;
+  }
+  seenSignatures.set(signature, nowMs + SIGNATURE_REPLAY_WINDOW_SECONDS * 1000);
+  return true;
+}
+
 export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
   if (process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS === "true") {
     const secret = process.env.AGENTFORGE_API_PROXY_SECRET;
@@ -36,6 +60,7 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
     const orgStr = headerValue(request.headers["x-agentforge-authenticated-organization"]);
     const timestampStr = headerValue(request.headers["x-agentforge-signature-timestamp"]);
     const signatureStr = headerValue(request.headers["x-agentforge-signature"]);
+    const nonceStr = headerValue(request.headers["x-agentforge-signature-nonce"]);
 
     if (!actorStr || !roleStr || !orgStr || !timestampStr || !signatureStr) {
       return undefined;
@@ -47,7 +72,7 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
     if (isNaN(timestamp)) {
       return undefined;
     }
-    if (Math.abs(now - timestamp) > 5 * 60) {
+    if (Math.abs(now - timestamp) > SIGNATURE_REPLAY_WINDOW_SECONDS) {
       return undefined;
     }
 
@@ -56,8 +81,12 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
       return undefined;
     }
 
-    // Reconstruct payload and verify HMAC-SHA256 signature
-    const payload = [timestampStr, actorStr, roleStr, orgStr].join(":");
+    // Reconstruct payload and verify HMAC-SHA256 signature. The nonce (when the
+    // signer includes one) binds the signature to a single request so it can be
+    // rejected on replay.
+    const payload = nonceStr
+      ? [timestampStr, nonceStr, actorStr, roleStr, orgStr].join(":")
+      : [timestampStr, actorStr, roleStr, orgStr].join(":");
     const expectedSignature = createHmac("sha256", secret).update(payload).digest("hex");
 
     const bufA = Buffer.from(signatureStr, "hex");
@@ -69,6 +98,10 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
 
     const actor = actorFromHeaders(actorStr, roleStr, orgStr);
     if (actor) {
+      // Reject replays of a previously seen signed request within the window.
+      if (nonceStr && !registerSignatureUse(signatureStr, Date.now())) {
+        return undefined;
+      }
       return actor;
     }
   }
@@ -128,27 +161,6 @@ export function requireOrganizationAccess(
     statusCode: 403,
     reason: `${action} is scoped to a different organization.`
   };
-}
-
-/**
- * Resolve an authenticated actor or fall back to a system identity.
- *
- * Internal only: do not call this from HTTP route handlers.
- * Use `requireApiActor()` for all request-scoped authentication.
- * This function exists only for internal/worker callers that already
- * operate in a trusted context (AF-SEC-002).
- *
- * @deprecated Use `requireApiActor()` in routes. This function must
- * never be invoked in HTTP request handlers.
- */
-export function actorOrSystem(request: FastifyRequest): ApiActor {
-  return (
-    resolveApiActor(request) ?? {
-      login: "system",
-      role: "system",
-      organizationId: localOrganizationId
-    }
-  );
 }
 
 export function isAuthzFailure(value: ApiActor | AuthzDecision): value is AuthzFailure {

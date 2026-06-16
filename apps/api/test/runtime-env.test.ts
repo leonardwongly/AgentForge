@@ -78,6 +78,7 @@ function configWithAuth(auth: Partial<AgentForgeConfig["auth"]> = {}): AgentForg
       dashboardAllowLocalActor: false,
       proxyStripsIdentityHeaders: false,
       apiProxySecret: "proxy-secret",
+      dashboardProxySecret: undefined,
       ...auth
     },
     dashboard: {

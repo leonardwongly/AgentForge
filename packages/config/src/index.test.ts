@@ -20,6 +20,7 @@ const productionBaseEnv = {
   AGENTFORGE_API_TRUST_PROXY_HEADERS: "true",
   AGENTFORGE_API_PROXY_SECRET: "test-proxy-secret-987654",
   AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+  AGENTFORGE_DASHBOARD_PROXY_SECRET: "test-dashboard-proxy-secret-987654",
   AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS: "true"
 };
 
@@ -70,6 +71,11 @@ describe("AgentForge runtime config", () => {
       "API proxy secret is missing",
       { AGENTFORGE_API_PROXY_SECRET: "" },
       "AGENTFORGE_API_PROXY_SECRET"
+    ],
+    [
+      "dashboard proxy secret is missing",
+      { AGENTFORGE_DASHBOARD_PROXY_SECRET: "" },
+      "AGENTFORGE_DASHBOARD_PROXY_SECRET"
     ]
   ])("fails closed in production when %s", (_name, override, message) => {
     expect(() => loadConfig({ ...productionBaseEnv, ...override })).toThrow(message);

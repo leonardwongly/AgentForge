@@ -1,6 +1,29 @@
+import { createHmac, randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { DASHBOARD_SESSION_COOKIE, createDashboardSessionCookie } from "../auth/session";
 import { dashboardActorErrorMessage, resolveDashboardActorContext } from "./actor-context";
+
+const DASHBOARD_PROXY_SECRET = "test-dashboard-proxy-secret";
+
+function signedTrustedHeaders(
+  identity: { login: string; role: string; organizationId: string },
+  options: { secret?: string; timestamp?: number; nonce?: string } = {}
+): Record<string, string> {
+  const secret = options.secret ?? DASHBOARD_PROXY_SECRET;
+  const timestamp = String(options.timestamp ?? Math.floor(Date.now() / 1000));
+  const nonce = options.nonce ?? randomBytes(8).toString("hex");
+  const signature = createHmac("sha256", secret)
+    .update([timestamp, nonce, identity.login, identity.role, identity.organizationId].join(":"))
+    .digest("hex");
+  return {
+    "x-agentforge-authenticated-actor": identity.login,
+    "x-agentforge-authenticated-role": identity.role,
+    "x-agentforge-authenticated-organization": identity.organizationId,
+    "x-agentforge-signature-timestamp": timestamp,
+    "x-agentforge-signature-nonce": nonce,
+    "x-agentforge-signature": signature
+  };
+}
 
 function headers(values: Record<string, string | undefined>) {
   return {
@@ -11,15 +34,20 @@ function headers(values: Record<string, string | undefined>) {
 }
 
 describe("dashboard actor context", () => {
-  it("uses trusted authenticated headers when explicitly enabled", () => {
+  it("uses trusted authenticated headers when explicitly enabled and signed", () => {
     expect(
       resolveDashboardActorContext({
-        env: { AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true" },
-        headers: headers({
-          "x-agentforge-authenticated-actor": "alex",
-          "x-agentforge-authenticated-role": "platform_admin",
-          "x-agentforge-authenticated-organization": "org-a"
-        }),
+        env: {
+          AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+          AGENTFORGE_DASHBOARD_PROXY_SECRET: DASHBOARD_PROXY_SECRET
+        },
+        headers: headers(
+          signedTrustedHeaders({
+            login: "alex",
+            role: "platform_admin",
+            organizationId: "org-a"
+          })
+        ),
         nodeEnv: "production"
       })
     ).toEqual({
@@ -30,13 +58,99 @@ describe("dashboard actor context", () => {
     });
   });
 
-  it("requires trusted authenticated headers to include organization identity", () => {
+  it("rejects unsigned trusted authenticated headers", () => {
+    expect(
+      resolveDashboardActorContext({
+        env: {
+          AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+          AGENTFORGE_DASHBOARD_PROXY_SECRET: DASHBOARD_PROXY_SECRET
+        },
+        headers: headers({
+          "x-agentforge-authenticated-actor": "alex",
+          "x-agentforge-authenticated-role": "platform_admin",
+          "x-agentforge-authenticated-organization": "org-a"
+        }),
+        nodeEnv: "production"
+      })
+    ).toBeUndefined();
+  });
+
+  it("rejects trusted headers signed with the wrong secret", () => {
+    expect(
+      resolveDashboardActorContext({
+        env: {
+          AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+          AGENTFORGE_DASHBOARD_PROXY_SECRET: DASHBOARD_PROXY_SECRET
+        },
+        headers: headers(
+          signedTrustedHeaders(
+            { login: "alex", role: "platform_admin", organizationId: "org-a" },
+            { secret: "attacker-secret" }
+          )
+        ),
+        nodeEnv: "production"
+      })
+    ).toBeUndefined();
+  });
+
+  it("rejects trusted headers when no dashboard proxy secret is configured", () => {
     expect(
       resolveDashboardActorContext({
         env: { AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true" },
+        headers: headers(
+          signedTrustedHeaders({
+            login: "alex",
+            role: "platform_admin",
+            organizationId: "org-a"
+          })
+        ),
+        nodeEnv: "production"
+      })
+    ).toBeUndefined();
+  });
+
+  it("rejects a replayed signed trusted-header request", () => {
+    const env = {
+      AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+      AGENTFORGE_DASHBOARD_PROXY_SECRET: DASHBOARD_PROXY_SECRET
+    };
+    const signed = signedTrustedHeaders({
+      login: "alex",
+      role: "platform_admin",
+      organizationId: "org-a"
+    });
+    expect(
+      resolveDashboardActorContext({ env, headers: headers(signed), nodeEnv: "production" })
+    ).toEqual({
+      login: "alex",
+      role: "platform_admin",
+      organizationId: "org-a",
+      source: "trusted_headers"
+    });
+    // Same signature replayed within the window is rejected.
+    expect(
+      resolveDashboardActorContext({ env, headers: headers(signed), nodeEnv: "production" })
+    ).toBeUndefined();
+  });
+
+  it("requires trusted authenticated headers to include organization identity", () => {
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const nonce = "fixednonce";
+    const signature = createHmac("sha256", DASHBOARD_PROXY_SECRET)
+      .update([timestamp, nonce, "alex", "platform_admin"].join(":"))
+      .digest("hex");
+    expect(
+      resolveDashboardActorContext({
+        env: {
+          AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+          AGENTFORGE_DASHBOARD_PROXY_SECRET: DASHBOARD_PROXY_SECRET
+        },
         headers: headers({
           "x-agentforge-authenticated-actor": "alex",
-          "x-agentforge-authenticated-role": "platform_admin"
+          "x-agentforge-authenticated-role": "platform_admin",
+          "x-agentforge-signature-timestamp": timestamp,
+          "x-agentforge-signature-nonce": nonce,
+          "x-agentforge-signature": signature
         }),
         nodeEnv: "production"
       })

@@ -1092,6 +1092,7 @@ function labelsFromGithub(value: unknown): string[] {
 }
 
 function isSupportedManifest(filename: string): boolean {
+  const basename = filename.split("/").pop() ?? filename;
   return [
     "package.json",
     "requirements.txt",
@@ -1100,7 +1101,7 @@ function isSupportedManifest(filename: string): boolean {
     "pnpm-lock.yaml",
     "package-lock.json",
     "yarn.lock"
-  ].some((suffix) => filename.endsWith(suffix));
+  ].includes(basename);
 }
 
 async function fetchTextContent(input: {
