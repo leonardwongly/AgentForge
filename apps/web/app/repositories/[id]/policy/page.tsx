@@ -127,10 +127,7 @@ export default async function PolicyEditorPage({ params }: PageProps) {
                       <StatusBadge
                         status={
                           (policy.mode ?? bootstrapPack?.defaultMode) as
-                            | "observe"
-                            | "warn"
-                            | "enforce"
-                            | "optimize"
+                            "observe" | "warn" | "enforce" | "optimize"
                         }
                       />
                     ) : (

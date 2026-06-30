@@ -43,8 +43,7 @@ export async function saveRepositorySettings(formData: FormData): Promise<void> 
   }
 
   const mode = readEnumChoice(formData, "mode", policyModes, returnTo, "Repository mode") as
-    | PolicyModeChoice
-    | undefined;
+    PolicyModeChoice | undefined;
   const fullDiffRetention = readEnumChoice(
     formData,
     "fullDiffRetention",
