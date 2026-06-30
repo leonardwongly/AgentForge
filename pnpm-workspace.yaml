@@ -20,6 +20,12 @@ overrides:
   # middleware bypass via repeated slashes). Pulled transitively by Prisma 7 via
   # prisma -> @prisma/dev (dev-only tooling); pinned to the patched 1.19.x.
   "@hono/node-server": 1.19.14
+  # Security: force form-data >= 4.0.6 (GHSA-hmw2-7cc7-3qxx, multipart CRLF
+  # injection). Pulled transitively by supertest/superagent test tooling.
+  form-data: 4.0.6
+  # Security: force Vite >= 8.0.16 to remediate the Windows dev-server deny
+  # bypass and launch-editor UNC path disclosure advisories pulled via Vitest.
+  vite: 8.0.16
   # Dedupe ioredis: bullmq pins ioredis 5.10.1 exactly while the app declares
   # 5.11.1; force a single 5.11.1 across the workspace to avoid duplicate-version
   # Redis/Queue type clashes under exactOptionalPropertyTypes.
