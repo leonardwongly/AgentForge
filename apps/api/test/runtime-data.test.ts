@@ -220,7 +220,7 @@ describe("runtime data surfaces", () => {
           "* @acme/platform-team\n/src/billing/** @acme/billing-owner\n!docs/** @acme/docs-team",
         changedPaths: ["src/billing/checkout.ts", "docs/readme.md"]
       }),
-      headers: { "content-type": "application/json" }
+      headers: { "content-type": "application/json", ...actorHeaders() }
     });
 
     expect(preview.statusCode).toBe(200);

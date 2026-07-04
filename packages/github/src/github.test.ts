@@ -4,6 +4,7 @@ import {
   buildCheckRunPayload,
   enrichPullRequestReviewsWithTeamMemberships,
   fetchPullRequestInputFromGithub,
+  githubRetryAfterMs,
   MERGE_GUARD_CHECK_NAME,
   normalizeGithubWebhook,
   pullRequestInputFromFixture,
@@ -11,7 +12,7 @@ import {
   verifyGithubSignature,
   type GithubAdapterClient
 } from "./index.js";
-import { type PolicyResult, RedisCacheManager } from "@agentforge/core";
+import { type PolicyResult, RedisCacheManager, getFileContentCacheKey } from "@agentforge/core";
 
 describe("github integration", () => {
   it("validates webhook signatures", () => {
@@ -197,7 +198,7 @@ describe("github integration", () => {
     const secret = `ghp_${"x".repeat(36)}`;
     const currentPackage = Buffer.from(JSON.stringify({ token: secret })).toString("base64");
     const headSha = "a".repeat(40);
-    const cacheKey = `agentforge:cache:file-content:acme:payments:${headSha}:package.json`;
+    const cacheKey = getFileContentCacheKey("acme", "payments", headSha, "package.json");
     const client: GithubAdapterClient = {
       pulls: {
         get: async () => ({
@@ -864,5 +865,57 @@ describe("github integration", () => {
     const payload = buildCheckRunPayload({ headSha: "sha" }, result);
     expect(payload.conclusion).toBe("failure");
     expect(payload.output.text).toContain("Optimize mode keeps enforce controls active");
+  });
+
+  it("extracts a retry-after header (seconds) as milliseconds", () => {
+    const rateLimited = new Error("secondary rate limit") as Error & {
+      status: number;
+      response: { headers: Record<string, string> };
+    };
+    rateLimited.status = 403;
+    rateLimited.response = { headers: { "retry-after": "120" } };
+
+    expect(githubRetryAfterMs(rateLimited)).toBe(120000);
+  });
+
+  it("falls back to x-ratelimit-reset when retry-after is absent", () => {
+    const resetEpochSeconds = Math.floor(Date.now() / 1000) + 60;
+    const rateLimited = new Error("rate limit exceeded") as Error & {
+      status: number;
+      response: { headers: Record<string, string> };
+    };
+    rateLimited.status = 429;
+    rateLimited.response = {
+      headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(resetEpochSeconds) }
+    };
+
+    const remainingMs = githubRetryAfterMs(rateLimited);
+    expect(remainingMs).toBeDefined();
+    expect(remainingMs).toBeGreaterThan(58000);
+    expect(remainingMs).toBeLessThanOrEqual(60000);
+  });
+
+  it("returns undefined when neither retry-after nor x-ratelimit-reset is present", () => {
+    const notRateLimited = new Error("Not Found") as Error & {
+      status: number;
+      response: { headers: Record<string, string> };
+    };
+    notRateLimited.status = 404;
+    notRateLimited.response = { headers: {} };
+
+    expect(githubRetryAfterMs(notRateLimited)).toBeUndefined();
+    expect(githubRetryAfterMs(new Error("plain error"))).toBeUndefined();
+    expect(githubRetryAfterMs(undefined)).toBeUndefined();
+  });
+
+  it("returns undefined instead of throwing for a malformed retry-after value", () => {
+    const malformed = new Error("rate limit exceeded") as Error & {
+      status: number;
+      response: { headers: Record<string, string> };
+    };
+    malformed.status = 429;
+    malformed.response = { headers: { "retry-after": "not-a-number" } };
+
+    expect(githubRetryAfterMs(malformed)).toBeUndefined();
   });
 });

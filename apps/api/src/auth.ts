@@ -22,7 +22,80 @@ const rolePattern = /^[a-z][a-z0-9_-]{0,63}$/u;
 const organizationPattern = /^[A-Za-z0-9_.-]{1,128}$/u;
 const localOrganizationId = "org_local";
 
+const SIGNATURE_REPLAY_WINDOW_SECONDS = 5 * 60;
+// Best-effort in-process replay cache. Each signed request carries a unique
+// nonce; once a signature is seen it is rejected until its window expires.
+// NOTE: this is per-instance. Multi-instance API deployments behind a load
+// balancer should use sticky routing or a shared store for cross-instance
+// replay protection; the timestamp window still bounds replay regardless.
+const seenSignatures = new Map<string, number>();
+const SIGNATURE_SWEEP_INTERVAL_MS = 60_000;
+const MAX_SEEN_SIGNATURES = 50_000;
+let lastSignatureSweepMs = 0;
+
+function registerSignatureUse(signature: string, nowMs: number): boolean {
+  // Throttle the expiry sweep to at most once per interval so it never runs an
+  // O(N) loop on the hot path of every request (CPU-DoS guard).
+  if (nowMs - lastSignatureSweepMs > SIGNATURE_SWEEP_INTERVAL_MS) {
+    lastSignatureSweepMs = nowMs;
+    for (const [key, expiry] of seenSignatures) {
+      if (expiry <= nowMs) {
+        seenSignatures.delete(key);
+      }
+    }
+  }
+  const existing = seenSignatures.get(signature);
+  if (existing !== undefined && existing > nowMs) {
+    return false;
+  }
+  // Hard memory bound: evict oldest entries (Map preserves insertion order) in
+  // amortized O(1) per insert.
+  while (seenSignatures.size >= MAX_SEEN_SIGNATURES) {
+    const oldest = seenSignatures.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    seenSignatures.delete(oldest);
+  }
+  seenSignatures.set(signature, nowMs + SIGNATURE_REPLAY_WINDOW_SECONDS * 1000);
+  return true;
+}
+
+// Raw, unsigned identity headers a spoofing client could set directly. These are
+// only ever legitimate input to auth.ts when AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS
+// (local dev) or NODE_ENV=test is active. When trust-proxy mode is active instead,
+// AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS attests that the ingress proxy strips these
+// before they can reach the app — but that attestation is unenforceable from inside
+// the process. Seeing one of these headers arrive on a trust-proxy request is a
+// concrete signal that attestation is false for THIS request (the proxy did not
+// strip it), so we log it and refuse to resolve any actor for the request at all,
+// rather than silently falling through and trusting only the signed header set.
+const SPOOFABLE_RAW_IDENTITY_HEADERS = [
+  "x-agentforge-actor",
+  "x-agentforge-role",
+  "x-agentforge-organization"
+] as const;
+
+function rawIdentityHeaderNamesPresent(request: FastifyRequest): string[] {
+  return SPOOFABLE_RAW_IDENTITY_HEADERS.filter((name) => headerValue(request.headers[name]));
+}
+
+// Caches the actor resolved for a given request object within resolveApiActor's
+// own lifetime. Trusted-proxy signatures are nonce-bound and single-use
+// (registerSignatureUse consumes the nonce on first successful verification) —
+// without this cache, a request-scoped hook that resolves the actor early (e.g.
+// binding RLS org context in app.ts's onRequest hook) would consume the nonce,
+// and the route handler's own later resolveApiActor call on the SAME request
+// would then see it as an already-used replay and reject a legitimate request.
+// WeakMap avoids any manual cleanup: entries are collected with the request.
+const resolvedActorCache = new WeakMap<FastifyRequest, ApiActor>();
+
 export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
+  const cachedActor = resolvedActorCache.get(request);
+  if (cachedActor) {
+    return cachedActor;
+  }
+
   if (process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS === "true") {
     const secret = process.env.AGENTFORGE_API_PROXY_SECRET;
     if (!secret) {
@@ -31,13 +104,36 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
       );
     }
 
+    // Enforce the AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS attestation at request time,
+    // not just at config load. If a raw, spoofable actor/role/organization header
+    // reaches us while trust-proxy mode is on, the proxy failed to strip it (or
+    // there is no stripping proxy) — reject the request outright rather than
+    // silently ignoring the anomaly, so a misconfigured deployment fails loudly
+    // instead of appearing to work while quietly relying on unverified input.
+    const spoofedHeaderNames = rawIdentityHeaderNamesPresent(request);
+    if (spoofedHeaderNames.length > 0) {
+      request.log?.warn?.(
+        {
+          headers: spoofedHeaderNames,
+          path: request.url
+        },
+        "Rejected request carrying raw spoofable identity headers while AGENTFORGE_API_TRUST_PROXY_HEADERS is enabled; the ingress proxy did not strip them as AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS attests."
+      );
+      return undefined;
+    }
+
     const actorStr = headerValue(request.headers["x-agentforge-authenticated-actor"]);
     const roleStr = headerValue(request.headers["x-agentforge-authenticated-role"]);
     const orgStr = headerValue(request.headers["x-agentforge-authenticated-organization"]);
     const timestampStr = headerValue(request.headers["x-agentforge-signature-timestamp"]);
     const signatureStr = headerValue(request.headers["x-agentforge-signature"]);
+    const nonceStr = headerValue(request.headers["x-agentforge-signature-nonce"]);
 
-    if (!actorStr || !roleStr || !orgStr || !timestampStr || !signatureStr) {
+    // The nonce is mandatory, not optional: a nonce-less signed request has no
+    // per-request binding, so registerSignatureUse is never consulted for it and
+    // it could otherwise be replayed indefinitely within the 5-minute timestamp
+    // window. Reject rather than silently accept a legacy nonce-less payload.
+    if (!actorStr || !roleStr || !orgStr || !timestampStr || !signatureStr || !nonceStr) {
       return undefined;
     }
 
@@ -47,7 +143,7 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
     if (isNaN(timestamp)) {
       return undefined;
     }
-    if (Math.abs(now - timestamp) > 5 * 60) {
+    if (Math.abs(now - timestamp) > SIGNATURE_REPLAY_WINDOW_SECONDS) {
       return undefined;
     }
 
@@ -56,8 +152,9 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
       return undefined;
     }
 
-    // Reconstruct payload and verify HMAC-SHA256 signature
-    const payload = [timestampStr, actorStr, roleStr, orgStr].join(":");
+    // Reconstruct payload and verify HMAC-SHA256 signature. The nonce binds the
+    // signature to a single request so it can be rejected on replay.
+    const payload = [timestampStr, nonceStr, actorStr, roleStr, orgStr].join(":");
     const expectedSignature = createHmac("sha256", secret).update(payload).digest("hex");
 
     const bufA = Buffer.from(signatureStr, "hex");
@@ -69,6 +166,12 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
 
     const actor = actorFromHeaders(actorStr, roleStr, orgStr);
     if (actor) {
+      // Reject replays of a previously seen signed request within the window.
+      // The nonce is now mandatory (checked above), so this always runs.
+      if (!registerSignatureUse(signatureStr, Date.now())) {
+        return undefined;
+      }
+      resolvedActorCache.set(request, actor);
       return actor;
     }
   }
@@ -128,27 +231,6 @@ export function requireOrganizationAccess(
     statusCode: 403,
     reason: `${action} is scoped to a different organization.`
   };
-}
-
-/**
- * Resolve an authenticated actor or fall back to a system identity.
- *
- * Internal only: do not call this from HTTP route handlers.
- * Use `requireApiActor()` for all request-scoped authentication.
- * This function exists only for internal/worker callers that already
- * operate in a trusted context (AF-SEC-002).
- *
- * @deprecated Use `requireApiActor()` in routes. This function must
- * never be invoked in HTTP request handlers.
- */
-export function actorOrSystem(request: FastifyRequest): ApiActor {
-  return (
-    resolveApiActor(request) ?? {
-      login: "system",
-      role: "system",
-      organizationId: localOrganizationId
-    }
-  );
 }
 
 export function isAuthzFailure(value: ApiActor | AuthzDecision): value is AuthzFailure {

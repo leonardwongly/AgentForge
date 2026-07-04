@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PullRequestInput } from "@agentforge/core";
 import { hashPolicy } from "@agentforge/policy";
@@ -33,6 +33,7 @@ const mutableEnvKeys = [
   "AGENTFORGE_API_PROXY_SECRET",
   "AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS",
   "AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS",
+  "AGENTFORGE_DASHBOARD_PROXY_SECRET",
   "AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR",
   "AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS"
 ] as const;
@@ -74,8 +75,9 @@ function authenticatedActorHeaders(
   organizationId = "org_local"
 ): Record<string, string> {
   const timestamp = Math.floor(Date.now() / 1000).toString();
+  const nonce = randomUUID();
   const secret = process.env.AGENTFORGE_API_PROXY_SECRET || "test-proxy-secret-123456";
-  const payload = [timestamp, actor, role, organizationId].join(":");
+  const payload = [timestamp, nonce, actor, role, organizationId].join(":");
   const signature = createHmac("sha256", secret).update(payload).digest("hex");
 
   return {
@@ -83,6 +85,7 @@ function authenticatedActorHeaders(
     "x-agentforge-authenticated-role": role,
     "x-agentforge-authenticated-organization": organizationId,
     "x-agentforge-signature-timestamp": timestamp,
+    "x-agentforge-signature-nonce": nonce,
     "x-agentforge-signature": signature
   };
 }
@@ -91,7 +94,7 @@ function setProductionProxyAuthEnv() {
   process.env.NODE_ENV = "production";
   delete process.env.DATABASE_URL;
   delete process.env.REDIS_URL;
-  process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
+  process.env.GITHUB_WEBHOOK_SECRET = "production-secret-32-characters-long";
   process.env.GITHUB_APP_ID = "123456";
   process.env.GITHUB_APP_PRIVATE_KEY = testPrivateKey;
   process.env.GITHUB_APP_SLUG = "agentforge-test";
@@ -99,8 +102,9 @@ function setProductionProxyAuthEnv() {
   process.env.GITHUB_CLIENT_SECRET = "github-client-secret";
   process.env.SESSION_SECRET = "session-secret-32-characters-long";
   process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
-  process.env.AGENTFORGE_API_PROXY_SECRET = "test-proxy-secret-123456";
+  process.env.AGENTFORGE_API_PROXY_SECRET = "test-proxy-secret-32-characters-long";
   process.env.AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS = "true";
+  process.env.AGENTFORGE_DASHBOARD_PROXY_SECRET = "test-dashboard-proxy-secret-123456";
   process.env.AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS = "true";
 }
 

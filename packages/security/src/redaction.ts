@@ -7,6 +7,18 @@ export type RedactionMatch = {
     | "bearer_token"
     | "database_url"
     | "api_key_assignment"
+    | "slack_token"
+    | "google_api_key"
+    | "stripe_key"
+    | "sendgrid_key"
+    | "openai_key"
+    | "npm_token"
+    | "azure_connection_string"
+    | "azure_storage_key"
+    | "cloudflare_api_token"
+    | "twilio_sid"
+    | "twilio_auth_token"
+    | "aws_secret_key"
     | "high_entropy";
   category: "credential_like" | "local_placeholder";
   risk: "high" | "low";
@@ -18,14 +30,90 @@ export type RedactionMatch = {
 
 const REDACTION = "[REDACTED]";
 
+// Upper bound on input length scanned by detectSecrets. Secret scanning of very
+// large blobs (e.g. a 1MB diff) is low value and a DoS amplifier; detection is
+// truncated to this many characters. redactSecrets is NOT truncated (it must
+// never emit an un-redacted tail) and instead relies on every pattern being
+// linear-time (no unbounded backtracking).
+const MAX_SECRET_SCAN_LENGTH = 65_536;
+
 const patterns: Array<{ kind: RedactionMatch["kind"]; regex: RegExp }> = [
   {
+    // Bounded inner quantifier ({0,N}?) keeps this linear-time. An unbounded
+    // `[\s\S]*?` allowed a quadratic (O(n^2)) ReDoS when many unterminated
+    // BEGIN markers appeared in attacker-controlled input (AF-SEC ReDoS fix).
     kind: "private_key",
-    regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g
+    regex: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]{0,16384}?-----END [A-Z ]*PRIVATE KEY-----/g
   },
   { kind: "github_token", regex: /\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}\b/g },
   { kind: "aws_access_key", regex: /\bAKIA[0-9A-Z]{16}\b/g },
+  {
+    // AWS secret access keys are a bare 40-char base64-alphabet string with no
+    // fixed prefix, which is nearly indistinguishable by shape alone from many
+    // hashes/tokens (and already overlaps the high_entropy catch-all). A bare
+    // unconditional pattern here would add matching noise, not real recall, so
+    // this instead requires the value to appear immediately after a
+    // recognizable aws_secret_access_key assignment on the same line, which is
+    // how this credential actually appears in config files, env dumps, and CI
+    // logs.
+    kind: "aws_secret_key",
+    regex:
+      /\b(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[:=]\s*["']?(?:[A-Za-z0-9+/]{40})["']?/g
+  },
   { kind: "jwt", regex: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
+  { kind: "slack_token", regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
+  { kind: "stripe_key", regex: /\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}\b/g },
+  { kind: "sendgrid_key", regex: /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/g },
+  { kind: "openai_key", regex: /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/g },
+  { kind: "google_api_key", regex: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  { kind: "npm_token", regex: /\bnpm_[A-Za-z0-9]{36}\b/g },
+  {
+    // Azure Storage connection string shape, e.g.
+    // "DefaultEndpointsProtocol=https;AccountName=foo;AccountKey=<base64>;EndpointSuffix=core.windows.net".
+    // Bounded {0,512} gaps between the required fields keep this linear-time.
+    kind: "azure_connection_string",
+    regex:
+      /\bDefaultEndpointsProtocol=https?;[\s\S]{0,512}?AccountKey=[A-Za-z0-9+/]{80,100}={0,2};[\s\S]{0,512}?EndpointSuffix=[A-Za-z0-9.-]+/g
+  },
+  {
+    // Standalone Azure Storage account key value: 88-char base64 ending in
+    // "==". This shape is distinctive enough (fixed length + padding) to
+    // detect even outside a full connection string, e.g. AZURE_STORAGE_KEY=... .
+    // No trailing \b: a literal "==" is followed by a non-word character (or
+    // end of input) in the padded-base64 case, so \b can never match there;
+    // the negative lookahead instead guards against matching a truncated
+    // slice of a longer base64/entropy run.
+    kind: "azure_storage_key",
+    regex: /\b[A-Za-z0-9+/]{86}==(?![A-Za-z0-9+/=])/g
+  },
+  {
+    // Current (2026+) Cloudflare credential formats use a fixed, checksummed
+    // prefix: cfk_ (Global API Key), cfut_ (User API Token), cfat_ (Account
+    // API Token), each followed by 40 characters plus a checksum suffix. Only
+    // the prefixed format is matched here; the legacy unprefixed 40-character
+    // token and 37-45 character hex Global API Key have no distinguishing
+    // shape and are already covered by the high_entropy/api_key_assignment
+    // catch-alls.
+    kind: "cloudflare_api_token",
+    regex: /\bcf(?:k|ut|at)_[A-Za-z0-9_-]{40,60}\b/g
+  },
+  {
+    // Twilio Account SID (AC...) and API Key SID (SK...) are fixed-format
+    // 34-character identifiers (2-letter prefix + 32 hex chars) per Twilio's
+    // own API schema. The Account SID is not itself secret but is a strong
+    // contextual signal worth redacting alongside real credentials.
+    kind: "twilio_sid",
+    regex: /\b(?:AC|SK)[0-9a-fA-F]{32}\b/g
+  },
+  {
+    // Twilio Auth Tokens are bare 32-char lowercase hex with no fixed prefix,
+    // so (like the AWS secret key above) a bare pattern would mostly just
+    // duplicate high_entropy/api_key_assignment coverage with added noise.
+    // Requiring adjacency to an auth_token-style assignment keeps this
+    // targeted at how the credential actually appears in config/env content.
+    kind: "twilio_auth_token",
+    regex: /\b(?:twilio[_-]?auth[_-]?token|TWILIO_AUTH_TOKEN)\s*[:=]\s*["']?(?:[0-9a-f]{32})["']?/gi
+  },
   { kind: "bearer_token", regex: /\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b/gi },
   {
     kind: "database_url",
@@ -51,10 +139,12 @@ export function redactSecrets(input: string): string {
 }
 
 export function detectSecrets(input: string): RedactionMatch[] {
+  const scanned =
+    input.length > MAX_SECRET_SCAN_LENGTH ? input.slice(0, MAX_SECRET_SCAN_LENGTH) : input;
   const matches: RedactionMatch[] = [];
   for (const { kind, regex } of patterns) {
     regex.lastIndex = 0;
-    for (const match of input.matchAll(regex)) {
+    for (const match of scanned.matchAll(regex)) {
       const value = match[0];
       matches.push({ kind, value, redacted: preservePrefix(value), ...classifyMatch(kind, value) });
     }
@@ -85,6 +175,9 @@ export function summarizeSafeSnippet(input: string, maxLength = 180): string {
 function preservePrefix(match: string): string {
   if (/^(?:postgres|postgresql|mysql|mongodb|redis):\/\//i.test(match)) {
     return match.replace(/\/\/[^@/\s]+@/, `//${REDACTION}@`);
+  }
+  if (/^DefaultEndpointsProtocol=https?;/i.test(match)) {
+    return match.replace(/AccountKey=[A-Za-z0-9+/]{80,100}={0,2};/i, `AccountKey=${REDACTION};`);
   }
   const assignment = match.match(/^([^:=]{2,40}[:=]\s*)/);
   if (assignment) {
@@ -119,7 +212,14 @@ function classifyMatch(
     };
   }
 
-  if (kind === "api_key_assignment" || kind === "high_entropy" || kind === "bearer_token") {
+  if (
+    kind === "api_key_assignment" ||
+    kind === "high_entropy" ||
+    kind === "bearer_token" ||
+    kind === "aws_secret_key" ||
+    kind === "twilio_auth_token" ||
+    kind === "azure_connection_string"
+  ) {
     if (isNonSecretReference(value, kind)) {
       return {
         category: "local_placeholder",

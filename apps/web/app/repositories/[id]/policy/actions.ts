@@ -33,6 +33,38 @@ export async function saveRepositoryPolicy(formData: FormData): Promise<void> {
   redirect(`${returnTo}?updated=policy`);
 }
 
+export async function revertRepositoryPolicy(formData: FormData): Promise<void> {
+  const repositoryId = readRequiredString(formData, "repositoryId", "Missing repository id.");
+  const returnTo = `/repositories/${encodeURIComponent(repositoryId)}/policy`;
+  const targetVersionId = readRequiredString(
+    formData,
+    "targetVersionId",
+    "Missing target policy version."
+  );
+
+  try {
+    const actor = await resolveDashboardActor();
+    await requestJson(
+      actor,
+      `/api/repositories/${encodeURIComponent(repositoryId)}/policy/revert`,
+      {
+        method: "POST",
+        body: JSON.stringify({ targetVersionId })
+      }
+    );
+  } catch (error) {
+    redirectWithError(
+      returnTo,
+      error instanceof Error ? error.message : "Repository policy could not be reverted."
+    );
+  }
+
+  revalidatePath(returnTo);
+  revalidatePath(`/repositories/${encodeURIComponent(repositoryId)}/policy-preview`);
+  revalidatePath("/dashboard");
+  redirect(`${returnTo}?updated=policy_reverted`);
+}
+
 async function requestJson<T = unknown>(
   actor: DashboardActorContext,
   path: string,

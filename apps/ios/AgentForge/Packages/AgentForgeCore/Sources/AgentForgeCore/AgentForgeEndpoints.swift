@@ -71,6 +71,6 @@ public enum EndpointValidator {
     }
 
     private static func isLocalDevelopmentHost(_ host: String) -> Bool {
-        host == "localhost" || host == "127.0.0.1" || host == "::1" || host.hasSuffix(".local")
+        host == "localhost" || host == "127.0.0.1" || host == "::1"
     }
 }

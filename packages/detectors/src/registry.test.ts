@@ -15,7 +15,8 @@ const allFactTypes: Record<VerifiedFact["type"], true> = {
   dependency_bumped: true,
   migration_added: true,
   agent_signal_detected: true,
-  secret_like_value_detected: true
+  secret_like_value_detected: true,
+  detection_coverage_truncated: true
 };
 
 describe("detector registry (versioned plug-in surface)", () => {

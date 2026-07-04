@@ -21,6 +21,7 @@ vi.mock("ioredis", () => {
   };
 });
 
+import { createHash } from "node:crypto";
 import {
   MemoryCacheBackend,
   RedisCacheManager,
@@ -39,9 +40,14 @@ describe("Caching Layer", () => {
       expect(key).toBe("agentforge:cache:membership:orgname:team-slug:user123");
     });
 
-    it("generates correct file content cache key", () => {
+    it("generates an injective file content cache key", () => {
       const key = getFileContentCacheKey("OwnerName", "Repo-Name", "SHA123", "src/dir/file.ts");
-      expect(key).toBe("agentforge:cache:file-content:ownername:repo-name:sha123:src_dir_file.ts");
+      const pathHash = createHash("sha256").update("src/dir/file.ts").digest("hex");
+      expect(key).toBe(`agentforge:cache:file-content:ownername:repo-name:sha123:${pathHash}`);
+      // Paths that previously collided under lossy "/"->"_" sanitization now differ.
+      expect(getFileContentCacheKey("o", "r", "s", "a/package.json")).not.toBe(
+        getFileContentCacheKey("o", "r", "s", "a_package.json")
+      );
     });
   });
 

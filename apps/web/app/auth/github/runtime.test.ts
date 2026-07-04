@@ -34,7 +34,7 @@ describe("GitHub OAuth runtime config", () => {
   it("uses secure cookies in production and a local organization fallback", () => {
     const runtime = githubOAuthRuntime({
       NODE_ENV: "production",
-      GITHUB_WEBHOOK_SECRET: "production-secret",
+      GITHUB_WEBHOOK_SECRET: "production-secret-32-characters-long",
       GITHUB_APP_ID: "123456",
       GITHUB_APP_PRIVATE_KEY: testPrivateKey,
       GITHUB_CLIENT_ID: "Iv1.production",
@@ -44,8 +44,9 @@ describe("GitHub OAuth runtime config", () => {
       REDACT_SECRETS: "true",
       ALLOW_UNSIGNED_GITHUB_WEBHOOKS: "false",
       AGENTFORGE_API_TRUST_PROXY_HEADERS: "true",
-      AGENTFORGE_API_PROXY_SECRET: "test-proxy-secret-987654",
+      AGENTFORGE_API_PROXY_SECRET: "test-proxy-secret-32-characters-long",
       AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+      AGENTFORGE_DASHBOARD_PROXY_SECRET: "test-dashboard-proxy-secret-987654",
       AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS: "true"
     });
 

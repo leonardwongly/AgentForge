@@ -136,6 +136,18 @@ function hitForFact(fact: VerifiedFact, policy: PolicyConfig): PolicyHit[] {
           explanation: `Agent-assistance signal recorded: ${fact.evidence}.`
         })
       ];
+    case "detection_coverage_truncated":
+      return [
+        makeHit({
+          ruleId: "detection.coverage_truncated",
+          fact,
+          action: "suggest",
+          severity: fact.severity ?? "low",
+          requiredEvidence: [],
+          requiredReviewers: [],
+          explanation: `Detector coverage was truncated by a configured scanning limit: ${fact.evidence}.`
+        })
+      ];
     case "secret_like_value_detected":
       if (fact.metadata?.secretRisk === "low") {
         return [

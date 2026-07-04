@@ -3,7 +3,7 @@ import { loadConfig } from "./index.js";
 
 const productionBaseEnv = {
   NODE_ENV: "production",
-  GITHUB_WEBHOOK_SECRET: "production-secret",
+  GITHUB_WEBHOOK_SECRET: "production-secret-32-characters-long",
   GITHUB_APP_ID: "123456",
   GITHUB_APP_PRIVATE_KEY: [
     ["-----BEGIN", "PRIVATE", "KEY-----"].join(" "),
@@ -18,8 +18,9 @@ const productionBaseEnv = {
   REDACT_SECRETS: "true",
   ALLOW_UNSIGNED_GITHUB_WEBHOOKS: "false",
   AGENTFORGE_API_TRUST_PROXY_HEADERS: "true",
-  AGENTFORGE_API_PROXY_SECRET: "test-proxy-secret-987654",
+  AGENTFORGE_API_PROXY_SECRET: "test-proxy-secret-32-characters-long",
   AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+  AGENTFORGE_DASHBOARD_PROXY_SECRET: "test-dashboard-proxy-secret-987654",
   AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS: "true"
 };
 
@@ -70,9 +71,75 @@ describe("AgentForge runtime config", () => {
       "API proxy secret is missing",
       { AGENTFORGE_API_PROXY_SECRET: "" },
       "AGENTFORGE_API_PROXY_SECRET"
+    ],
+    [
+      "dashboard proxy secret is missing",
+      { AGENTFORGE_DASHBOARD_PROXY_SECRET: "" },
+      "AGENTFORGE_DASHBOARD_PROXY_SECRET"
+    ],
+    [
+      "session secret is too short",
+      { SESSION_SECRET: "short-secret" },
+      "SESSION_SECRET must be at least 32 characters"
+    ],
+    [
+      "webhook secret is too short",
+      { GITHUB_WEBHOOK_SECRET: "short-secret" },
+      "GITHUB_WEBHOOK_SECRET must be at least 32 characters"
+    ],
+    [
+      "API proxy secret is too short",
+      { AGENTFORGE_API_PROXY_SECRET: "short-secret" },
+      "AGENTFORGE_API_PROXY_SECRET must be at least 32 characters"
+    ],
+    [
+      "dashboard proxy secret is too short",
+      { AGENTFORGE_DASHBOARD_PROXY_SECRET: "short-secret" },
+      "AGENTFORGE_DASHBOARD_PROXY_SECRET must be at least 32 characters"
+    ],
+    [
+      "session secret is a common placeholder",
+      { SESSION_SECRET: "changeme-changeme-changeme-changeme" },
+      "SESSION_SECRET"
     ]
   ])("fails closed in production when %s", (_name, override, message) => {
     expect(() => loadConfig({ ...productionBaseEnv, ...override })).toThrow(message);
+  });
+
+  it.each([
+    [
+      "SESSION_SECRET",
+      { SESSION_SECRET: "a".repeat(32) },
+      (config: ReturnType<typeof loadConfig>) => config.sessionSecret
+    ],
+    [
+      "GITHUB_WEBHOOK_SECRET",
+      { GITHUB_WEBHOOK_SECRET: "b".repeat(32) },
+      (config: ReturnType<typeof loadConfig>) => config.github.webhookSecret
+    ],
+    [
+      "AGENTFORGE_API_PROXY_SECRET",
+      { AGENTFORGE_API_PROXY_SECRET: "c".repeat(32) },
+      (config: ReturnType<typeof loadConfig>) => config.auth.apiProxySecret
+    ],
+    [
+      "AGENTFORGE_DASHBOARD_PROXY_SECRET",
+      { AGENTFORGE_DASHBOARD_PROXY_SECRET: "d".repeat(32) },
+      (config: ReturnType<typeof loadConfig>) => config.auth.dashboardProxySecret
+    ]
+  ])("accepts a 32+ character %s in production", (_name, override, select) => {
+    const config = loadConfig({ ...productionBaseEnv, ...override });
+
+    expect(select(config)).toBe(Object.values(override)[0]);
+  });
+
+  it("does not enforce secret length outside production", () => {
+    const config = loadConfig({
+      NODE_ENV: "development",
+      SESSION_SECRET: "x"
+    });
+
+    expect(config.sessionSecret).toBe("x");
   });
 
   it("allows trusted-proxy-only production deployments without optional dashboard OAuth", () => {

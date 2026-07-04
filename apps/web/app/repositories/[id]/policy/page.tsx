@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { Save, ShieldCheck, WandSparkles } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
-import { loadPolicyPacks, loadPolicyYaml } from "../../../data";
+import { loadPolicyPacks, loadPolicyVersionHistory, loadPolicyYaml } from "../../../data";
 import { saveRepositoryPolicy } from "./actions";
+import { RevertPolicyForm } from "./revert-policy-form";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -10,7 +11,11 @@ type PageProps = {
 
 export default async function PolicyEditorPage({ params }: PageProps) {
   const { id } = await params;
-  const [policy, packs] = await Promise.all([loadPolicyYaml(id), loadPolicyPacks()]);
+  const [policy, packs, versionHistory] = await Promise.all([
+    loadPolicyYaml(id),
+    loadPolicyPacks(),
+    loadPolicyVersionHistory(id)
+  ]);
   const bootstrapPack =
     packs.policyPacks.find((pack) => pack.id === policy.policyPackId) ??
     packs.policyPacks.find((pack) => pack.id === "startup-default") ??
@@ -155,7 +160,37 @@ export default async function PolicyEditorPage({ params }: PageProps) {
                 <h2>Version history</h2>
               </div>
               <ul className="compact-list">
-                {policy.version ? (
+                {versionHistory.versions.length > 0 ? (
+                  [...versionHistory.versions]
+                    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+                    .map((entry) => {
+                      const isCurrent = entry.version === policy.version;
+                      return (
+                        <li key={entry.id}>
+                          <div className="list-row">
+                            <strong>{entry.version}</strong>
+                            {isCurrent ? (
+                              <StatusBadge status="approved" label="current" />
+                            ) : (
+                              <StatusBadge
+                                status={entry.mode as "observe" | "warn" | "enforce" | "optimize"}
+                              />
+                            )}
+                          </div>
+                          <p>
+                            {entry.createdBy} &middot; {new Date(entry.createdAt).toLocaleString()}
+                          </p>
+                          {!isCurrent ? (
+                            <RevertPolicyForm
+                              repositoryId={id}
+                              version={entry.version}
+                              versionId={entry.id}
+                            />
+                          ) : null}
+                        </li>
+                      );
+                    })
+                ) : policy.version ? (
                   <li>
                     <strong>{policy.version}</strong>
                     <p>Current repository policy version returned by the API.</p>

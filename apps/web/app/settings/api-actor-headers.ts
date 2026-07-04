@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import type { DashboardActorContext } from "./actor-context";
 
 export function apiActorHeaders(actor: DashboardActorContext): Record<string, string> {
@@ -25,8 +25,11 @@ export function apiActorHeaders(actor: DashboardActorContext): Record<string, st
       "AGENTFORGE_API_PROXY_SECRET must be configured before forwarding trusted dashboard identity to the API."
     );
   }
+  // Unique per-request nonce binds the signature to a single request so the API
+  // can reject replays within the signature window (AF-SEC L6).
+  const nonce = randomBytes(16).toString("hex");
   const signature = createHmac("sha256", secret)
-    .update([timestamp, actor.login, actor.role, actor.organizationId].join(":"))
+    .update([timestamp, nonce, actor.login, actor.role, actor.organizationId].join(":"))
     .digest("hex");
 
   return {
@@ -34,6 +37,7 @@ export function apiActorHeaders(actor: DashboardActorContext): Record<string, st
     "x-agentforge-authenticated-role": actor.role,
     "x-agentforge-authenticated-organization": actor.organizationId,
     "x-agentforge-signature-timestamp": timestamp,
+    "x-agentforge-signature-nonce": nonce,
     "x-agentforge-signature": signature
   };
 }

@@ -21,6 +21,170 @@ describe("redaction", () => {
     expect(redacted).not.toContain(rawAwsKey);
   });
 
+  describe("expanded credential patterns", () => {
+    // Exactly 86 base64 chars + "==" padding = 88 chars total, matching the
+    // real Azure Storage AccountKey shape.
+    const fakeAzureAccountKey = `${"a1B2".repeat(21)}Q9==`;
+    const fakeAzureConnectionString = `DefaultEndpointsProtocol=https;AccountName=agentforgestorage;AccountKey=${fakeAzureAccountKey};EndpointSuffix=core.windows.net`;
+    const fakeCloudflareToken = `cfat_${"A9bK".repeat(10)}chk1`;
+    const fakeTwilioAccountSid = `AC${"a1b2c3d4".repeat(4)}`;
+    const fakeTwilioApiKeySid = `SK${"9f8e7d6c".repeat(4)}`;
+    const fakeTwilioAuthToken = "3f9a2b7c1e6d4f8a0c5b9e2d7f1a4c6b";
+    const fakeAwsSecretKey = "qT7mLp2Ns9VbXcZk4RaWy8FdGh3Jq6Ut1BvNw5Cx";
+
+    it("has a well-formed 88-char Azure account key fixture", () => {
+      expect(fakeAzureAccountKey).toHaveLength(88);
+      expect(fakeAzureAccountKey.endsWith("==")).toBe(true);
+    });
+
+    it("has a well-formed 40-char AWS secret key fixture", () => {
+      expect(fakeAwsSecretKey).toHaveLength(40);
+    });
+
+    it("detects and redacts an Azure Storage connection string", () => {
+      const input = `config.connectionString = "${fakeAzureConnectionString}";`;
+
+      const matches = detectSecrets(input);
+      const match = matches.find((m) => m.kind === "azure_connection_string");
+
+      expect(match).toMatchObject({ category: "credential_like", risk: "high" });
+
+      const redacted = redactSecrets(input);
+      expect(redacted).not.toContain(fakeAzureAccountKey);
+      expect(redacted).toContain("AccountKey=[REDACTED];");
+      // Structure around the key is preserved for debuggability, mirroring database_url.
+      expect(redacted).toContain("DefaultEndpointsProtocol=https;AccountName=agentforgestorage;");
+      expect(redacted).toContain("EndpointSuffix=core.windows.net");
+    });
+
+    it("treats an obviously fake Azure connection string example as a local placeholder", () => {
+      const placeholderKey = `${"x".repeat(86)}==`;
+      const input = `DefaultEndpointsProtocol=https;AccountName=example;AccountKey=${placeholderKey};EndpointSuffix=core.windows.net`;
+
+      const matches = detectSecrets(input);
+      const match = matches.find((m) => m.kind === "azure_connection_string");
+
+      expect(match).toMatchObject({ category: "local_placeholder", risk: "low" });
+    });
+
+    it("detects and redacts a standalone Azure Storage account key", () => {
+      const input = `AZURE_STORAGE_KEY=${fakeAzureAccountKey}`;
+
+      const matches = detectSecrets(input);
+      const match = matches.find((m) => m.kind === "azure_storage_key");
+
+      expect(match).toMatchObject({ category: "credential_like", risk: "high" });
+      expect(redactSecrets(input)).not.toContain(fakeAzureAccountKey);
+    });
+
+    it("does not flag a shorter or non-padded base64 value as an Azure Storage account key", () => {
+      // azure_storage_key requires the fixed 88-char length ending in "==";
+      // a same-alphabet value of the wrong length or padding must not match,
+      // proving the pattern is shape-specific rather than a generic catch-all.
+      const tooShort = fakeAzureAccountKey.slice(0, 60);
+      const noPadding = `${fakeAzureAccountKey.slice(0, 86)}AB`;
+
+      expect(detectSecrets(`KEY=${tooShort}`).map((m) => m.kind)).not.toContain(
+        "azure_storage_key"
+      );
+      expect(detectSecrets(`KEY=${noPadding}`).map((m) => m.kind)).not.toContain(
+        "azure_storage_key"
+      );
+    });
+
+    it("detects and redacts a Cloudflare API token", () => {
+      const input = `CLOUDFLARE_API_TOKEN=${fakeCloudflareToken}`;
+
+      const matches = detectSecrets(input);
+      const match = matches.find((m) => m.kind === "cloudflare_api_token");
+
+      expect(match).toMatchObject({ category: "credential_like", risk: "high" });
+      expect(redactSecrets(input)).not.toContain(fakeCloudflareToken);
+    });
+
+    it("does not flag an unprefixed 40-char token as a Cloudflare API token", () => {
+      // Legacy (pre-2026) Cloudflare tokens have no fixed prefix and are
+      // intentionally left to the high_entropy/api_key_assignment catch-alls
+      // rather than a dedicated low-specificity pattern.
+      const unprefixed = fakeCloudflareToken.replace(/^cfat_/, "");
+
+      expect(detectSecrets(`CLOUDFLARE_API_TOKEN=${unprefixed}`).map((m) => m.kind)).not.toContain(
+        "cloudflare_api_token"
+      );
+    });
+
+    it("detects and redacts Twilio Account SID and API Key SID values", () => {
+      const input = `TWILIO_ACCOUNT_SID=${fakeTwilioAccountSid}\nTWILIO_API_KEY=${fakeTwilioApiKeySid}`;
+
+      const matches = detectSecrets(input);
+      const sidMatches = matches.filter((m) => m.kind === "twilio_sid");
+
+      expect(sidMatches).toHaveLength(2);
+      expect(sidMatches[0]).toMatchObject({ category: "credential_like", risk: "high" });
+      const redacted = redactSecrets(input);
+      expect(redacted).not.toContain(fakeTwilioAccountSid);
+      expect(redacted).not.toContain(fakeTwilioApiKeySid);
+    });
+
+    it("does not flag a non-hex or wrong-length value as a Twilio SID", () => {
+      // AC/SK SIDs are fixed-format (prefix + exactly 32 hex chars); a
+      // same-length run of non-hex characters must not match.
+      expect(
+        detectSecrets(`TWILIO_ACCOUNT_SID=AC${"z".repeat(32)}`).map((m) => m.kind)
+      ).not.toContain("twilio_sid");
+    });
+
+    it("detects and redacts a Twilio Auth Token when adjacent to its assignment context", () => {
+      const input = `TWILIO_AUTH_TOKEN=${fakeTwilioAuthToken}`;
+
+      const matches = detectSecrets(input);
+      const match = matches.find((m) => m.kind === "twilio_auth_token");
+
+      expect(match).toMatchObject({ category: "credential_like", risk: "high" });
+      expect(redactSecrets(input)).not.toContain(fakeTwilioAuthToken);
+    });
+
+    it("does not flag a bare 32-char hex string as a Twilio auth token without adjacent context", () => {
+      const matches = detectSecrets(`content_hash=${fakeTwilioAuthToken}`);
+
+      expect(matches.map((m) => m.kind)).not.toContain("twilio_auth_token");
+    });
+
+    it("treats a placeholder-shaped Twilio auth token assignment as a local placeholder", () => {
+      const input = "twilio_auth_token=00000000000000000000000000000000";
+
+      const matches = detectSecrets(input);
+      const match = matches.find((m) => m.kind === "twilio_auth_token");
+
+      expect(match).toMatchObject({ category: "local_placeholder", risk: "low" });
+    });
+
+    it("detects and redacts an AWS secret access key when adjacent to its assignment context", () => {
+      const input = `aws_secret_access_key=${fakeAwsSecretKey}`;
+
+      const matches = detectSecrets(input);
+      const match = matches.find((m) => m.kind === "aws_secret_key");
+
+      expect(match).toMatchObject({ category: "credential_like", risk: "high" });
+      expect(redactSecrets(input)).not.toContain(fakeAwsSecretKey);
+    });
+
+    it("does not flag a bare 40-char base64-shaped string as an AWS secret key without adjacent context", () => {
+      const matches = detectSecrets(`some_other_value=${fakeAwsSecretKey}`);
+
+      expect(matches.map((m) => m.kind)).not.toContain("aws_secret_key");
+    });
+
+    it("treats a placeholder-shaped AWS secret key assignment as a local placeholder", () => {
+      const input = `AWS_SECRET_ACCESS_KEY=${"x".repeat(40)}`;
+
+      const matches = detectSecrets(input);
+      const match = matches.find((m) => m.kind === "aws_secret_key");
+
+      expect(match).toMatchObject({ category: "local_placeholder", risk: "low" });
+    });
+  });
+
   it("redacts nested object strings", () => {
     const value = redactObject({
       url: "postgres://user:pass@example.com/db",

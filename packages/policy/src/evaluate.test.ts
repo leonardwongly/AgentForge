@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { PullRequestInput } from "@agentforge/core";
+import type { PullRequestInput, VerifiedFact } from "@agentforge/core";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/detectors";
-import { evaluateMergeGuard, parsePolicyYaml } from "./index.js";
+import { applyPolicyRules, evaluateMergeGuard, parsePolicyYaml } from "./index.js";
 
 async function load(name: string): Promise<PullRequestInput> {
   return JSON.parse(
@@ -275,5 +275,41 @@ sensitive_paths:
       const result = evaluateMergeGuard(pr, facts, parsed.config);
       expect(result.status).toBe(expectedStatus);
     }
+  });
+
+  it("resolves a detection_coverage_truncated fact to a non-blocking, informational hit in every mode", async () => {
+    const yaml = await readFile(
+      path.resolve(process.cwd(), "fixtures", "policies", "enterprise-strict.yaml"),
+      "utf8"
+    );
+    const parsed = parsePolicyYaml(yaml);
+    parsed.config.agentforge.mode = "enforce";
+    const pr = await load("readme-only.json");
+    const truncationFact: VerifiedFact = {
+      id: "fact_truncation_test",
+      type: "detection_coverage_truncated",
+      source: "policy_config",
+      evidence:
+        "Pull request has 1500 changed files; only the first 1000 were scanned for policy facts.",
+      confidence: "verified",
+      metadata: { limitType: "file_count", totalFiles: 1500, scannedFiles: 1000 }
+    };
+
+    const hits = applyPolicyRules([truncationFact], parsed.config);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toMatchObject({
+      ruleId: "detection.coverage_truncated",
+      action: "suggest",
+      requiredEvidence: [],
+      requiredReviewers: []
+    });
+
+    const result = evaluateMergeGuard(pr, [truncationFact], parsed.config);
+    expect(result.status).toBe("pass");
+    expect(result.requiredEvidence).toHaveLength(0);
+    expect(result.requiredReviewers).toHaveLength(0);
+    expect(
+      result.explanation.some((line) => line.includes("Detector coverage was truncated"))
+    ).toBe(true);
   });
 });

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { PolicyHit, VerifiedFact } from "@agentforge/core";
-import { parseCodeowners, previewCodeowners, routeReviewers } from "./index.js";
+import {
+  codeownersRuleMatches,
+  parseCodeowners,
+  previewCodeowners,
+  routeReviewers
+} from "./index.js";
 
 const fact: VerifiedFact = {
   id: "fact_1",
@@ -420,5 +425,32 @@ describe("CODEOWNERS preview", () => {
 
     expect(preview.diagnostics[0]).toContain("escaped leading # patterns");
     expect(preview.suggestions).toEqual([]);
+  });
+});
+
+describe("CODEOWNERS glob matcher hardening", () => {
+  it("preserves match semantics when collapsing adjacent globstars", () => {
+    const rule = { pattern: "**/**/service.ts", valid: true as const };
+    expect(codeownersRuleMatches(rule, "service.ts")).toBe(true);
+    expect(codeownersRuleMatches(rule, "a/service.ts")).toBe(true);
+    expect(codeownersRuleMatches(rule, "a/b/c/service.ts")).toBe(true);
+    // The collapsed "(?:[^/]+/)*service\\.ts" still requires a path-segment
+    // boundary, so it must not match a different basename or a suffix.
+    expect(codeownersRuleMatches(rule, "a/b/other.ts")).toBe(false);
+    expect(codeownersRuleMatches(rule, "a/b/service.ts.bak")).toBe(false);
+    expect(codeownersRuleMatches(rule, "a/b/myservice.ts")).toBe(false);
+  });
+
+  it("matches a pathological deep path in linear time (no ReDoS)", () => {
+    // Three globstars (within MAX_CODEOWNERS_GLOBSTARS) followed by a literal
+    // that never matches is the cubic-backtracking gadget. With group collapsing
+    // this is linear; the previous form took many seconds on this input.
+    const rule = { pattern: "**/**/**/needle.ts", valid: true as const };
+    const longPath = `${"segment/".repeat(8000)}leaf.ts`;
+    const start = performance.now();
+    const matched = codeownersRuleMatches(rule, longPath);
+    const elapsedMs = performance.now() - start;
+    expect(matched).toBe(false);
+    expect(elapsedMs).toBeLessThan(1000);
   });
 });

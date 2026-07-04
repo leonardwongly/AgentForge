@@ -15,6 +15,7 @@ Required production settings:
 
 ```env
 AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true
+AGENTFORGE_DASHBOARD_PROXY_SECRET=<shared-hmac-secret-for-inbound-identity>
 AGENTFORGE_API_TRUST_PROXY_HEADERS=true
 AGENTFORGE_API_PROXY_SECRET=<shared-hmac-secret>
 AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS=true
@@ -26,7 +27,19 @@ The proxy must strip client-supplied identity headers before injecting:
 - `x-agentforge-authenticated-role`
 - `x-agentforge-authenticated-organization`
 
-The dashboard signs forwarded identity with `AGENTFORGE_API_PROXY_SECRET` before calling the API. The API rejects stale or invalid signatures.
+In addition to stripping, the proxy must SIGN the injected identity so the
+dashboard verifies it cryptographically rather than trusting the network. Sign
+HMAC-SHA256 over `"<unix-seconds>:<nonce>:<actor>:<role>:<organization>"` with
+`AGENTFORGE_DASHBOARD_PROXY_SECRET` and send:
+
+- `x-agentforge-signature-timestamp`
+- `x-agentforge-signature-nonce`
+- `x-agentforge-signature`
+
+The dashboard rejects unsigned, stale, or replayed inbound identity headers. It
+then signs forwarded identity with `AGENTFORGE_API_PROXY_SECRET` (same scheme)
+before calling the API, and the API rejects stale, invalid, or replayed
+signatures.
 
 ## Built-In GitHub OAuth
 

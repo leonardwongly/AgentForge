@@ -296,9 +296,11 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                     </button>
                   )}
                   {currentActor?.source === "session" ? (
-                    <a className="button" href="/auth/logout">
-                      Sign out
-                    </a>
+                    <form action="/auth/logout" method="post">
+                      <button className="button" type="submit">
+                        Sign out
+                      </button>
+                    </form>
                   ) : null}
                 </div>
                 {currentActor?.source === "local_environment" ? (
