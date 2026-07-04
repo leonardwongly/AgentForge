@@ -92,7 +92,7 @@ function setProductionProxyAuthEnv() {
   process.env.NODE_ENV = "production";
   delete process.env.DATABASE_URL;
   delete process.env.REDIS_URL;
-  process.env.GITHUB_WEBHOOK_SECRET = "production-secret";
+  process.env.GITHUB_WEBHOOK_SECRET = "production-secret-32-characters-long";
   process.env.GITHUB_APP_ID = "123456";
   process.env.GITHUB_APP_PRIVATE_KEY = testPrivateKey;
   process.env.GITHUB_APP_SLUG = "agentforge-test";
@@ -100,7 +100,7 @@ function setProductionProxyAuthEnv() {
   process.env.GITHUB_CLIENT_SECRET = "github-client-secret";
   process.env.SESSION_SECRET = "session-secret-32-characters-long";
   process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
-  process.env.AGENTFORGE_API_PROXY_SECRET = "test-proxy-secret-123456";
+  process.env.AGENTFORGE_API_PROXY_SECRET = "test-proxy-secret-32-characters-long";
   process.env.AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS = "true";
   process.env.AGENTFORGE_DASHBOARD_PROXY_SECRET = "test-dashboard-proxy-secret-123456";
   process.env.AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS = "true";

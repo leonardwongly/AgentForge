@@ -173,4 +173,72 @@ describe("Proxy Authentication cryptographic security", () => {
     const result = resolveApiActor(req);
     expect(result).toBeUndefined();
   });
+
+  it("rejects a request carrying a raw spoofable x-agentforge-actor header alongside otherwise-valid signed headers", () => {
+    // Proves AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS is enforced at request time: if the
+    // ingress proxy failed to strip the raw header (or an attacker reaches the app
+    // directly), the request is rejected outright rather than silently resolved from
+    // the signed header set alone.
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
+    process.env.AGENTFORGE_API_PROXY_SECRET = secret;
+
+    const actor = "alex";
+    const role = "platform_admin";
+    const org = "org_test";
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const payload = [timestamp, actor, role, org].join(":");
+    const signature = createHmac("sha256", secret).update(payload).digest("hex");
+
+    const req = requestFromHeaders({
+      "x-agentforge-authenticated-actor": actor,
+      "x-agentforge-authenticated-role": role,
+      "x-agentforge-authenticated-organization": org,
+      "x-agentforge-signature-timestamp": timestamp,
+      "x-agentforge-signature": signature,
+      // Spoofed raw header injected by a client the proxy failed to strip.
+      "x-agentforge-actor": "attacker",
+      "x-agentforge-role": "platform_admin",
+      "x-agentforge-organization": "org_victim"
+    });
+
+    const result = resolveApiActor(req);
+    expect(result).toBeUndefined();
+  });
+
+  it("rejects a request carrying only a raw spoofable header with no signed headers at all", () => {
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
+    process.env.AGENTFORGE_API_PROXY_SECRET = secret;
+
+    const req = requestFromHeaders({
+      "x-agentforge-actor": "attacker",
+      "x-agentforge-role": "platform_admin",
+      "x-agentforge-organization": "org_victim"
+    });
+
+    const result = resolveApiActor(req);
+    expect(result).toBeUndefined();
+  });
+
+  it("still accepts a valid signed request with no raw headers present (regression guard)", () => {
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
+    process.env.AGENTFORGE_API_PROXY_SECRET = secret;
+
+    const actor = "alex";
+    const role = "platform_admin";
+    const org = "org_test";
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const payload = [timestamp, actor, role, org].join(":");
+    const signature = createHmac("sha256", secret).update(payload).digest("hex");
+
+    const req = requestFromHeaders({
+      "x-agentforge-authenticated-actor": actor,
+      "x-agentforge-authenticated-role": role,
+      "x-agentforge-authenticated-organization": org,
+      "x-agentforge-signature-timestamp": timestamp,
+      "x-agentforge-signature": signature
+    });
+
+    const result = resolveApiActor(req);
+    expect(result).toEqual({ login: actor, role, organizationId: org });
+  });
 });

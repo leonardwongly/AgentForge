@@ -172,6 +172,48 @@ function validateLocalActorExposure(config: AgentForgeConfig): void {
   }
 }
 
+const MIN_PRODUCTION_SECRET_LENGTH = 32;
+
+const WEAK_SECRET_PLACEHOLDERS = new Set(["changeme", "secret", "password", "test"]);
+
+function normalizeForPlaceholderCheck(secret: string): string {
+  return secret.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isWeakPlaceholderSecret(secret: string): boolean {
+  const normalized = normalizeForPlaceholderCheck(secret);
+  for (const placeholder of WEAK_SECRET_PLACEHOLDERS) {
+    let remainder = normalized;
+    while (remainder.startsWith(placeholder)) {
+      remainder = remainder.slice(placeholder.length);
+    }
+    const isFullyConsumedOrTrailingPrefix = remainder === "" || placeholder.startsWith(remainder);
+    if (normalized.startsWith(placeholder) && isFullyConsumedOrTrailingPrefix) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function checkProductionSecretStrength(
+  envVarName: string,
+  secret: string | undefined,
+  errors: string[]
+): void {
+  if (!secret) {
+    return;
+  }
+  if (secret.length < MIN_PRODUCTION_SECRET_LENGTH) {
+    errors.push(
+      `${envVarName} must be at least ${MIN_PRODUCTION_SECRET_LENGTH} characters in production for adequate HMAC key strength.`
+    );
+    return;
+  }
+  if (isWeakPlaceholderSecret(secret)) {
+    errors.push(`${envVarName} must not use a common placeholder value in production.`);
+  }
+}
+
 function validateProductionConfig(config: AgentForgeConfig): void {
   if (config.nodeEnv !== "production") {
     return;
@@ -183,6 +225,7 @@ function validateProductionConfig(config: AgentForgeConfig): void {
   if (!config.github.webhookSecret) {
     errors.push("GITHUB_WEBHOOK_SECRET is required in production.");
   }
+  checkProductionSecretStrength("GITHUB_WEBHOOK_SECRET", config.github.webhookSecret, errors);
   if (!config.github.appId) {
     errors.push(
       "GITHUB_APP_ID is required in production so AgentForge can mint installation tokens and publish checks."
@@ -206,6 +249,9 @@ function validateProductionConfig(config: AgentForgeConfig): void {
       "SESSION_SECRET is required in production for signed dashboard sessions and OAuth state."
     );
   }
+  if (builtInGithubOAuthConfigured) {
+    checkProductionSecretStrength("SESSION_SECRET", config.sessionSecret, errors);
+  }
   if (config.github.allowUnsignedWebhooks) {
     errors.push("ALLOW_UNSIGNED_GITHUB_WEBHOOKS must be false in production.");
   }
@@ -223,12 +269,26 @@ function validateProductionConfig(config: AgentForgeConfig): void {
       "AGENTFORGE_API_PROXY_SECRET must be configured when AGENTFORGE_API_TRUST_PROXY_HEADERS is enabled."
     );
   }
+  if (config.auth.apiTrustProxyHeaders) {
+    checkProductionSecretStrength(
+      "AGENTFORGE_API_PROXY_SECRET",
+      config.auth.apiProxySecret,
+      errors
+    );
+  }
   if (!config.auth.dashboardTrustProxyHeaders) {
     errors.push("AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS must be true in production.");
   }
   if (config.auth.dashboardTrustProxyHeaders && !config.auth.dashboardProxySecret) {
     errors.push(
       "AGENTFORGE_DASHBOARD_PROXY_SECRET must be configured when AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS is enabled so inbound identity headers are cryptographically verified."
+    );
+  }
+  if (config.auth.dashboardTrustProxyHeaders) {
+    checkProductionSecretStrength(
+      "AGENTFORGE_DASHBOARD_PROXY_SECRET",
+      config.auth.dashboardProxySecret,
+      errors
     );
   }
   if (config.auth.apiAllowLocalActorHeaders) {
