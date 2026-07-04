@@ -112,12 +112,7 @@ export interface PersistencePort {
 }
 
 export type WebhookDeliveryStatus =
-  | "received"
-  | "queued"
-  | "processing"
-  | "completed"
-  | "enqueue_failed"
-  | "failed";
+  "received" | "queued" | "processing" | "completed" | "enqueue_failed" | "failed";
 
 export type WebhookDeliveryReceipt = {
   duplicate: boolean;
@@ -196,11 +191,7 @@ export type GithubRepositoryRef = {
 };
 
 export type GithubInstallationStatus =
-  | "pending_approval"
-  | "approved"
-  | "rejected"
-  | "archived"
-  | string;
+  "pending_approval" | "approved" | "rejected" | "archived" | string;
 
 export type GitHubInstallationState = {
   id: string;

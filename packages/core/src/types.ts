@@ -45,12 +45,7 @@ export type EvidenceRequirement = {
     | "manual_attestation";
   status: "missing" | "provided" | "approved" | "rejected";
   source?:
-    | "pr_body"
-    | "review"
-    | "attachment"
-    | "manual_attestation"
-    | "linked_artifact"
-    | undefined;
+    "pr_body" | "review" | "attachment" | "manual_attestation" | "linked_artifact" | undefined;
   requiredByFindingId: string;
   providedBy?: string | undefined;
   providedAt?: string | undefined;
@@ -103,14 +98,7 @@ export type ChangeControlRecord = {
   requiredReviewers: ReviewerRequirement[];
   checkStatus: "pass" | "warn" | "block";
   lifecycle:
-    | "opened"
-    | "evaluated"
-    | "blocked"
-    | "warned"
-    | "passed"
-    | "overridden"
-    | "merged"
-    | "closed";
+    "opened" | "evaluated" | "blocked" | "warned" | "passed" | "overridden" | "merged" | "closed";
   decision?: {
     status:
       | "passed"

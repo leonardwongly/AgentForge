@@ -279,9 +279,7 @@ function createPrismaMock(
               return false;
             }
             const payload = delivery.payloadJson as
-              | { installation?: { id?: string | number | bigint } }
-              | null
-              | undefined;
+              { installation?: { id?: string | number | bigint } } | null | undefined;
             if (installationIdFilters.length === 0) {
               return true;
             }

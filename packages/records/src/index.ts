@@ -473,22 +473,20 @@ export function proposePolicyTuningActions(
   const proposedAt = options.now ?? new Date().toISOString();
   return report.insights
     .filter((insight) => severityRank(insight.severity) <= threshold)
-    .map(
-      (insight): PolicyTuningProposal => ({
-        insightId: insight.id,
-        category: insight.category,
-        severity: insight.severity,
-        title: insight.title,
-        recommendation: insight.recommendation,
-        rationale: insight.rationale,
-        citations: insight.citations,
-        guardrail: insight.guardrail,
-        status: "proposed",
-        requiresApproval: true,
-        applied: false,
-        proposedAt
-      })
-    );
+    .map((insight): PolicyTuningProposal => ({
+      insightId: insight.id,
+      category: insight.category,
+      severity: insight.severity,
+      title: insight.title,
+      recommendation: insight.recommendation,
+      rationale: insight.rationale,
+      citations: insight.citations,
+      guardrail: insight.guardrail,
+      status: "proposed",
+      requiresApproval: true,
+      applied: false,
+      proposedAt
+    }));
 }
 
 export function exportChangeControlRecordsJson(
