@@ -41,7 +41,9 @@ import {
   createChangeControlRecord,
   explainChangeControlRecord,
   planAuditRecordRetentionSweep,
+  planExportJobRetentionSweep,
   planUnassignedRetentionSweep,
+  planWebhookDeliveryRetentionSweep,
   summarizeAuditRecordRetentionSweep,
   summarizeUnassignedRetentionSweep,
   type AuditRecordRetentionSweepResult,
@@ -484,70 +486,88 @@ export async function runAuditRecordRetentionSweep(input: {
     });
 
     const result = await runWithOrgContext(organization.id, async () => {
-      const [
-        auditEventsDeleted,
-        changeControlRecordsDeleted,
-        exportJobsDeleted,
-        webhookDeliveriesDeleted
-      ] = await input.prisma.$transaction([
-        input.prisma.auditEvent.deleteMany({ where: plan.auditEventWhere }),
-        input.prisma.changeControlRecord.deleteMany({ where: plan.changeControlRecordWhere }),
-        input.prisma.exportJob.deleteMany({
-          where: { organizationId: organization.id, createdAt: { lt: plan.cutoff } }
-        }),
-        input.prisma.webhookDelivery.deleteMany({
-          where: { organizationId: organization.id, createdAt: { lt: plan.cutoff } }
-        })
-      ]);
-      const summary = summarizeAuditRecordRetentionSweep({
-        plan,
-        auditEventsDeleted: auditEventsDeleted.count,
-        changeControlRecordsDeleted: changeControlRecordsDeleted.count,
-        exportJobsDeleted: exportJobsDeleted.count,
-        webhookDeliveriesDeleted: webhookDeliveriesDeleted.count
+      return input.prisma.$transaction(async (tx) => {
+        const [
+          auditEventsDeleted,
+          changeControlRecordsDeleted,
+          exportJobsDeleted,
+          webhookDeliveriesDeleted
+        ] = await Promise.all([
+          tx.auditEvent.deleteMany({ where: plan.auditEventWhere }),
+          tx.changeControlRecord.deleteMany({ where: plan.changeControlRecordWhere }),
+          tx.exportJob.deleteMany({
+            where: planExportJobRetentionSweep({
+              organizationId: organization.id,
+              globalRetentionDays: input.globalRetentionDays,
+              organizationOverrideDays: organization.retentionSettings?.auditRecordRetentionDays,
+              now: input.now
+            }).exportJobWhere
+          }),
+          tx.webhookDelivery.deleteMany({
+            where: planWebhookDeliveryRetentionSweep({
+              organizationId: organization.id,
+              globalRetentionDays: input.globalRetentionDays,
+              organizationOverrideDays: organization.retentionSettings?.auditRecordRetentionDays,
+              now: input.now
+            }).webhookDeliveryWhere
+          })
+        ]);
+        const summary = summarizeAuditRecordRetentionSweep({
+          plan,
+          auditEventsDeleted: auditEventsDeleted.count,
+          changeControlRecordsDeleted: changeControlRecordsDeleted.count,
+          exportJobsDeleted: exportJobsDeleted.count,
+          webhookDeliveriesDeleted: webhookDeliveriesDeleted.count
+        });
+
+        if (
+          summary.auditEventsDeleted > 0 ||
+          summary.changeControlRecordsDeleted > 0 ||
+          summary.exportJobsDeleted > 0 ||
+          summary.webhookDeliveriesDeleted > 0
+        ) {
+          const audit = createAuditEvent({
+            organizationId: organization.id,
+            actor: "system",
+            actorRole: "system",
+            action: "retention_swept",
+            targetType: "organization",
+            targetId: organization.id,
+            source: "worker",
+            metadataJson: {
+              retentionDays: summary.retentionDays,
+              cutoff: summary.cutoff,
+              auditEventsDeleted: summary.auditEventsDeleted,
+              changeControlRecordsDeleted: summary.changeControlRecordsDeleted,
+              exportJobsDeleted: summary.exportJobsDeleted,
+              webhookDeliveriesDeleted: summary.webhookDeliveriesDeleted
+            }
+          });
+          // Written in the SAME transaction as the deletes above: if the
+          // deletion commits, the audit record documenting it commits with it.
+          // A crash between "deletes committed" and "audit event written" would
+          // otherwise leave a permanent, silent deletion with no audit trail —
+          // exactly the failure mode this system exists to prevent for every
+          // other governance action.
+          await tx.auditEvent.create({
+            data: {
+              id: audit.id,
+              organizationId: audit.organizationId,
+              schemaVersion: audit.schemaVersion,
+              actor: audit.actor,
+              actorRole: audit.actorRole,
+              action: audit.action,
+              targetType: audit.targetType,
+              targetId: audit.targetId,
+              source: audit.source,
+              metadataJson: audit.metadataJson as never,
+              createdAt: new Date(audit.createdAt)
+            }
+          });
+        }
+
+        return summary;
       });
-
-      if (
-        summary.auditEventsDeleted > 0 ||
-        summary.changeControlRecordsDeleted > 0 ||
-        summary.exportJobsDeleted > 0 ||
-        summary.webhookDeliveriesDeleted > 0
-      ) {
-        const audit = createAuditEvent({
-          organizationId: organization.id,
-          actor: "system",
-          actorRole: "system",
-          action: "retention_swept",
-          targetType: "organization",
-          targetId: organization.id,
-          source: "worker",
-          metadataJson: {
-            retentionDays: summary.retentionDays,
-            cutoff: summary.cutoff,
-            auditEventsDeleted: summary.auditEventsDeleted,
-            changeControlRecordsDeleted: summary.changeControlRecordsDeleted,
-            exportJobsDeleted: summary.exportJobsDeleted,
-            webhookDeliveriesDeleted: summary.webhookDeliveriesDeleted
-          }
-        });
-        await input.prisma.auditEvent.create({
-          data: {
-            id: audit.id,
-            organizationId: audit.organizationId,
-            schemaVersion: audit.schemaVersion,
-            actor: audit.actor,
-            actorRole: audit.actorRole,
-            action: audit.action,
-            targetType: audit.targetType,
-            targetId: audit.targetId,
-            source: audit.source,
-            metadataJson: audit.metadataJson as never,
-            createdAt: new Date(audit.createdAt)
-          }
-        });
-      }
-
-      return summary;
     });
     results.push(result);
   }
@@ -804,11 +824,17 @@ function startWorker(): void {
  * one.
  *
  * Architectural choice: BullMQ repeatable job vs an external cron script.
- * This uses BullMQ's `Queue.add(name, data, { repeat: { pattern } })`
- * repeatable-job API (bullmq 5.78.1; no separate `QueueScheduler` is needed --
- * that class was removed after BullMQ v2, repeat delay handling has been
- * built into the `Worker` itself since). The alternative considered was a
- * standalone `scripts/*.ts` script invoked by an external Railway cron
+ * This uses BullMQ's `Queue.upsertJobScheduler(schedulerId, repeatOpts,
+ * jobTemplate)` API (bullmq 5.78.1) rather than the legacy `Queue.add(name,
+ * data, { repeat: { pattern } })` form. BullMQ's own docs recommend
+ * `upsertJobScheduler` specifically for registering repeatable jobs
+ * idempotently: it explicitly creates-or-updates the named scheduler rather
+ * than relying on `add()` + a fixed `jobId` to implicitly de-duplicate across
+ * repeated registrations (e.g. on every worker restart), which does not carry
+ * the same documented guarantee. No separate `QueueScheduler` class is needed
+ * either way -- that class was removed after BullMQ v2; repeat-delay handling
+ * has been built into the `Worker` itself since. The alternative considered
+ * was a standalone `scripts/*.ts` script invoked by an external Railway cron
  * trigger, matching the `scripts/*.ts` pattern already used for one-off local
  * tooling (fixtures, policy validation, smoke tests). BullMQ was chosen
  * because:
@@ -832,13 +858,10 @@ function startAuditRecordRetentionSweepSchedule(
 ): void {
   const retentionQueue = new Queue(AUDIT_RECORD_RETENTION_SWEEP_QUEUE, { connection });
   void retentionQueue
-    .add(
+    .upsertJobScheduler(
       AUDIT_RECORD_RETENTION_SWEEP_JOB_NAME,
-      {},
-      {
-        repeat: { pattern: AUDIT_RECORD_RETENTION_SWEEP_CRON },
-        jobId: AUDIT_RECORD_RETENTION_SWEEP_JOB_NAME
-      }
+      { pattern: AUDIT_RECORD_RETENTION_SWEEP_CRON },
+      { name: AUDIT_RECORD_RETENTION_SWEEP_JOB_NAME, data: {} }
     )
     .catch((error) => {
       console.error(

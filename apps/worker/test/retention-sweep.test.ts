@@ -94,7 +94,7 @@ function createFakePrisma(input: {
     return { count: before - rows.length };
   }
 
-  return {
+  const client: any = {
     organization: {
       findMany: vi.fn().mockResolvedValue(
         input.organizations.map((org) => ({
@@ -158,7 +158,6 @@ function createFakePrisma(input: {
           Promise.resolve(deleteManyByOrgAndCreatedAt(webhookDeliveries, where))
       )
     },
-    $transaction: vi.fn((operations: Promise<unknown>[]) => Promise.all(operations)),
     __state: {
       auditEvents,
       changeControlRecords,
@@ -167,6 +166,20 @@ function createFakePrisma(input: {
       createdAuditEvents
     }
   };
+  // $transaction supports both invocation forms Prisma allows: an array of
+  // pending operations (used by the unassigned-rows sweep), and an interactive
+  // callback that receives a transaction client (used by the per-organization
+  // sweep, so the deletes and the audit-event write share one atomic unit).
+  // This fake has no real transaction boundary -- every method already mutates
+  // the shared in-memory arrays directly and synchronously -- so passing the
+  // client itself as `tx` to the callback form is a faithful stand-in.
+  client.$transaction = vi.fn(
+    (operationsOrCallback: Promise<unknown>[] | ((tx: typeof client) => Promise<unknown>)) =>
+      typeof operationsOrCallback === "function"
+        ? operationsOrCallback(client)
+        : Promise.all(operationsOrCallback)
+  );
+  return client;
 }
 
 describe("runAuditRecordRetentionSweep", () => {
@@ -380,10 +393,13 @@ describe("runAuditRecordRetentionSweep", () => {
     expect(results[0]).toMatchObject({ organizationId: "org_a", exportJobsDeleted: 1 });
     expect(prisma.__state.exportJobs.map((row) => row.id)).toEqual(["export_recent"]);
     // Confirms the delete happened inside the same $transaction call as the
-    // pre-existing AuditEvent/ChangeControlRecord deletes, not a second,
-    // separate transaction -- the transaction array now has 4 operations.
+    // pre-existing AuditEvent/ChangeControlRecord deletes (and the retention_swept
+    // audit-event write), not a second, separate transaction -- exactly one
+    // interactive-transaction callback covers all of it.
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
-    expect((prisma.$transaction as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toHaveLength(4);
+    expect((prisma.$transaction as ReturnType<typeof vi.fn>).mock.calls[0]![0]).toBeInstanceOf(
+      Function
+    );
   });
 
   it("deletes an organization's expired WebhookDelivery rows inside the same transaction as the other three models, and leaves recent rows", async () => {
@@ -413,6 +429,37 @@ describe("runAuditRecordRetentionSweep", () => {
 
     expect(results[0]).toMatchObject({ organizationId: "org_a", webhookDeliveriesDeleted: 1 });
     expect(prisma.__state.webhookDeliveries.map((row) => row.id)).toEqual(["delivery_recent"]);
+  });
+
+  it("rejects the whole sweep call when the retention_swept audit-event write fails, rather than silently completing without an audit trail", async () => {
+    // The deletes and the audit-event write are wired to run inside ONE
+    // interactive transaction ($transaction(async (tx) => { ...deletes...;
+    // await tx.auditEvent.create(...); })), so they are coupled at the promise
+    // level: if the create rejects, the whole $transaction call rejects too,
+    // and the caller sees a thrown error rather than a summary implying success.
+    // This fake has no real Postgres transaction machinery -- it mutates the
+    // shared in-memory arrays directly and cannot demonstrate row-level
+    // rollback -- but it DOES prove the coupling that makes rollback possible
+    // in the first place: before this fix, the audit-event write happened in a
+    // separate, independent call after the transaction had already resolved,
+    // so a failure there would never have propagated to the caller at all.
+    const prisma = createFakePrisma({
+      organizations: [{ id: "org_a" }],
+      auditEvents: [
+        { id: "old", organizationId: "org_a", createdAt: new Date("2024-01-01T00:00:00.000Z") }
+      ],
+      changeControlRecords: []
+    });
+    const writeFailure = new Error("simulated audit-event write failure");
+    (prisma.auditEvent.create as ReturnType<typeof vi.fn>).mockRejectedValueOnce(writeFailure);
+
+    await expect(
+      runAuditRecordRetentionSweep({
+        prisma: prisma as never,
+        globalRetentionDays: 365,
+        now
+      })
+    ).rejects.toThrow("simulated audit-event write failure");
   });
 
   it("only sweeps an organization's OWN ExportJob/WebhookDelivery rows, not another organization's rows past the same cutoff", async () => {
