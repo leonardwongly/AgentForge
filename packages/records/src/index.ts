@@ -17,6 +17,8 @@ import {
   type MetadataStoragePolicy
 } from "@agentforge/security";
 
+export * from "./retention.js";
+
 export const AUDIT_EVENT_SCHEMA_VERSION = 1 as const;
 
 export type PolicyTuningInsight = {
@@ -768,6 +770,7 @@ export function requiredAuditMetadataFields(action: AuditEventAction): string[] 
   const common = ["schemaVersion", "actorRole", "source"];
   const fieldsByAction: Record<AuditEventAction, string[]> = {
     policy_changed: ["contentHash", "policyVersion"],
+    policy_reverted: ["contentHash", "policyVersion", "revertedFromVersion"],
     policy_previewed: ["mode", "status", "policyVersion"],
     override_created: ["reason", "scope", "policyVersion", "recordId"],
     evidence_provided: ["kind", "recordId"],
@@ -782,6 +785,13 @@ export function requiredAuditMetadataFields(action: AuditEventAction): string[] 
     github_installation_approved: ["githubInstallationId", "accountLogin"],
     github_installation_rejected: ["githubInstallationId", "accountLogin"],
     retention_changed: ["dataHandling"],
+    retention_swept: [
+      "retentionDays",
+      "auditEventsDeleted",
+      "changeControlRecordsDeleted",
+      "exportJobsDeleted",
+      "webhookDeliveriesDeleted"
+    ],
     repository_settings_changed: ["enabled", "mode"],
     owner_mapping_changed: ["ownerMappings"]
   };
@@ -806,6 +816,7 @@ function auditEventBelongsToRecord(event: AuditEventRecord, record: ChangeContro
 function isRepositoryLifecycleAuditEvent(event: AuditEventRecord): boolean {
   return (
     event.action === "policy_changed" ||
+    event.action === "policy_reverted" ||
     event.action === "repository_settings_changed" ||
     event.action === "retention_changed" ||
     event.action === "owner_mapping_changed"

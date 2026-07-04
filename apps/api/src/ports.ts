@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   AuditEventRecord,
   ChangeControlRecord,
@@ -69,6 +70,11 @@ export interface RepositoryStore {
   ): Promise<RepositorySummary[]>;
   getActivePolicy(repositoryId: string): Promise<RepositoryPolicyState | undefined>;
   saveActivePolicy(policy: RepositoryPolicyState): Promise<RepositoryPolicyState>;
+  listPolicyVersions(repositoryId: string): Promise<RepositoryPolicyVersionSummary[]>;
+  getPolicyVersionById(
+    repositoryId: string,
+    policyVersionId: string
+  ): Promise<RepositoryPolicyState | undefined>;
   updateSettings(input: {
     repositoryId: string;
     patch: RepositorySettingsPatch;
@@ -262,6 +268,8 @@ export type OwnerMappingState = {
   updatedAt: string;
 };
 
+export type RepositoryPolicyVersionRow = RepositoryPolicyState & { id: string };
+
 export type RepositoryPolicyState = {
   repositoryId: string;
   version: string;
@@ -272,6 +280,15 @@ export type RepositoryPolicyState = {
   createdAt: string;
   policyPackId?: string | undefined;
   policyPackVersion?: string | undefined;
+};
+
+export type RepositoryPolicyVersionSummary = {
+  id: string;
+  version: string;
+  mode: ChangeControlRecord["mode"];
+  contentHash: string;
+  createdBy: string;
+  createdAt: string;
 };
 
 export type RepositorySettingsState = {
@@ -416,6 +433,7 @@ type InMemoryPersistenceState = {
   exports: ExportJob[];
   overrides: OverrideRecord[];
   repositoryPolicies: Map<string, RepositoryPolicyState>;
+  repositoryPolicyHistory?: Map<string, RepositoryPolicyVersionRow[]> | undefined;
   repositorySettings: Map<string, RepositorySettingsState>;
   ownerMappings: OwnerMappingState[];
   policyVersionSnapshots: Map<string, PolicyVersionSnapshotState>;
@@ -445,6 +463,7 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
   const exports = new Map<string, ExportJob>();
   const overrides = new Map<string, OverrideRecord>();
   const repositoryPolicies = new Map<string, RepositoryPolicyState>();
+  const repositoryPolicyHistory = new Map<string, RepositoryPolicyVersionRow[]>();
   const repositorySettings = new Map<string, RepositorySettingsState>();
   const policyVersionSnapshots = new Map<string, PolicyVersionSnapshotState>();
   let evaluationSnapshots: EvaluationSnapshotState[] = [];
@@ -459,6 +478,7 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
   const listAuditEvents = () => state?.auditEvents ?? auditEvents;
   const listExports = () => state?.exports ?? [...exports.values()];
   const policyMap = () => state?.repositoryPolicies ?? repositoryPolicies;
+  const policyHistoryMap = () => state?.repositoryPolicyHistory ?? repositoryPolicyHistory;
   const settingsMap = () => state?.repositorySettings ?? repositorySettings;
   const listOwnerMappings = () => state?.ownerMappings ?? ownerMappings;
   const policySnapshotMap = () => state?.policyVersionSnapshots ?? policyVersionSnapshots;
@@ -663,7 +683,28 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
       },
       async saveActivePolicy(policy) {
         policyMap().set(policy.repositoryId, policy);
+        const history = policyHistoryMap();
+        const existing = history.get(policy.repositoryId) ?? [];
+        const row: RepositoryPolicyVersionRow = { ...policy, id: randomUUID() };
+        history.set(policy.repositoryId, [...existing, row]);
         return policy;
+      },
+      async listPolicyVersions(repositoryId) {
+        const history = policyHistoryMap().get(repositoryId) ?? [];
+        return [...history]
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+          .map((entry) => ({
+            id: entry.id,
+            version: entry.version,
+            mode: entry.mode,
+            contentHash: entry.contentHash,
+            createdBy: entry.createdBy,
+            createdAt: entry.createdAt
+          }));
+      },
+      async getPolicyVersionById(repositoryId, policyVersionId) {
+        const history = policyHistoryMap().get(repositoryId) ?? [];
+        return history.find((entry) => entry.id === policyVersionId);
       },
       async updateSettings({ repositoryId, patch, defaultDataHandling, defaultMode }) {
         const existingRecord = listRecords().find((record) => record.repositoryId === repositoryId);

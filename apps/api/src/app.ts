@@ -86,6 +86,8 @@ import {
   type ReplayableDelivery,
   type RepositoryDataHandlingState,
   type RepositoryPolicyState,
+  type RepositoryPolicyVersionRow,
+  type RepositoryPolicyVersionSummary,
   type RepositorySettingsPatch,
   type RepositorySettingsResult,
   type RepositorySettingsState,
@@ -259,6 +261,7 @@ export type AppState = {
   exports: ExportJob[];
   overrides: OverrideRecord[];
   repositoryPolicies: Map<string, RepositoryPolicyState>;
+  repositoryPolicyHistory: Map<string, RepositoryPolicyVersionRow[]>;
   repositorySettings: Map<string, RepositorySettingsState>;
   ownerMappings: OwnerMappingState[];
   policyVersionSnapshots: Map<string, PolicyVersionSnapshotState>;
@@ -531,6 +534,11 @@ const policyUpdateSchema = z
     contentYaml: policyYamlPayloadSchema
   })
   .strict();
+const policyRevertSchema = z
+  .object({
+    targetVersionId: z.string().trim().min(1).max(200)
+  })
+  .strict();
 const policyPreviewSchema = z
   .object({
     contentYaml: policyYamlPayloadSchema.optional(),
@@ -655,6 +663,10 @@ export function createApp(
     actor: string,
     parsed: ReturnType<typeof parsePolicyYaml>
   ) => saveActiveRepositoryPolicy(persistence, repositoryId, contentYaml, actor, parsed);
+  const listRepositoryPolicyVersionsForApi = (repositoryId: string) =>
+    listRepositoryPolicyVersions(persistence, repositoryId);
+  const getRepositoryPolicyVersionForApi = (repositoryId: string, policyVersionId: string) =>
+    getRepositoryPolicyVersion(persistence, repositoryId, policyVersionId);
   const listOwnerMappings = () => listConfiguredOwnerMappings(persistence);
   const saveRepositorySettings = (
     repositoryId: string,
@@ -862,6 +874,7 @@ export function createApp(
     getRepositoryModeOverride: (repositoryId: string) =>
       getRepositoryModeOverride(persistence, repositoryId),
     getRepositoryPolicy,
+    getRepositoryPolicyVersion: getRepositoryPolicyVersionForApi,
     githubCredentialsConfigured,
     githubInstallationDecisionSchema,
     githubInstallationSummary: (organizationId: string) =>
@@ -880,6 +893,7 @@ export function createApp(
       listRecentWebhookDeliveryFailures(persistence, organizationId),
     listRecords,
     listRepositories,
+    listRepositoryPolicyVersions: listRepositoryPolicyVersionsForApi,
     markWebhookDeliveryCompleted: (deliveryId: string) =>
       markWebhookDeliveryCompleted(persistence, deliveryId),
     markWebhookDeliveryEnqueueFailed: (deliveryId: string, error: unknown) =>
@@ -892,6 +906,7 @@ export function createApp(
     ownerMappingForApi,
     paginateRecords,
     policyPreviewSchema,
+    policyRevertSchema,
     policyUpdateSchema,
     prisma,
     runtimeStore,
@@ -950,6 +965,7 @@ export function createInitialState(): AppState {
     exports: [],
     overrides: [],
     repositoryPolicies: new Map(),
+    repositoryPolicyHistory: new Map(),
     repositorySettings: new Map(),
     ownerMappings: [],
     policyVersionSnapshots: new Map(),
@@ -1000,6 +1016,21 @@ async function saveActiveRepositoryPolicy(
     policyPackVersion: parsed.config.policy_pack_version
   };
   return persistence.repositories.saveActivePolicy(policy);
+}
+
+async function listRepositoryPolicyVersions(
+  persistence: PersistencePort,
+  repositoryId: string
+): Promise<RepositoryPolicyVersionSummary[]> {
+  return persistence.repositories.listPolicyVersions(repositoryId);
+}
+
+async function getRepositoryPolicyVersion(
+  persistence: PersistencePort,
+  repositoryId: string,
+  policyVersionId: string
+): Promise<RepositoryPolicyState | undefined> {
+  return persistence.repositories.getPolicyVersionById(repositoryId, policyVersionId);
 }
 
 async function updateRepositorySettings(
@@ -1428,6 +1459,43 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         };
         state.repositoryPolicies.set(policy.repositoryId, finalizedPolicy);
         return finalizedPolicy;
+      },
+      async listPolicyVersions(repositoryId) {
+        const rows = await prisma.policyVersion.findMany({
+          where: { repositoryId },
+          orderBy: { createdAt: "desc" }
+        });
+        return rows.map((row) => ({
+          id: row.id,
+          version: row.version,
+          mode: row.mode,
+          contentHash: row.contentHash,
+          createdBy: row.createdBy,
+          createdAt: row.createdAt.toISOString()
+        }));
+      },
+      async getPolicyVersionById(repositoryId, policyVersionId) {
+        // Scope by repositoryId directly in the query so a version id from a
+        // different repository or organization can never be looked up here,
+        // even if the caller omitted an additional check.
+        const row = await prisma.policyVersion.findFirst({
+          where: { id: policyVersionId, repositoryId }
+        });
+        if (!row) {
+          return undefined;
+        }
+        const parsed = parsePolicyYaml(row.contentYaml);
+        return {
+          repositoryId,
+          version: row.version,
+          mode: row.mode,
+          contentYaml: row.contentYaml,
+          contentHash: row.contentHash,
+          createdBy: row.createdBy,
+          createdAt: row.createdAt.toISOString(),
+          policyPackId: parsed.config.policy_pack_id,
+          policyPackVersion: parsed.config.policy_pack_version
+        };
       },
       async updateSettings({ repositoryId, patch, defaultDataHandling, defaultMode }) {
         const dataHandlingPatch = extractDataHandlingPatch(patch);

@@ -442,6 +442,45 @@ export async function loadPolicyYaml(repositoryId: string): Promise<{
   }
 }
 
+export type PolicyVersionHistoryEntry = {
+  id: string;
+  version: string;
+  mode: string;
+  createdAt: string;
+  createdBy: string;
+  contentHash: string;
+};
+
+export async function loadPolicyVersionHistory(repositoryId: string): Promise<{
+  repositoryId: string;
+  versions: PolicyVersionHistoryEntry[];
+  source: DashboardDataSource;
+  message: string;
+}> {
+  try {
+    const payload = await fetchApiJson<{
+      repositoryId: string;
+      versions?: PolicyVersionHistoryEntry[] | undefined;
+    }>(`/api/repositories/${encodeURIComponent(repositoryId)}/policy/versions`);
+    return {
+      repositoryId: payload.repositoryId,
+      versions: payload.versions ?? [],
+      source: "api",
+      message: "Loaded the repository policy version history from the API."
+    };
+  } catch (error) {
+    return {
+      repositoryId,
+      versions: [],
+      source: "unavailable",
+      message:
+        error instanceof Error
+          ? `Policy version history API unavailable: ${error.message}.`
+          : "Policy version history API unavailable."
+    };
+  }
+}
+
 export async function loadRepositories(): Promise<{
   repositories: RepositoryOption[];
   source: DashboardDataSource;
