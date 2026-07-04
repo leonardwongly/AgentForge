@@ -6,6 +6,7 @@ import type { PolicyResult, PullRequestInput } from "@agentforge/core";
 import type { GithubAdapterClient, GithubWebhookEnvelope } from "@agentforge/github";
 import {
   classifyMergeGuardEvaluationFailure,
+  computeBackoffDelay,
   processMergeGuardEvaluationJob,
   recordMergeGuardEvaluationFailure,
   RepositoryNotConfiguredError,
@@ -322,6 +323,207 @@ describe("Merge Guard worker evaluation jobs", () => {
     );
   });
 
+  it("lets exactly one of two truly concurrent publish attempts for the same delivery win the claim", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/db";
+    process.env.NODE_ENV = "development";
+    const pr = await loadPr("billing-path.json");
+    const envelope = webhookEnvelope(pr);
+    const policyYaml = await loadPolicy("fintech.yaml");
+    mockPrismaUpsert.mockResolvedValue({
+      id: "record-123",
+      pullRequestId: "pr"
+    });
+
+    // Shared mutable "row" standing in for the single webhook_delivery record both
+    // concurrent calls contend over. Prisma's `updateMany` performs the WHERE match
+    // and the write atomically inside a single database statement, so no other
+    // transaction can observe or interleave with a half-applied update. A vi.fn mock
+    // body runs to completion without ever yielding to the event loop (no `await`
+    // inside the check-and-set below), which reproduces that same atomicity: once a
+    // call enters `mockWebhookDeliveryUpdateMany`, it evaluates the WHERE clause
+    // against `row` and mutates `row` before returning, with no possibility of the
+    // other concurrent call's invocation interleaving mid-check. This is what makes
+    // "whichever call's updateMany executes first wins" a faithful model of Postgres
+    // row-level locking rather than a JS-scheduling artifact.
+    let row: {
+      publishedCheckRunId: bigint | null;
+      checkConclusion: string | null;
+      checkPublishedAt: Date | null;
+    } | null = null;
+    let updateManyCallCount = 0;
+    const updateManyCallOrder: string[] = [];
+
+    mockWebhookDeliveryFindUnique.mockImplementation(async () => {
+      if (!row) {
+        return null;
+      }
+      return { ...row };
+    });
+    mockWebhookDeliveryUpdateMany.mockImplementation(
+      async (args: {
+        where: {
+          deliveryId: string;
+          checkPublishedAt?: Date | null;
+          publishedCheckRunId?: null;
+        };
+        data: {
+          checkConclusion?: string;
+          checkPublishedAt?: Date | null;
+          publishedCheckRunId?: bigint | null;
+        };
+      }) => {
+        updateManyCallCount += 1;
+        const callIndex = updateManyCallCount;
+
+        // Claim attempt: WHERE requires checkPublishedAt to still be null (the
+        // fresh-claim path publishCheckOnce takes when no previous row exists).
+        if (args.where.checkPublishedAt === null && row === null) {
+          row = {
+            publishedCheckRunId: null,
+            checkConclusion: args.data.checkConclusion ?? null,
+            checkPublishedAt: args.data.checkPublishedAt ?? new Date()
+          };
+          updateManyCallOrder.push(`call-${callIndex}:claimed`);
+          return { count: 1 };
+        }
+        // A second claim attempt against an already-claimed row loses the race.
+        if (args.where.checkPublishedAt === null && row !== null) {
+          updateManyCallOrder.push(`call-${callIndex}:lost-race`);
+          return { count: 0 };
+        }
+        // Finalize/rollback updateMany after publish() resolves: matches by the
+        // claimant's own claimTime, so only the claim owner's finalize call can
+        // apply it.
+        if (
+          args.where.checkPublishedAt instanceof Date &&
+          row &&
+          row.checkPublishedAt?.getTime() === args.where.checkPublishedAt.getTime()
+        ) {
+          row = {
+            publishedCheckRunId:
+              args.data.publishedCheckRunId !== undefined
+                ? args.data.publishedCheckRunId
+                : row.publishedCheckRunId,
+            checkConclusion: args.data.checkConclusion ?? row.checkConclusion,
+            checkPublishedAt:
+              args.data.checkPublishedAt !== undefined
+                ? args.data.checkPublishedAt
+                : row.checkPublishedAt
+          };
+          updateManyCallOrder.push(`call-${callIndex}:finalized`);
+          return { count: 1 };
+        }
+        updateManyCallOrder.push(`call-${callIndex}:no-match`);
+        return { count: 0 };
+      }
+    );
+
+    const publishedRunIds: number[] = [];
+    const githubCheckPublisher = vi.fn(async () => {
+      // Simulate real GitHub API latency so both racers are genuinely in flight
+      // together rather than one completing before the other starts.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const id = 500 + publishedRunIds.length;
+      publishedRunIds.push(id);
+      return { id, conclusion: "neutral" as const };
+    });
+
+    const [resultA, resultB] = await Promise.all([
+      processMergeGuardEvaluationJob({
+        deliveryId: envelope.deliveryId,
+        envelope,
+        policyYaml,
+        githubClient: githubClientForPr(pr),
+        githubCheckPublisher
+      }),
+      processMergeGuardEvaluationJob({
+        deliveryId: envelope.deliveryId,
+        envelope,
+        policyYaml,
+        githubClient: githubClientForPr(pr),
+        githubCheckPublisher
+      })
+    ]);
+
+    // Neither concurrent call throws/rejects; both resolve to a valid result shape.
+    expect(resultA.recordId).toBeDefined();
+    expect(resultB.recordId).toBeDefined();
+
+    // The correctness property that matters: exactly one actual GitHub publish
+    // happened across both racing calls.
+    expect(githubCheckPublisher).toHaveBeenCalledTimes(1);
+    expect(publishedRunIds).toHaveLength(1);
+
+    // Exactly one of the two job results reflects a real, freshly published check;
+    // the other reflects the lost-race outcome from publishCheckOnce: `published:
+    // false` with no id, because the loser observed `claim.count === 0`, re-read the
+    // row via findUnique, found the winner's claim already taken but not yet
+    // finalized with a publishedCheckRunId (winner was still inside its `publish()`
+    // await), and therefore returned `{ published: false, id: undefined, reused:
+    // true }` without attempting its own publish.
+    const results = [resultA, resultB];
+    const winners = results.filter((r) => r.checkPublished === true);
+    const losers = results.filter((r) => r.checkPublished === false);
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+    expect(winners[0]?.publishedCheckRunId).toBe(publishedRunIds[0]);
+    expect(losers[0]?.publishedCheckRunId).toBeUndefined();
+
+    // Exactly one updateMany call actually claimed the row; confirms the WHERE
+    // clause's mutual exclusivity was exercised by both racers, not skipped by one.
+    expect(updateManyCallOrder.filter((entry) => entry.endsWith(":claimed"))).toHaveLength(1);
+    expect(updateManyCallOrder.filter((entry) => entry.endsWith(":lost-race"))).toHaveLength(1);
+  });
+
+  it("does not re-attempt publish when retrying within the claim TTL after a crash between claim and GitHub call", async () => {
+    process.env.DATABASE_URL = "postgresql://localhost:5432/db";
+    process.env.NODE_ENV = "development";
+    const pr = await loadPr("billing-path.json");
+    const envelope = webhookEnvelope(pr);
+
+    // Simulates a worker that claimed the row (checkPublishedAt set) and then
+    // crashed before the GitHub API call completed, so publishedCheckRunId was
+    // never written. The claim timestamp is well inside CHECK_PUBLICATION_CLAIM_TTL_MS
+    // (5 minutes), so a retry landing now must treat the claim as still "in flight"
+    // rather than reclaimable.
+    mockWebhookDeliveryFindUnique.mockResolvedValue({
+      publishedCheckRunId: null,
+      checkConclusion: "neutral",
+      checkPublishedAt: new Date(Date.now() - 30_000)
+    });
+    mockPrismaUpsert.mockResolvedValue({
+      id: "record-123",
+      pullRequestId: "pr"
+    });
+
+    const published = vi.fn(async () => ({ id: 999, conclusion: "neutral" as const }));
+
+    const result = await processMergeGuardEvaluationJob({
+      deliveryId: envelope.deliveryId,
+      envelope,
+      policyYaml: await loadPolicy("fintech.yaml"),
+      githubClient: githubClientForPr(pr),
+      githubCheckPublisher: published
+    });
+
+    // Pins publishCheckOnce's actual current behavior: a retry that observes an
+    // unfinished claim inside the TTL window returns without publishing at all
+    // (not "reused with a real check-run id" — there is no id yet, since the
+    // original claimant never finished). This documents the silent-skip-publish
+    // window: the PR check the retry represents will not be published by this
+    // call, and nothing else in this retry attempt re-triggers it either.
+    expect(published).not.toHaveBeenCalled();
+    expect(result.checkPublished).toBe(false);
+    expect(result.publishedCheckRunId).toBeUndefined();
+    // The retry still completes cleanly rather than throwing.
+    expect(result.recordId).toBeDefined();
+    expect(result.checkConclusion).toBe("neutral");
+
+    // updateMany (the claim/finalize write path) is never reached on this branch,
+    // since publishCheckOnce returns immediately after the TTL check.
+    expect(mockWebhookDeliveryUpdateMany).not.toHaveBeenCalled();
+  });
+
   it("ignores stale check_run webhooks without publishing a Merge Guard check", async () => {
     const pr = await loadPr("billing-path.json");
     const published = vi.fn();
@@ -355,6 +557,80 @@ describe("Merge Guard worker evaluation jobs", () => {
       checkPublished: false
     });
     expect(published).not.toHaveBeenCalled();
+  });
+
+  it("skips publishing a superseded synchronize evaluation when GitHub's head_sha has advanced since this job's evaluation ran", async () => {
+    const olderPush = await loadPr("billing-path.json");
+    const newerPush = { ...olderPush, headSha: "newer-push-sha" };
+    const published: Array<{ pr: PullRequestInput }> = [];
+
+    // Job B (newer push) is processed first: GitHub already reflects `newerPush.headSha`,
+    // matches its own evaluated headSha, and it publishes successfully.
+    const newerResult = await processMergeGuardEvaluationJob({
+      deliveryId: "delivery-push-2-newer",
+      pr: newerPush,
+      envelope: webhookEnvelope(newerPush, { action: "synchronize" }),
+      policyYaml: await loadPolicy("fintech.yaml"),
+      githubClient: githubClientForPr(newerPush),
+      githubCheckPublisher: async (input) => {
+        published.push({ pr: input.pr });
+        return { id: 100, conclusion: "neutral" };
+      }
+    });
+
+    expect(newerResult.checkPublished).toBe(true);
+
+    // Job A (older push) is picked up late (e.g. Redis scheduling/worker restart timing).
+    // It evaluated `olderPush` (headSha frozen at whatever this job's evaluation used),
+    // but by the time it is about to publish, GitHub's live PR state (the mocked client's
+    // `pulls.get`) already reflects `newerPush.headSha` because push 2 has since landed.
+    const olderResult = await processMergeGuardEvaluationJob({
+      deliveryId: "delivery-push-1-older",
+      pr: olderPush,
+      envelope: webhookEnvelope(olderPush, { action: "synchronize" }),
+      policyYaml: await loadPolicy("fintech.yaml"),
+      githubClient: githubClientForPr(newerPush),
+      githubCheckPublisher: async (input) => {
+        published.push({ pr: input.pr });
+        return { id: 101, conclusion: "neutral" };
+      }
+    });
+
+    expect(olderResult).toMatchObject({
+      repositoryFullName: olderPush.repositoryFullName,
+      pullRequestNumber: olderPush.pullRequestNumber,
+      checkConclusion: "neutral",
+      checkPublished: false
+    });
+    // Only the newer push's check-run was published; the stale job never overwrote it.
+    expect(published).toHaveLength(1);
+    expect(published[0]?.pr.headSha).toBe(newerPush.headSha);
+  });
+
+  it("still publishes normally for a single synchronize job when the PR head_sha has not moved (regression guard)", async () => {
+    const pr = await loadPr("billing-path.json");
+    const published: Array<{ pr: PullRequestInput }> = [];
+
+    const result = await processMergeGuardEvaluationJob({
+      deliveryId: "delivery-single-synchronize",
+      pr,
+      envelope: webhookEnvelope(pr, { action: "synchronize" }),
+      policyYaml: await loadPolicy("fintech.yaml"),
+      githubClient: githubClientForPr(pr),
+      githubCheckPublisher: async (input) => {
+        published.push({ pr: input.pr });
+        return { id: 200, conclusion: "neutral" };
+      }
+    });
+
+    expect(result).toMatchObject({
+      repositoryFullName: pr.repositoryFullName,
+      pullRequestNumber: pr.pullRequestNumber,
+      checkConclusion: "neutral",
+      checkPublished: true,
+      publishedCheckRunId: 200
+    });
+    expect(published).toHaveLength(1);
   });
 
   it("uses verified GitHub team membership to clear required team reviewers", async () => {
@@ -532,6 +808,78 @@ describe("Merge Guard worker evaluation jobs", () => {
       kind: "rollback_plan",
       status: "missing",
       aiDraft: expect.stringContaining("### Rollback Plan for Database Migration")
+    });
+  });
+
+  describe("computeBackoffDelay", () => {
+    function rateLimitedError(headers: Record<string, string>): Error {
+      const error = new Error("secondary rate limit") as Error & {
+        status: number;
+        response: { headers: Record<string, string> };
+      };
+      error.status = 403;
+      error.response = { headers };
+      return error;
+    }
+
+    it("uses GitHub's retry-after header directly instead of exponential backoff", () => {
+      const err = rateLimitedError({ "retry-after": "5" });
+      const delay = computeBackoffDelay(3, "exponentialWithJitter", err, {
+        opts: { backoff: { delay: 30000 } }
+      });
+
+      // 5s base + up to 2s jitter, never below the 1s floor.
+      expect(delay).toBeGreaterThanOrEqual(5000);
+      expect(delay).toBeLessThanOrEqual(7000);
+    });
+
+    it("uses GitHub's x-ratelimit-reset header when retry-after is absent", () => {
+      const resetEpochSeconds = Math.floor(Date.now() / 1000) + 30;
+      const err = rateLimitedError({
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(resetEpochSeconds)
+      });
+      const delay = computeBackoffDelay(1, "exponentialWithJitter", err, {
+        opts: { backoff: { delay: 30000 } }
+      });
+
+      expect(delay).toBeGreaterThanOrEqual(28000);
+      expect(delay).toBeLessThanOrEqual(32000);
+    });
+
+    it("caps a GitHub-directed wait at the maximum backoff bound", () => {
+      const err = rateLimitedError({ "retry-after": String(60 * 60) }); // 1 hour
+      const delay = computeBackoffDelay(1, "exponentialWithJitter", err, {
+        opts: { backoff: { delay: 30000 } }
+      });
+
+      expect(delay).toBe(15 * 60 * 1000);
+    });
+
+    it("falls back to exponential-with-jitter when the error carries no GitHub rate-limit signal", () => {
+      const delay = computeBackoffDelay(2, "exponentialWithJitter", new Error("boom"), {
+        opts: { backoff: { delay: 1000 } }
+      });
+
+      // attemptsMade=2 -> base delay 2000ms, jittered between 1000ms and 3000ms.
+      expect(delay).toBeGreaterThanOrEqual(1000);
+      expect(delay).toBeLessThanOrEqual(3000);
+    });
+
+    it("falls back to the generic delay calculation for unknown backoff types", () => {
+      const delay = computeBackoffDelay(1, "unknown-type", new Error("boom"), {
+        opts: { backoff: { delay: 5000 } }
+      });
+
+      expect(delay).toBe(5000);
+    });
+
+    it("uses the default base delay when the job has no explicit backoff options", () => {
+      const delay = computeBackoffDelay(1, "exponentialWithJitter", new Error("boom"), {
+        opts: {}
+      });
+
+      expect(delay).toBeGreaterThan(0);
     });
   });
 });

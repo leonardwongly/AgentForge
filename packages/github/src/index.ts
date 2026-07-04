@@ -838,6 +838,37 @@ function githubErrorLooksRateLimited(error: unknown): boolean {
   return headers?.["x-ratelimit-remaining"] === "0";
 }
 
+/**
+ * Extracts the number of milliseconds a caller should wait before retrying a
+ * failed GitHub request, per GitHub's own rate-limit signaling.
+ *
+ * Checks, in order:
+ * 1. `retry-after` — an HTTP-spec header expressed in whole seconds.
+ * 2. `x-ratelimit-reset` — a Unix epoch **seconds** timestamp (GitHub's REST
+ *    API convention) indicating when the current rate-limit window resets.
+ *
+ * Returns `undefined` when neither header is present or parseable, so callers
+ * can fall back to their own backoff strategy without special-casing NaN.
+ */
+export function githubRetryAfterMs(error: unknown): number | undefined {
+  const headers = githubErrorHeaders(error);
+  if (!headers) {
+    return undefined;
+  }
+
+  const retryAfterSeconds = Number(headers["retry-after"]);
+  if (Number.isFinite(retryAfterSeconds)) {
+    return Math.max(0, retryAfterSeconds * 1000);
+  }
+
+  const resetEpochSeconds = Number(headers["x-ratelimit-reset"]);
+  if (Number.isFinite(resetEpochSeconds)) {
+    return Math.max(0, resetEpochSeconds * 1000 - Date.now());
+  }
+
+  return undefined;
+}
+
 function githubErrorHeaders(error: unknown): Record<string, string> | undefined {
   if (typeof error !== "object" || error === null) {
     return undefined;

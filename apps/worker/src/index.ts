@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
-import { Worker } from "bullmq";
+import { Queue, Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { loadConfig } from "@agentforge/config";
 import {
+  AUDIT_RECORD_RETENTION_SWEEP_CRON,
+  AUDIT_RECORD_RETENTION_SWEEP_JOB_NAME,
+  AUDIT_RECORD_RETENTION_SWEEP_QUEUE,
   MERGE_GUARD_EVALUATION_ATTEMPTS,
   MERGE_GUARD_EVALUATION_BACKOFF_MS,
   MERGE_GUARD_EVALUATION_QUEUE,
@@ -20,6 +23,7 @@ import {
   createGithubInstallationToken,
   enrichPullRequestReviewsWithTeamMemberships,
   fetchPullRequestInputFromGithub,
+  githubRetryAfterMs,
   publishMergeGuardCheckWithClient,
   type CheckRunPayload,
   type GithubAdapterClient,
@@ -35,7 +39,13 @@ import {
 import {
   createAuditEvent,
   createChangeControlRecord,
-  explainChangeControlRecord
+  explainChangeControlRecord,
+  planAuditRecordRetentionSweep,
+  planUnassignedRetentionSweep,
+  summarizeAuditRecordRetentionSweep,
+  summarizeUnassignedRetentionSweep,
+  type AuditRecordRetentionSweepResult,
+  type UnassignedRetentionSweepResult
 } from "@agentforge/records";
 import {
   sanitizeForMetadataStorage,
@@ -95,6 +105,20 @@ export class StaleCheckRunError extends Error {
       `Ignoring stale check_run webhook for ${repositoryFullName}#${pullRequestNumber}: check_run head_sha ${checkRunHeadSha} does not match current pull request head_sha ${currentHeadSha}.`
     );
     this.name = "StaleCheckRunError";
+  }
+}
+
+export class SupersededHeadShaError extends Error {
+  constructor(
+    readonly repositoryFullName: string,
+    readonly pullRequestNumber: number,
+    readonly evaluatedHeadSha: string,
+    readonly currentHeadSha: string
+  ) {
+    super(
+      `Skipping check-run publish for ${repositoryFullName}#${pullRequestNumber}: evaluation ran for head_sha ${evaluatedHeadSha} but the pull request has since advanced to ${currentHeadSha}.`
+    );
+    this.name = "SupersededHeadShaError";
   }
 }
 
@@ -231,6 +255,22 @@ export async function processMergeGuardEvaluationJob(
       )
     : undefined;
   const checkRun = buildCheckRunPayload(pr, result);
+
+  try {
+    await rejectSupersededHeadSha({
+      envelope: data.envelope,
+      pr,
+      owner: githubContext.owner,
+      repo: githubContext.repo,
+      client: githubContext.githubClient
+    });
+  } catch (error) {
+    if (error instanceof SupersededHeadShaError) {
+      return supersededHeadShaResult(error, persistedRecord?.recordId ?? record.id);
+    }
+    throw error;
+  }
+
   const published = await publishCheckOnce({
     prisma,
     deliveryId: data.deliveryId,
@@ -344,12 +384,301 @@ function staleCheckRunResult(
   };
 }
 
+function supersededHeadShaResult(
+  error: SupersededHeadShaError,
+  recordId: string
+): MergeGuardEvaluationJobResult {
+  return {
+    processedAt: new Date().toISOString(),
+    recordId,
+    repositoryFullName: error.repositoryFullName,
+    pullRequestNumber: error.pullRequestNumber,
+    status: "pass",
+    lifecycle: "closed",
+    checkConclusion: "neutral",
+    checkPublished: false
+  };
+}
+
 function getWorkerPrisma(config: ReturnType<typeof loadConfig>): PrismaClient | undefined {
   if (!config.databaseUrl || config.nodeEnv === "test") {
     return undefined;
   }
   workerPrisma ??= createPrismaClient(config.databaseUrl);
   return workerPrisma;
+}
+
+/**
+ * Enforces AUDIT_RECORD_RETENTION_DAYS (and any per-organization
+ * RetentionSetting.auditRecordRetentionDays override) by hard-deleting
+ * AuditEvent, ChangeControlRecord, ExportJob, and WebhookDelivery rows whose
+ * timestamp is strictly older than the resolved retention cutoff.
+ *
+ * Hard-delete vs archive: this deletes rows outright rather than soft-deleting
+ * them (the pattern used for removed repositories via
+ * `archiveRemovedRepositoriesInPrisma`, which sets `archivedAt`/`archiveReason`
+ * and keeps the row). "Retention" for audit/compliance logs conventionally
+ * means rows outside the window are not retained, and the repository archive
+ * pattern does not map cleanly here: archiving a repository preserves a live,
+ * still-queryable entity that can be un-archived; there is no equivalent
+ * "un-delete" concept requested for audit trail rows, and keeping them forever
+ * under a different flag would defeat the purpose of a retention control.
+ * That said, hard-deleting compliance/audit records is a bigger decision than
+ * a plain bug fix and may warrant explicit product sign-off before running
+ * this in a real production environment with real customer data -- see the
+ * task report for this flag. ExportJob and WebhookDelivery follow the same
+ * hard-delete choice for consistency: both are lower-sensitivity than the
+ * audit trail (their persisted content is already redacted/metadata-only
+ * before being written at all), and introducing a different archive pattern
+ * for only two of the four swept models would fragment the retention story
+ * without a distinct legal/compliance reason to do so.
+ *
+ * RLS: organization discovery below runs unbound/permissively (there is no
+ * single actor/org to scope a system-wide maintenance sweep to), exactly like
+ * the worker's existing repository bootstrap lookup in
+ * `resolveRuntimeEvaluationContext`. Once a specific organization's rows are
+ * being deleted, that delete (and its audit event) runs inside
+ * `runWithOrgContext(organizationId, ...)`, matching how `persistWorkerRecord`
+ * binds org context before writing AuditEvent/ChangeControlRecord rows. This
+ * keeps the Postgres RLS backstop meaningful for the sweep's writes even though
+ * it is a cross-tenant system job rather than a single request/job with one
+ * natural actor.
+ *
+ * Unassigned rows: `WebhookDelivery.organizationId` and
+ * `ExportJob.organizationId` are nullable in the schema (a webhook delivery
+ * can arrive, or an export job can exist, before a GitHub installation is
+ * approved and linked to an organization). The per-organization loop below
+ * can never reach those rows, since it only ever filters by a specific
+ * `organizationId`. A second, separate pass after the loop sweeps
+ * organizationId-null ExportJob/WebhookDelivery rows against the *global*
+ * retention window (there is no per-org override to resolve for a row with
+ * no org). That pass runs unbound -- no `runWithOrgContext` -- because there
+ * is no single organization to bind for a cross-tenant, no-tenant row; this
+ * matches how this sweep's own organization-discovery query above, and the
+ * worker's existing repository bootstrap lookup, also run unbound for the
+ * same reason (see docs/tenant-isolation-rls.md). Because
+ * `AuditEvent.organizationId` is required (non-nullable) in the schema, there
+ * is no organization to attach a `retention_swept` AuditEvent to for this
+ * pass; it is logged via `console.log` with structured fields instead. See
+ * the task report for this tradeoff.
+ */
+export async function runAuditRecordRetentionSweep(input: {
+  prisma: PrismaClient;
+  globalRetentionDays: number;
+  now?: Date | undefined;
+}): Promise<AuditRecordRetentionSweepResult[]> {
+  const organizations = await input.prisma.organization.findMany({
+    select: {
+      id: true,
+      retentionSettings: { select: { auditRecordRetentionDays: true } }
+    }
+  });
+
+  const results: AuditRecordRetentionSweepResult[] = [];
+  for (const organization of organizations) {
+    const plan = planAuditRecordRetentionSweep({
+      organizationId: organization.id,
+      globalRetentionDays: input.globalRetentionDays,
+      organizationOverrideDays: organization.retentionSettings?.auditRecordRetentionDays,
+      now: input.now
+    });
+
+    const result = await runWithOrgContext(organization.id, async () => {
+      const [
+        auditEventsDeleted,
+        changeControlRecordsDeleted,
+        exportJobsDeleted,
+        webhookDeliveriesDeleted
+      ] = await input.prisma.$transaction([
+        input.prisma.auditEvent.deleteMany({ where: plan.auditEventWhere }),
+        input.prisma.changeControlRecord.deleteMany({ where: plan.changeControlRecordWhere }),
+        input.prisma.exportJob.deleteMany({
+          where: { organizationId: organization.id, createdAt: { lt: plan.cutoff } }
+        }),
+        input.prisma.webhookDelivery.deleteMany({
+          where: { organizationId: organization.id, createdAt: { lt: plan.cutoff } }
+        })
+      ]);
+      const summary = summarizeAuditRecordRetentionSweep({
+        plan,
+        auditEventsDeleted: auditEventsDeleted.count,
+        changeControlRecordsDeleted: changeControlRecordsDeleted.count,
+        exportJobsDeleted: exportJobsDeleted.count,
+        webhookDeliveriesDeleted: webhookDeliveriesDeleted.count
+      });
+
+      if (
+        summary.auditEventsDeleted > 0 ||
+        summary.changeControlRecordsDeleted > 0 ||
+        summary.exportJobsDeleted > 0 ||
+        summary.webhookDeliveriesDeleted > 0
+      ) {
+        const audit = createAuditEvent({
+          organizationId: organization.id,
+          actor: "system",
+          actorRole: "system",
+          action: "retention_swept",
+          targetType: "organization",
+          targetId: organization.id,
+          source: "worker",
+          metadataJson: {
+            retentionDays: summary.retentionDays,
+            cutoff: summary.cutoff,
+            auditEventsDeleted: summary.auditEventsDeleted,
+            changeControlRecordsDeleted: summary.changeControlRecordsDeleted,
+            exportJobsDeleted: summary.exportJobsDeleted,
+            webhookDeliveriesDeleted: summary.webhookDeliveriesDeleted
+          }
+        });
+        await input.prisma.auditEvent.create({
+          data: {
+            id: audit.id,
+            organizationId: audit.organizationId,
+            schemaVersion: audit.schemaVersion,
+            actor: audit.actor,
+            actorRole: audit.actorRole,
+            action: audit.action,
+            targetType: audit.targetType,
+            targetId: audit.targetId,
+            source: audit.source,
+            metadataJson: audit.metadataJson as never,
+            createdAt: new Date(audit.createdAt)
+          }
+        });
+      }
+
+      return summary;
+    });
+    results.push(result);
+  }
+  return results;
+}
+
+/**
+ * Sibling to `runAuditRecordRetentionSweep`: hard-deletes organizationId-null
+ * ExportJob/WebhookDelivery rows past the *global* retention cutoff.
+ *
+ * This is a separate function (rather than folded into the per-organization
+ * loop above) because it targets rows the per-organization loop structurally
+ * cannot reach -- that loop only ever queries `where: { organizationId: <a
+ * specific org> }`, so a row with `organizationId: null` never matches any
+ * iteration of it, no matter how many organizations exist. Both models allow
+ * a null organizationId in the schema for rows that predate GitHub
+ * installation approval (e.g. a webhook delivery received before its
+ * installation was linked to an organization) or any other system-level row
+ * with no org assigned yet.
+ *
+ * Unbound / no `runWithOrgContext`: there is no single organization to bind
+ * for a delete that, by definition, only ever touches organizationId-null
+ * rows. This mirrors how this file's own organization-discovery query in
+ * `runAuditRecordRetentionSweep` above, and the worker's existing repository
+ * bootstrap lookup in `resolveRuntimeEvaluationContext`, also run
+ * unbound/permissively for system-wide, no-single-tenant operations (see
+ * docs/tenant-isolation-rls.md).
+ *
+ * No AuditEvent: `AuditEvent.organizationId` is required (non-nullable) in
+ * the schema, so there is no organization to attach a `retention_swept`
+ * AuditEvent to for a delete that is, by construction, not scoped to any
+ * organization. This is logged via `console.log`/`console.info` with
+ * structured fields instead, following this file's existing console logging
+ * conventions (see e.g. the "Processing Merge Guard evaluation job" and
+ * "Retention sweep completed" call sites). This means unassigned-row
+ * deletions are visible in worker logs but are not part of the durable
+ * AuditEvent trail -- see the task report for this tradeoff.
+ */
+export async function sweepUnassignedExportJobsAndWebhookDeliveries(input: {
+  prisma: PrismaClient;
+  globalRetentionDays: number;
+  now?: Date | undefined;
+}): Promise<UnassignedRetentionSweepResult> {
+  const plan = planUnassignedRetentionSweep({
+    globalRetentionDays: input.globalRetentionDays,
+    now: input.now
+  });
+
+  const [exportJobsDeleted, webhookDeliveriesDeleted] = await input.prisma.$transaction([
+    input.prisma.exportJob.deleteMany({ where: plan.exportJobWhere }),
+    input.prisma.webhookDelivery.deleteMany({ where: plan.webhookDeliveryWhere })
+  ]);
+
+  const summary = summarizeUnassignedRetentionSweep({
+    plan,
+    exportJobsDeleted: exportJobsDeleted.count,
+    webhookDeliveriesDeleted: webhookDeliveriesDeleted.count
+  });
+
+  if (summary.exportJobsDeleted > 0 || summary.webhookDeliveriesDeleted > 0) {
+    console.info("Retention sweep deleted unassigned (organizationId-null) rows", {
+      deletedCount: summary.exportJobsDeleted,
+      model: "ExportJob",
+      cutoff: summary.cutoff,
+      retentionDays: summary.retentionDays
+    });
+    console.info("Retention sweep deleted unassigned (organizationId-null) rows", {
+      deletedCount: summary.webhookDeliveriesDeleted,
+      model: "WebhookDelivery",
+      cutoff: summary.cutoff,
+      retentionDays: summary.retentionDays
+    });
+  }
+
+  return summary;
+}
+
+/**
+ * Upper bound on any single backoff delay, including GitHub-directed waits.
+ *
+ * GitHub's `retry-after` / `x-ratelimit-reset` signals are normally well
+ * under this (rate-limit windows reset hourly at most, and secondary rate
+ * limits are typically minutes), but a malformed or unexpectedly distant
+ * reset timestamp should not leave a job looking permanently stuck in the
+ * queue. 15 minutes keeps jobs retrying within an operator-visible timeframe
+ * while still respecting a legitimately long server-specified wait.
+ */
+const MAX_BACKOFF_DELAY_MS = 15 * 60 * 1000;
+
+/**
+ * Bounded jitter added on top of an explicit GitHub-specified wait, so that
+ * multiple workers/jobs that hit the same rate limit at the same time don't
+ * all retry in the same instant (thundering herd). Kept small and additive
+ * (not multiplicative) since GitHub already told us the wait it wants.
+ */
+const RATE_LIMIT_JITTER_MS = 2000;
+
+/**
+ * Pure backoff-delay calculation used by BullMQ's `backoffStrategy` hook.
+ *
+ * Extracted from the `Worker` settings closure so it can be unit tested
+ * directly without needing a live BullMQ `Worker`/`Job` instance. Behavior is
+ * unchanged from the original inline closure except for the new
+ * GitHub-aware branch: when the failing error carries a `retry-after` or
+ * `x-ratelimit-reset` header, that server-specified wait is used directly
+ * (plus small jitter) instead of the generic exponential-with-jitter curve,
+ * since GitHub has already told us exactly how long to wait.
+ */
+export function computeBackoffDelay(
+  attemptsMade: number,
+  type: string | undefined,
+  err: unknown,
+  job: { opts: { backoff?: { delay?: number } } }
+): number {
+  const retryAfterMs = githubRetryAfterMs(err);
+  if (retryAfterMs !== undefined) {
+    const jittered = retryAfterMs + Math.random() * RATE_LIMIT_JITTER_MS;
+    return Math.min(MAX_BACKOFF_DELAY_MS, Math.max(1000, Math.floor(jittered)));
+  }
+
+  if (type === "exponentialWithJitter") {
+    const baseDelay = job.opts.backoff?.delay ?? MERGE_GUARD_EVALUATION_BACKOFF_MS;
+    const delay = baseDelay * Math.pow(2, attemptsMade - 1);
+    const min = delay * 0.5;
+    const max = delay * 1.5;
+    const jittered = Math.floor(min + Math.random() * (max - min));
+    return Math.min(MAX_BACKOFF_DELAY_MS, Math.max(1000, jittered));
+  }
+  // Fallback delay calculation
+  const baseDelay = job.opts.backoff?.delay ?? 30000;
+  return Math.min(MAX_BACKOFF_DELAY_MS, baseDelay * Math.pow(2, attemptsMade - 1));
 }
 
 let workerCache: RedisCacheManager | undefined;
@@ -381,22 +710,13 @@ function startWorker(): void {
     {
       connection,
       settings: {
-        backoffStrategy: (attemptsMade: number, type: string | undefined, err: any, job: any) => {
-          if (type === "exponentialWithJitter") {
-            const baseDelay = job.opts.backoff?.delay ?? MERGE_GUARD_EVALUATION_BACKOFF_MS;
-            const delay = baseDelay * Math.pow(2, attemptsMade - 1);
-            const min = delay * 0.5;
-            const max = delay * 1.5;
-            const jittered = Math.floor(min + Math.random() * (max - min));
-            return Math.max(1000, jittered);
-          }
-          // Fallback delay calculation
-          const baseDelay = job.opts.backoff?.delay ?? 30000;
-          return baseDelay * Math.pow(2, attemptsMade - 1);
-        }
+        backoffStrategy: (attemptsMade: number, type: string | undefined, err: any, job: any) =>
+          computeBackoffDelay(attemptsMade, type, err, job)
       }
     }
   );
+
+  startAuditRecordRetentionSweepSchedule(config, connection);
 
   worker.on("active", (job) => {
     if (workerPrisma && job.data.deliveryId) {
@@ -468,6 +788,145 @@ function startWorker(): void {
         });
       });
     }
+  });
+}
+
+/**
+ * Schedules the recurring AuditEvent/ChangeControlRecord/ExportJob/WebhookDelivery
+ * retention sweep as a BullMQ repeatable job on
+ * `AUDIT_RECORD_RETENTION_SWEEP_QUEUE`, and starts a `Worker` that runs
+ * `runAuditRecordRetentionSweep` (per-organization sweep of all four models)
+ * followed by `sweepUnassignedExportJobsAndWebhookDeliveries` (the
+ * organizationId-null ExportJob/WebhookDelivery pass) whenever that job
+ * fires. This remains one queue/schedule rather than a second, competing
+ * cron -- extending the existing AuditEvent/ChangeControlRecord sweep to
+ * cover two more models is the same maintenance operation, not a distinct
+ * one.
+ *
+ * Architectural choice: BullMQ repeatable job vs an external cron script.
+ * This uses BullMQ's `Queue.add(name, data, { repeat: { pattern } })`
+ * repeatable-job API (bullmq 5.78.1; no separate `QueueScheduler` is needed --
+ * that class was removed after BullMQ v2, repeat delay handling has been
+ * built into the `Worker` itself since). The alternative considered was a
+ * standalone `scripts/*.ts` script invoked by an external Railway cron
+ * trigger, matching the `scripts/*.ts` pattern already used for one-off local
+ * tooling (fixtures, policy validation, smoke tests). BullMQ was chosen
+ * because:
+ *   - `docs/railway-deployment.md` and `docs/runbook.md` document exactly one
+ *     scheduled/periodic-task mechanism already deployed: the worker process
+ *     consuming a Redis-backed BullMQ queue. There is no existing Railway cron
+ *     service, cron trigger, or documented external-cron pattern anywhere in
+ *     this repository to be consistent with.
+ *   - The worker already holds a live Postgres (Prisma) connection and Redis
+ *     connection; a standalone script would need to duplicate that connection
+ *     setup and would run as a second deployable unit with its own
+ *     build/start/health story that Railway's topology doesn't define yet.
+ *   - A BullMQ repeatable job is visible through the same admin queue APIs
+ *     (`GET /api/admin/queue`) already documented for operating this system,
+ *     rather than requiring a new out-of-band monitoring surface for cron
+ *     success/failure.
+ */
+function startAuditRecordRetentionSweepSchedule(
+  config: ReturnType<typeof loadConfig>,
+  connection: Redis
+): void {
+  const retentionQueue = new Queue(AUDIT_RECORD_RETENTION_SWEEP_QUEUE, { connection });
+  void retentionQueue
+    .add(
+      AUDIT_RECORD_RETENTION_SWEEP_JOB_NAME,
+      {},
+      {
+        repeat: { pattern: AUDIT_RECORD_RETENTION_SWEEP_CRON },
+        jobId: AUDIT_RECORD_RETENTION_SWEEP_JOB_NAME
+      }
+    )
+    .catch((error) => {
+      console.error(
+        "Failed to schedule AuditEvent/ChangeControlRecord/ExportJob/WebhookDelivery retention sweep",
+        {
+          errorClass: error instanceof Error ? error.name : "UnknownError",
+          message: error instanceof Error ? error.message : String(error)
+        }
+      );
+    });
+
+  const retentionWorker = new Worker(
+    AUDIT_RECORD_RETENTION_SWEEP_QUEUE,
+    async (job) => {
+      const prisma = getWorkerPrisma(config);
+      if (!prisma) {
+        console.log(
+          "Skipping AuditEvent/ChangeControlRecord/ExportJob/WebhookDelivery retention sweep: no database configured."
+        );
+        return {
+          organizations: [] as AuditRecordRetentionSweepResult[],
+          unassigned: undefined as UnassignedRetentionSweepResult | undefined
+        };
+      }
+      console.log(
+        "Running AuditEvent/ChangeControlRecord/ExportJob/WebhookDelivery retention sweep",
+        { jobId: job.id }
+      );
+      // Per-organization sweep of all four models (AuditEvent,
+      // ChangeControlRecord, ExportJob, WebhookDelivery) for rows that do
+      // have an organizationId, followed by a separate unbound pass for
+      // organizationId-null ExportJob/WebhookDelivery rows. These are kept
+      // as one scheduled job (not two competing cron schedules) since both
+      // passes are the same maintenance operation running back-to-back.
+      const organizations = await runAuditRecordRetentionSweep({
+        prisma,
+        globalRetentionDays: config.auditRecordRetentionDays
+      });
+      const unassigned = await sweepUnassignedExportJobsAndWebhookDeliveries({
+        prisma,
+        globalRetentionDays: config.auditRecordRetentionDays
+      });
+      return { organizations, unassigned };
+    },
+    { connection }
+  );
+
+  retentionWorker.on(
+    "completed",
+    (
+      job,
+      result: {
+        organizations: AuditRecordRetentionSweepResult[];
+        unassigned: UnassignedRetentionSweepResult | undefined;
+      }
+    ) => {
+      const totalAuditEventsDeleted = result.organizations.reduce(
+        (sum, item) => sum + item.auditEventsDeleted,
+        0
+      );
+      const totalChangeControlRecordsDeleted = result.organizations.reduce(
+        (sum, item) => sum + item.changeControlRecordsDeleted,
+        0
+      );
+      const totalExportJobsDeleted =
+        result.organizations.reduce((sum, item) => sum + item.exportJobsDeleted, 0) +
+        (result.unassigned?.exportJobsDeleted ?? 0);
+      const totalWebhookDeliveriesDeleted =
+        result.organizations.reduce((sum, item) => sum + item.webhookDeliveriesDeleted, 0) +
+        (result.unassigned?.webhookDeliveriesDeleted ?? 0);
+      console.log("Retention sweep completed", {
+        jobId: job.id,
+        organizationsSwept: result.organizations.length,
+        totalAuditEventsDeleted,
+        totalChangeControlRecordsDeleted,
+        totalExportJobsDeleted,
+        totalWebhookDeliveriesDeleted,
+        unassignedExportJobsDeleted: result.unassigned?.exportJobsDeleted ?? 0,
+        unassignedWebhookDeliveriesDeleted: result.unassigned?.webhookDeliveriesDeleted ?? 0
+      });
+    }
+  );
+  retentionWorker.on("failed", (job, error) => {
+    console.error("Retention sweep job failed", {
+      jobId: job?.id,
+      errorClass: error instanceof Error ? error.name : "UnknownError",
+      message: error instanceof Error ? error.message : String(error)
+    });
   });
 }
 
@@ -633,6 +1092,68 @@ function rejectStaleCheckRun(
     envelope.checkRun.headSha,
     pr.headSha
   );
+}
+
+// Two rapid `synchronize` webhooks for the same PR are each processed as independent,
+// deliveryId-scoped BullMQ jobs with no ordering guarantee between them. A job for an
+// older push can finish evaluating after a job for a newer push has already published
+// its check-run, and would otherwise overwrite the newer/correct result with a stale one.
+//
+// This check is intentionally scoped to `pull_request` events with action `synchronize`:
+// that is the only case where two evaluations can legitimately be in flight for the same
+// PR at once as a direct result of the head_sha changing out from under an in-progress
+// job. Other envelope types (`opened`, `reopened`, `edited`, `ready_for_review`, `closed`,
+// `pull_request_review`, direct/manual jobs with no envelope) do not race a competing
+// evaluation of a newer commit in the same way, and `check_run` replay staleness is
+// already covered by `rejectStaleCheckRun` above using data already on the envelope (no
+// extra API call needed). Scoping the fresh GitHub lookup this way avoids adding a GitHub
+// API call to every single evaluation job, which would be expensive at scale.
+async function rejectSupersededHeadSha(input: {
+  envelope: GithubWebhookEnvelope | undefined;
+  pr: PullRequestInput;
+  owner: string;
+  repo: string;
+  client?: GithubAdapterClient | undefined;
+}): Promise<void> {
+  if (input.envelope?.event !== "pull_request" || input.envelope.action !== "synchronize") {
+    return;
+  }
+  if (!input.client) {
+    // No GitHub client available to check freshness (e.g. a directly-injected job with
+    // no client). Fail open rather than block publication on a check we cannot perform.
+    return;
+  }
+  const currentHeadSha = await fetchCurrentPullRequestHeadSha({
+    client: input.client,
+    owner: input.owner,
+    repo: input.repo,
+    pullNumber: input.pr.pullRequestNumber
+  });
+  if (!currentHeadSha || currentHeadSha === input.pr.headSha) {
+    return;
+  }
+  throw new SupersededHeadShaError(
+    input.pr.repositoryFullName,
+    input.pr.pullRequestNumber,
+    input.pr.headSha,
+    currentHeadSha
+  );
+}
+
+async function fetchCurrentPullRequestHeadSha(input: {
+  client: GithubAdapterClient;
+  owner: string;
+  repo: string;
+  pullNumber: number;
+}): Promise<string | undefined> {
+  const response = await input.client.pulls.get({
+    owner: input.owner,
+    repo: input.repo,
+    pull_number: input.pullNumber
+  });
+  const head = response.data.head as Record<string, unknown> | undefined;
+  const sha = head?.sha;
+  return typeof sha === "string" && sha.length > 0 ? sha : undefined;
 }
 
 async function githubClientForEnvelope(
