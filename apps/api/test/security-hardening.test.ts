@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PullRequestInput } from "@agentforge/core";
 import { hashPolicy } from "@agentforge/policy";
@@ -75,8 +75,9 @@ function authenticatedActorHeaders(
   organizationId = "org_local"
 ): Record<string, string> {
   const timestamp = Math.floor(Date.now() / 1000).toString();
+  const nonce = randomUUID();
   const secret = process.env.AGENTFORGE_API_PROXY_SECRET || "test-proxy-secret-123456";
-  const payload = [timestamp, actor, role, organizationId].join(":");
+  const payload = [timestamp, nonce, actor, role, organizationId].join(":");
   const signature = createHmac("sha256", secret).update(payload).digest("hex");
 
   return {
@@ -84,6 +85,7 @@ function authenticatedActorHeaders(
     "x-agentforge-authenticated-role": role,
     "x-agentforge-authenticated-organization": organizationId,
     "x-agentforge-signature-timestamp": timestamp,
+    "x-agentforge-signature-nonce": nonce,
     "x-agentforge-signature": signature
   };
 }

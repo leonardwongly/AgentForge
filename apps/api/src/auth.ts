@@ -80,7 +80,22 @@ function rawIdentityHeaderNamesPresent(request: FastifyRequest): string[] {
   return SPOOFABLE_RAW_IDENTITY_HEADERS.filter((name) => headerValue(request.headers[name]));
 }
 
+// Caches the actor resolved for a given request object within resolveApiActor's
+// own lifetime. Trusted-proxy signatures are nonce-bound and single-use
+// (registerSignatureUse consumes the nonce on first successful verification) —
+// without this cache, a request-scoped hook that resolves the actor early (e.g.
+// binding RLS org context in app.ts's onRequest hook) would consume the nonce,
+// and the route handler's own later resolveApiActor call on the SAME request
+// would then see it as an already-used replay and reject a legitimate request.
+// WeakMap avoids any manual cleanup: entries are collected with the request.
+const resolvedActorCache = new WeakMap<FastifyRequest, ApiActor>();
+
 export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
+  const cachedActor = resolvedActorCache.get(request);
+  if (cachedActor) {
+    return cachedActor;
+  }
+
   if (process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS === "true") {
     const secret = process.env.AGENTFORGE_API_PROXY_SECRET;
     if (!secret) {
@@ -114,7 +129,11 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
     const signatureStr = headerValue(request.headers["x-agentforge-signature"]);
     const nonceStr = headerValue(request.headers["x-agentforge-signature-nonce"]);
 
-    if (!actorStr || !roleStr || !orgStr || !timestampStr || !signatureStr) {
+    // The nonce is mandatory, not optional: a nonce-less signed request has no
+    // per-request binding, so registerSignatureUse is never consulted for it and
+    // it could otherwise be replayed indefinitely within the 5-minute timestamp
+    // window. Reject rather than silently accept a legacy nonce-less payload.
+    if (!actorStr || !roleStr || !orgStr || !timestampStr || !signatureStr || !nonceStr) {
       return undefined;
     }
 
@@ -133,12 +152,9 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
       return undefined;
     }
 
-    // Reconstruct payload and verify HMAC-SHA256 signature. The nonce (when the
-    // signer includes one) binds the signature to a single request so it can be
-    // rejected on replay.
-    const payload = nonceStr
-      ? [timestampStr, nonceStr, actorStr, roleStr, orgStr].join(":")
-      : [timestampStr, actorStr, roleStr, orgStr].join(":");
+    // Reconstruct payload and verify HMAC-SHA256 signature. The nonce binds the
+    // signature to a single request so it can be rejected on replay.
+    const payload = [timestampStr, nonceStr, actorStr, roleStr, orgStr].join(":");
     const expectedSignature = createHmac("sha256", secret).update(payload).digest("hex");
 
     const bufA = Buffer.from(signatureStr, "hex");
@@ -151,9 +167,11 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
     const actor = actorFromHeaders(actorStr, roleStr, orgStr);
     if (actor) {
       // Reject replays of a previously seen signed request within the window.
-      if (nonceStr && !registerSignatureUse(signatureStr, Date.now())) {
+      // The nonce is now mandatory (checked above), so this always runs.
+      if (!registerSignatureUse(signatureStr, Date.now())) {
         return undefined;
       }
+      resolvedActorCache.set(request, actor);
       return actor;
     }
   }
