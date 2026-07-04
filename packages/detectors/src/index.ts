@@ -958,7 +958,7 @@ function makeFact(input: {
 }): VerifiedFact {
   const basis = `${input.type}:${input.source}:${input.path ?? ""}:${input.evidence}`;
   const fact: VerifiedFact = {
-    id: `fact_${createHash("sha1").update(basis).digest("hex").slice(0, 12)}`,
+    id: `fact_${createHash("sha256").update(basis).digest("hex").slice(0, 12)}`,
     type: input.type,
     source: input.source,
     evidence: summarizeSafeSnippet(input.evidence),

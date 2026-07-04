@@ -1364,97 +1364,109 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       return { repositoryId, versions };
     });
 
-    app.post("/api/repositories/:id/policy/revert", async (request, reply) => {
-      const actor = requireApiActor(request);
-      if (isAuthzFailure(actor)) {
-        return handleAuthzFailure(request, reply, actor);
-      }
-      const allowed = requireRole(
-        actor,
-        ["platform_admin", "engineering_manager"],
-        "Policy revert"
-      );
-      if (!allowed.ok) {
-        return handleAuthzFailure(request, reply, allowed);
-      }
-      const repositoryId = (request.params as { id: string }).id;
-      const organizationId = await repositoryOrganizationId(repositoryId);
-      if (!organizationId) {
-        return reply.code(404).send({ error: "Repository not found" });
-      }
-      const tenantAccess = requireOrganizationAccess(actor, organizationId, "Policy revert");
-      if (!tenantAccess.ok) {
-        return handleAuthzFailure(request, reply, tenantAccess);
-      }
-      const parsedBody = policyRevertSchema.safeParse(request.body ?? {});
-      if (!parsedBody.success) {
-        return reply.code(400).send({
-          error: "Invalid policy revert input",
-          details: parsedBody.error.issues.map((issue) => ({
-            path: issue.path.join("."),
-            message: issue.message
-          }))
-        });
-      }
-      const { targetVersionId } = parsedBody.data;
-      // getRepositoryPolicyVersion is scoped to repositoryId by the persistence
-      // layer, so a targetVersionId belonging to a different repository or
-      // organization can never resolve here, regardless of what the client sends.
-      const targetVersion = await getRepositoryPolicyVersion(repositoryId, targetVersionId);
-      if (!targetVersion) {
-        return reply.code(404).send({ error: "Target policy version not found" });
-      }
-      const validation = validatePolicyYaml(targetVersion.contentYaml);
-      if (!validation.valid) {
-        return reply.code(400).send({
-          error:
-            "Stored policy version no longer passes validation against the current policy schema and cannot be reverted to.",
-          ...validation
-        });
-      }
-      const parsed = parsePolicyYaml(targetVersion.contentYaml);
-      let policy: RepositoryPolicyState;
-      try {
-        policy = await saveRepositoryPolicy(
-          repositoryId,
-          targetVersion.contentYaml,
-          actor.login,
-          parsed
+    app.post(
+      "/api/repositories/:id/policy/revert",
+      {
+        config: {
+          rateLimit: {
+            max: config.nodeEnv === "test" ? 1_000 : 60,
+            timeWindow: "1 minute"
+          }
+        }
+      },
+      async (request, reply) => {
+        const actor = requireApiActor(request);
+        if (isAuthzFailure(actor)) {
+          return handleAuthzFailure(request, reply, actor);
+        }
+        const allowed = requireRole(
+          actor,
+          ["platform_admin", "engineering_manager"],
+          "Policy revert"
         );
-      } catch (error) {
-        return reply.code(404).send({
-          error: error instanceof Error ? error.message : "Repository policy could not be reverted"
-        });
-      }
-      await audit({
-        organizationId,
-        repositoryId,
-        actor: actor.login,
-        actorRole: actor.role,
-        action: "policy_reverted",
-        targetType: "policy",
-        targetId: policy.contentHash,
-        policyVersion: policy.version,
-        policyPackId: policy.policyPackId,
-        policyPackVersion: policy.policyPackVersion,
-        requestId: request.id,
-        metadataJson: {
-          contentHash: policy.contentHash,
+        if (!allowed.ok) {
+          return handleAuthzFailure(request, reply, allowed);
+        }
+        const repositoryId = (request.params as { id: string }).id;
+        const organizationId = await repositoryOrganizationId(repositoryId);
+        if (!organizationId) {
+          return reply.code(404).send({ error: "Repository not found" });
+        }
+        const tenantAccess = requireOrganizationAccess(actor, organizationId, "Policy revert");
+        if (!tenantAccess.ok) {
+          return handleAuthzFailure(request, reply, tenantAccess);
+        }
+        const parsedBody = policyRevertSchema.safeParse(request.body ?? {});
+        if (!parsedBody.success) {
+          return reply.code(400).send({
+            error: "Invalid policy revert input",
+            details: parsedBody.error.issues.map((issue) => ({
+              path: issue.path.join("."),
+              message: issue.message
+            }))
+          });
+        }
+        const { targetVersionId } = parsedBody.data;
+        // getRepositoryPolicyVersion is scoped to repositoryId by the persistence
+        // layer, so a targetVersionId belonging to a different repository or
+        // organization can never resolve here, regardless of what the client sends.
+        const targetVersion = await getRepositoryPolicyVersion(repositoryId, targetVersionId);
+        if (!targetVersion) {
+          return reply.code(404).send({ error: "Target policy version not found" });
+        }
+        const validation = validatePolicyYaml(targetVersion.contentYaml);
+        if (!validation.valid) {
+          return reply.code(400).send({
+            error:
+              "Stored policy version no longer passes validation against the current policy schema and cannot be reverted to.",
+            ...validation
+          });
+        }
+        const parsed = parsePolicyYaml(targetVersion.contentYaml);
+        let policy: RepositoryPolicyState;
+        try {
+          policy = await saveRepositoryPolicy(
+            repositoryId,
+            targetVersion.contentYaml,
+            actor.login,
+            parsed
+          );
+        } catch (error) {
+          return reply.code(404).send({
+            error:
+              error instanceof Error ? error.message : "Repository policy could not be reverted"
+          });
+        }
+        await audit({
+          organizationId,
+          repositoryId,
+          actor: actor.login,
+          actorRole: actor.role,
+          action: "policy_reverted",
+          targetType: "policy",
+          targetId: policy.contentHash,
           policyVersion: policy.version,
           policyPackId: policy.policyPackId,
           policyPackVersion: policy.policyPackVersion,
+          requestId: request.id,
+          metadataJson: {
+            contentHash: policy.contentHash,
+            policyVersion: policy.version,
+            policyPackId: policy.policyPackId,
+            policyPackVersion: policy.policyPackVersion,
+            revertedFromVersion: targetVersion.version,
+            actorRole: actor.role
+          }
+        });
+        return {
+          repositoryId,
+          contentHash: policy.contentHash,
+          version: policy.version,
           revertedFromVersion: targetVersion.version,
-          actorRole: actor.role
-        }
-      });
-      return {
-        repositoryId,
-        contentHash: policy.contentHash,
-        version: policy.version,
-        revertedFromVersion: targetVersion.version,
-        valid: true
-      };
-    });
+          valid: true
+        };
+      }
+    );
 
     app.post("/api/policies/validate", async (request, reply) => {
       const parsedBody = policyUpdateSchema.safeParse(request.body ?? {});
