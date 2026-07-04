@@ -170,8 +170,13 @@ export const detectorRegistry: Detector[] = [
   },
   {
     id: "secret_like",
-    factTypes: ["secret_like_value_detected"],
+    factTypes: ["secret_like_value_detected", "detection_coverage_truncated"],
     detect: (context) => detectSecretLikeValues(context.files, context.options)
+  },
+  {
+    id: "detection_coverage",
+    factTypes: ["detection_coverage_truncated"],
+    detect: (context) => detectTruncatedCoverage(context.pr, context.files, context.options)
   }
 ];
 
@@ -189,6 +194,58 @@ export function extractVerifiedFacts(
     agentAssisted: detectAgentSignals(pr).length > 0
   };
   return detectorRegistry.flatMap((detector) => detector.detect(context));
+}
+
+/**
+ * Detection-coverage facts (silent-truncation signaling). These describe a
+ * detector-configuration limit being hit -- not GitHub-observed content -- rather than a
+ * violation in the changed content itself. `pr.changedFiles` still holds the full,
+ * pre-slice list at this point (only `context.files` is sliced), so the original count is
+ * available for the file_count comparison.
+ */
+function detectTruncatedCoverage(
+  pr: PullRequestInput,
+  files: ChangedFile[],
+  options: Required<DetectorOptions>
+): VerifiedFact[] {
+  const facts: VerifiedFact[] = [];
+
+  if (pr.changedFiles.length > options.maxFiles) {
+    facts.push(
+      makeFact({
+        type: "detection_coverage_truncated",
+        source: "policy_config",
+        evidence: `Pull request has ${pr.changedFiles.length} changed files; only the first ${options.maxFiles} were scanned for policy facts.`,
+        confidence: "verified",
+        metadata: {
+          limitType: "file_count",
+          totalFiles: pr.changedFiles.length,
+          scannedFiles: options.maxFiles
+        }
+      })
+    );
+  }
+
+  const truncatedPatchFiles = files
+    .filter((file) => (file.patch?.length ?? 0) > options.maxPatchBytes)
+    .map((file) => file.filename);
+  if (truncatedPatchFiles.length > 0) {
+    facts.push(
+      makeFact({
+        type: "detection_coverage_truncated",
+        source: "policy_config",
+        evidence: `${truncatedPatchFiles.length} changed file patch(es) exceeded ${options.maxPatchBytes} bytes and were truncated before detector scanning.`,
+        confidence: "verified",
+        metadata: {
+          limitType: "patch_size",
+          truncatedFiles: truncatedPatchFiles,
+          maxPatchBytes: options.maxPatchBytes
+        }
+      })
+    );
+  }
+
+  return facts;
 }
 
 export function detectorConfigFromPolicy(policy: {
@@ -283,19 +340,21 @@ export function detectTestChanges(
     }
 
     const patch = boundedPatch(file.patch, merged.maxPatchBytes);
-    for (const pattern of skipPatterns) {
-      if (patch.includes(`+${pattern}`) || patch.includes(`+ ${pattern}`)) {
-        facts.push(
-          makeFact({
-            type: "test_skipped",
-            source: "github_diff",
-            path: file.filename,
-            evidence: `Detected common test-weakening pattern: ${pattern}`,
-            confidence: "observed",
-            severity: "high",
-            metadata: { pattern }
-          })
-        );
+    for (const line of addedCodeLines(patch)) {
+      for (const pattern of skipPatterns) {
+        if (lineHasCodePattern(line, pattern)) {
+          facts.push(
+            makeFact({
+              type: "test_skipped",
+              source: "github_diff",
+              path: file.filename,
+              evidence: `Detected common test-weakening pattern: ${pattern}`,
+              confidence: "observed",
+              severity: "high",
+              metadata: { pattern }
+            })
+          );
+        }
       }
     }
 
@@ -306,7 +365,7 @@ export function detectTestChanges(
           type: "coverage_threshold_reduced",
           source: "github_diff",
           path: file.filename,
-          evidence: `Coverage threshold reduced from ${coverageDrop.before} to ${coverageDrop.after}`,
+          evidence: `Coverage threshold for ${coverageDrop.key} reduced from ${coverageDrop.before} to ${coverageDrop.after}`,
           confidence: "observed",
           severity: "high",
           metadata: coverageDrop
@@ -452,6 +511,22 @@ export function detectSecretLikeValues(
       allAdditions.length > SECRET_SCAN_MAX_BYTES
         ? allAdditions.slice(0, SECRET_SCAN_MAX_BYTES)
         : allAdditions;
+    if (allAdditions.length > SECRET_SCAN_MAX_BYTES) {
+      facts.push(
+        makeFact({
+          type: "detection_coverage_truncated",
+          source: "policy_config",
+          path: file.filename,
+          evidence: `Added-line content in ${file.filename} exceeded ${SECRET_SCAN_MAX_BYTES} bytes; only the first ${SECRET_SCAN_MAX_BYTES} bytes were scanned for secret-like values.`,
+          confidence: "verified",
+          metadata: {
+            limitType: "secret_scan_size",
+            filename: file.filename,
+            maxBytes: SECRET_SCAN_MAX_BYTES
+          }
+        })
+      );
+    }
     const found = detectSecrets(additions);
     for (const match of found) {
       const classification = classifySecretFinding(match, file.filename);
@@ -680,29 +755,47 @@ function parseRequirements(content: string): Map<string, string | undefined> {
   return result;
 }
 
-function detectCoverageThresholdDrop(patch: string): { before: number; after: number } | undefined {
-  const removed = [
-    ...patch.matchAll(
-      /^-\s*"?(?:branches|functions|lines|statements|coverage)"?\s*[:=]\s*(\d{1,3})/gm
-    )
-  ]
-    .map((match) => Number(match[1]))
-    .filter((value) => Number.isFinite(value));
-  const added = [
-    ...patch.matchAll(
-      /^\+\s*"?(?:branches|functions|lines|statements|coverage)"?\s*[:=]\s*(\d{1,3})/gm
-    )
-  ]
-    .map((match) => Number(match[1]))
-    .filter((value) => Number.isFinite(value));
-  for (const before of removed) {
-    for (const after of added) {
-      if (after < before) {
-        return { before, after };
+function detectCoverageThresholdDrop(
+  patch: string
+): { key: string; before: number; after: number } | undefined {
+  const removed = extractCoverageThresholdsByKey(patch, "-");
+  const added = extractCoverageThresholdsByKey(patch, "+");
+  // Only compare thresholds for the SAME key (branches/functions/lines/statements/coverage).
+  // Cross-key comparisons (e.g. removed branches vs. added functions) are unrelated edits and
+  // must not be reported as a threshold drop.
+  for (const [key, beforeValues] of removed) {
+    const afterValues = added.get(key);
+    if (!afterValues) {
+      continue;
+    }
+    for (const before of beforeValues) {
+      for (const after of afterValues) {
+        if (after < before) {
+          return { key, before, after };
+        }
       }
     }
   }
   return undefined;
+}
+
+function extractCoverageThresholdsByKey(patch: string, prefix: "+" | "-"): Map<string, number[]> {
+  const pattern = new RegExp(
+    `^\\${prefix}\\s*"?(?<key>branches|functions|lines|statements|coverage)"?\\s*[:=]\\s*(?<value>\\d{1,3})`,
+    "gm"
+  );
+  const byKey = new Map<string, number[]>();
+  for (const match of patch.matchAll(pattern)) {
+    const key = match.groups?.key;
+    const value = Number(match.groups?.value);
+    if (!key || !Number.isFinite(value)) {
+      continue;
+    }
+    const values = byKey.get(key) ?? [];
+    values.push(value);
+    byKey.set(key, values);
+  }
+  return byKey;
 }
 
 function detectAssertionWeakening(patch: string): boolean {
@@ -718,6 +811,37 @@ function addedLines(patch = ""): string {
     .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
     .map((line) => line.slice(1))
     .join("\n");
+}
+
+/** Individually addressable added lines (content only, "+" prefix stripped). */
+function addedCodeLines(patch = ""): string[] {
+  return patch
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+    .map((line) => line.slice(1));
+}
+
+/**
+ * True when `pattern` appears on `line` in a code-statement position, i.e. not solely
+ * inside a trailing single-line comment or JSDoc continuation. This is a pragmatic
+ * heuristic (not a language-aware parser): it excludes the common false-positive shape of
+ * a pattern name mentioned in a `//`, `#`, or leading `*` (JSDoc line) comment, but does not
+ * detect multi-line block comments or string-literal occurrences.
+ */
+function lineHasCodePattern(line: string, pattern: string): boolean {
+  const index = line.indexOf(pattern);
+  if (index === -1) {
+    return false;
+  }
+  const beforePattern = line.slice(0, index);
+  if (/\/\/|#/.test(beforePattern)) {
+    return false;
+  }
+  // A line-comment-only JSDoc continuation, e.g. `+ * test.skip( example`.
+  if (/^\s*\*/.test(line)) {
+    return false;
+  }
+  return true;
 }
 
 function boundedPatch(patch: string | undefined, maxPatchBytes: number): string {

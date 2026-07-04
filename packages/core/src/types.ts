@@ -17,7 +17,8 @@ export type VerifiedFact = {
     | "dependency_bumped"
     | "migration_added"
     | "agent_signal_detected"
-    | "secret_like_value_detected";
+    | "secret_like_value_detected"
+    | "detection_coverage_truncated";
   source:
     | "github_diff"
     | "github_metadata"
@@ -209,6 +210,7 @@ export type DataRetentionSettings = {
 
 export type AuditEventAction =
   | "policy_changed"
+  | "policy_reverted"
   | "policy_previewed"
   | "override_created"
   | "evidence_provided"
@@ -223,6 +225,7 @@ export type AuditEventAction =
   | "github_installation_approved"
   | "github_installation_rejected"
   | "retention_changed"
+  | "retention_swept"
   | "repository_settings_changed"
   | "owner_mapping_changed";
 

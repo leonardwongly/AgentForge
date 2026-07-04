@@ -333,6 +333,117 @@ describe("deterministic detectors", () => {
     expect(addedPackages).not.toContain("merge-guard");
   });
 
+  it("does not flag coverage_threshold_reduced when removed and added keys differ", () => {
+    const facts = extractVerifiedFacts(
+      {
+        repositoryFullName: "acme/payments",
+        pullRequestNumber: 20,
+        title: "Unrelated coverage config edits",
+        authorLogin: "sam",
+        baseBranch: "main",
+        headBranch: "chore/coverage-config",
+        headSha: "sha20",
+        changedFiles: [
+          {
+            filename: "vitest.config.ts",
+            status: "modified",
+            patch: "@@\n-    branches: 80,\n+    functions: 60,"
+          }
+        ]
+      },
+      fintechConfig()
+    );
+
+    expect(facts.map((fact) => fact.type)).not.toContain("coverage_threshold_reduced");
+  });
+
+  it("flags coverage_threshold_reduced only for a genuine same-key drop, with key/before/after metadata", () => {
+    const facts = extractVerifiedFacts(
+      {
+        repositoryFullName: "acme/payments",
+        pullRequestNumber: 21,
+        title: "Lower branch coverage threshold",
+        authorLogin: "sam",
+        baseBranch: "main",
+        headBranch: "chore/lower-coverage",
+        headSha: "sha21",
+        changedFiles: [
+          {
+            filename: "vitest.config.ts",
+            status: "modified",
+            patch: "@@\n-    branches: 80,\n+    branches: 60,"
+          }
+        ]
+      },
+      fintechConfig()
+    );
+
+    const finding = facts.find((fact) => fact.type === "coverage_threshold_reduced");
+    expect(finding).toMatchObject({
+      confidence: "observed",
+      metadata: { key: "branches", before: 80, after: 60 }
+    });
+    expect(finding?.evidence).toContain("branches");
+  });
+
+  it("does not flag test_skipped when the pattern only appears in a line comment", () => {
+    const facts = extractVerifiedFacts(
+      {
+        repositoryFullName: "acme/payments",
+        pullRequestNumber: 22,
+        title: "Leave a TODO about a skip workaround",
+        authorLogin: "sam",
+        baseBranch: "main",
+        headBranch: "chore/todo-comment",
+        headSha: "sha22",
+        changedFiles: [
+          {
+            filename: "tests/payment.test.ts",
+            status: "modified",
+            patch:
+              "@@ -1,2 +1,2 @@\n" +
+              " it('settles payment', () => {\n" +
+              "+// TODO: remove this test.skip( workaround once flake is fixed\n"
+          },
+          {
+            filename: "docs/testing.py",
+            status: "modified",
+            patch: "@@ -1,1 +1,1 @@\n+# see @pytest.mark.skip for reference on old suites\n"
+          }
+        ]
+      },
+      fintechConfig()
+    );
+
+    expect(facts.map((fact) => fact.type)).not.toContain("test_skipped");
+  });
+
+  it("flags test_skipped for a genuine uncommented skip call", () => {
+    const facts = extractVerifiedFacts(
+      {
+        repositoryFullName: "acme/payments",
+        pullRequestNumber: 23,
+        title: "Skip flaky payment test",
+        authorLogin: "sam",
+        baseBranch: "main",
+        headBranch: "test/skip-flaky-2",
+        headSha: "sha23",
+        changedFiles: [
+          {
+            filename: "tests/payment.test.ts",
+            status: "modified",
+            patch:
+              "@@ -1,1 +1,1 @@\n-it('settles payment', () => {\n+test.skip('settles payment', () => {\n"
+          }
+        ]
+      },
+      fintechConfig()
+    );
+
+    const finding = facts.find((fact) => fact.type === "test_skipped");
+    expect(finding).toMatchObject({ confidence: "observed", metadata: { pattern: "test.skip(" } });
+  });
+
   it("handles a 500-file PR without unbounded detector work", () => {
     const pr: PullRequestInput = {
       repositoryFullName: "acme/large-pr",
@@ -358,5 +469,132 @@ describe("deterministic detectors", () => {
 
     expect(facts).toHaveLength(0);
     expect(durationMs).toBeLessThan(2000);
+  });
+
+  describe("detection coverage truncation signaling", () => {
+    function basePr(overrides: Partial<PullRequestInput> = {}): PullRequestInput {
+      return {
+        repositoryFullName: "acme/large-pr",
+        pullRequestNumber: 900,
+        title: "Truncation coverage fixture",
+        authorLogin: "developer",
+        baseBranch: "main",
+        headBranch: "feature/truncation",
+        headSha: "shatrunc",
+        changedFiles: [],
+        ...overrides
+      };
+    }
+
+    it("emits a file_count truncation fact when changed files exceed maxFiles", () => {
+      const pr = basePr({
+        changedFiles: Array.from({ length: 5 }, (_, index) => ({
+          filename: `docs/generated-${index}.md`,
+          status: "modified" as const,
+          patch: `+line ${index}`
+        }))
+      });
+
+      const facts = extractVerifiedFacts(pr, fintechConfig(), { maxFiles: 3 });
+      const truncation = facts.find(
+        (fact) =>
+          fact.type === "detection_coverage_truncated" && fact.metadata?.limitType === "file_count"
+      );
+
+      expect(truncation).toMatchObject({
+        source: "policy_config",
+        confidence: "verified",
+        metadata: { limitType: "file_count", totalFiles: 5, scannedFiles: 3 }
+      });
+      expect(truncation?.evidence).toContain("5 changed files");
+      expect(truncation?.evidence).toContain("first 3");
+    });
+
+    it("emits a patch_size truncation fact when a file's patch exceeds maxPatchBytes", () => {
+      const oversizedPatch = `+${"a".repeat(50)}`;
+      const pr = basePr({
+        changedFiles: [
+          {
+            filename: "src/large-file.ts",
+            status: "modified",
+            patch: oversizedPatch
+          },
+          {
+            filename: "src/small-file.ts",
+            status: "modified",
+            patch: "+ok"
+          }
+        ]
+      });
+
+      const facts = extractVerifiedFacts(pr, fintechConfig(), { maxPatchBytes: 10 });
+      const truncation = facts.find(
+        (fact) =>
+          fact.type === "detection_coverage_truncated" && fact.metadata?.limitType === "patch_size"
+      );
+
+      expect(truncation).toMatchObject({
+        source: "policy_config",
+        confidence: "verified",
+        metadata: {
+          limitType: "patch_size",
+          truncatedFiles: ["src/large-file.ts"],
+          maxPatchBytes: 10
+        }
+      });
+    });
+
+    it("emits a secret_scan_size truncation fact when added-line content exceeds SECRET_SCAN_MAX_BYTES", () => {
+      // SECRET_SCAN_MAX_BYTES is 65_536; exceed it with a single added line.
+      const hugeLine = `+${"x".repeat(70_000)}`;
+      const pr = basePr({
+        changedFiles: [
+          {
+            filename: "src/generated-data.ts",
+            status: "modified",
+            patch: hugeLine
+          }
+        ]
+      });
+
+      const facts = extractVerifiedFacts(pr, fintechConfig());
+      const truncation = facts.find(
+        (fact) =>
+          fact.type === "detection_coverage_truncated" &&
+          fact.metadata?.limitType === "secret_scan_size"
+      );
+
+      expect(truncation).toMatchObject({
+        source: "policy_config",
+        confidence: "verified",
+        path: "src/generated-data.ts",
+        metadata: {
+          limitType: "secret_scan_size",
+          filename: "src/generated-data.ts",
+          maxBytes: 65_536
+        }
+      });
+    });
+
+    it("does not emit any truncation facts for a normal small PR", () => {
+      const pr = basePr({
+        changedFiles: [
+          {
+            filename: "src/small-file.ts",
+            status: "modified",
+            patch: "+const answer = 42;"
+          },
+          {
+            filename: "README.md",
+            status: "modified",
+            patch: "+Documented the change."
+          }
+        ]
+      });
+
+      const facts = extractVerifiedFacts(pr, fintechConfig());
+
+      expect(facts.filter((fact) => fact.type === "detection_coverage_truncated")).toHaveLength(0);
+    });
   });
 });
