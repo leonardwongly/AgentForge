@@ -58,18 +58,22 @@ sensitive_paths:
       - "platform-team"
     required_evidence:
       - "ci_change_reason"
+    mode: enforce
 tests:
   deleted_tests:
     action: block
+    mode: enforce
     required_evidence:
       - "deleted_test_explanation"
   skipped_tests:
     action: block
+    mode: enforce
     required_evidence:
       - "deleted_test_explanation"
 dependencies:
   new_package:
     action: require_review
+    mode: enforce
     required_evidence:
       - "dependency_justification"
 database:
@@ -79,6 +83,7 @@ database:
       - "migrations/**"
     required_evidence:
       - "rollback_plan"
+    mode: enforce
 ${baseRetention}`
   },
   {
@@ -120,14 +125,17 @@ sensitive_paths:
       - "ci_change_reason"
       - "rollback_plan"
     block_for_agent_assisted: true
+    mode: enforce
 tests:
   deleted_tests:
     action: block
+    mode: enforce
     required_evidence:
       - "deleted_test_explanation"
 dependencies:
   new_package:
     action: require_review
+    mode: enforce
     required_reviewers:
       - "security-team"
     required_evidence:
@@ -139,6 +147,7 @@ database:
     required_evidence:
       - "rollback_plan"
       - "migration_dry_run"
+    mode: enforce
 ${baseRetention}`
   },
   {
@@ -173,6 +182,7 @@ sensitive_paths:
       - "billing-owner"
     required_evidence:
       - "rollback_plan"
+    mode: enforce
   auth:
     paths:
       - "src/auth/**"
@@ -181,6 +191,7 @@ sensitive_paths:
       - "security-team"
     required_evidence:
       - "security_note"
+    mode: enforce
   ci_and_deploy:
     paths:
       - ".github/workflows/**"
@@ -191,20 +202,24 @@ sensitive_paths:
     required_evidence:
       - "ci_change_reason"
     block_for_agent_assisted: true
+    mode: enforce
 tests:
   deleted_tests:
     action: block
+    mode: enforce
     required_evidence:
       - "deleted_test_explanation"
 dependencies:
   new_package:
     action: require_review
+    mode: enforce
     required_reviewers:
       - "security-team"
     required_evidence:
       - "dependency_justification"
   major_version_bump:
     action: require_review
+    mode: enforce
     required_reviewers:
       - "security-team"
 database:
@@ -214,6 +229,7 @@ database:
     required_evidence:
       - "rollback_plan"
       - "migration_dry_run"
+    mode: enforce
 ${baseRetention}`
   },
   {
@@ -247,6 +263,7 @@ sensitive_paths:
       - "security-team"
     required_evidence:
       - "security_note"
+    mode: enforce
   regulated_data:
     paths:
       - "src/patient/**"
@@ -258,6 +275,7 @@ sensitive_paths:
     required_evidence:
       - "rollback_plan"
       - "security_note"
+    mode: enforce
 tests:
   deleted_tests:
     action: block
@@ -267,12 +285,14 @@ tests:
 dependencies:
   new_package:
     action: require_review
+    mode: enforce
     required_reviewers:
       - "security-team"
     required_evidence:
       - "dependency_justification"
 database:
   migrations:
+    mode: enforce
     required_reviewers:
       - "database-owner"
     required_evidence:
