@@ -34,9 +34,15 @@ const SIGNATURE_WINDOW_SECONDS = 5 * 60;
 // Best-effort in-process replay cache for signed inbound identity headers.
 // Per-instance only; the timestamp window bounds replay regardless.
 const seenDashboardSignatures = new Map<string, number>();
+const DASHBOARD_SIGNATURE_SWEEP_INTERVAL_MS = 60_000;
+const MAX_SEEN_DASHBOARD_SIGNATURES = 50_000;
+let lastDashboardSignatureSweepMs = 0;
 
 function registerDashboardSignatureUse(signature: string, nowMs: number): boolean {
-  if (seenDashboardSignatures.size > 20_000) {
+  // Throttle the expiry sweep to at most once per interval so it never runs an
+  // O(N) loop on every request (CPU-DoS guard).
+  if (nowMs - lastDashboardSignatureSweepMs > DASHBOARD_SIGNATURE_SWEEP_INTERVAL_MS) {
+    lastDashboardSignatureSweepMs = nowMs;
     for (const [key, expiry] of seenDashboardSignatures) {
       if (expiry <= nowMs) {
         seenDashboardSignatures.delete(key);
@@ -46,6 +52,14 @@ function registerDashboardSignatureUse(signature: string, nowMs: number): boolea
   const existing = seenDashboardSignatures.get(signature);
   if (existing !== undefined && existing > nowMs) {
     return false;
+  }
+  // Hard memory bound: evict oldest entries (Map preserves insertion order).
+  while (seenDashboardSignatures.size >= MAX_SEEN_DASHBOARD_SIGNATURES) {
+    const oldest = seenDashboardSignatures.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    seenDashboardSignatures.delete(oldest);
   }
   seenDashboardSignatures.set(signature, nowMs + SIGNATURE_WINDOW_SECONDS * 1000);
   return true;
