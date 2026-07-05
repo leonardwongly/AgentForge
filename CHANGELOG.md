@@ -4,6 +4,22 @@ All notable AgentForge Merge Guard changes are tracked here.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-05
+
+### Added
+
+- Completed the Android and iOS operator consoles: persistent API/dashboard URL configuration, unit tests for the settings/orchestration layer, an automatic health/readiness check on launch, and a `mobile` CI workflow that builds and tests both apps.
+
+### Fixed
+
+- Fixed the web production build failing when a development `NODE_ENV` leaked in from `.env`: `next build` and `next start` now pin `NODE_ENV=production`, and `.env.example` no longer hardcodes `NODE_ENV=development`.
+
+### Changed
+
+- Migrated the Next.js `middleware` file convention to `proxy` (Next 16), preserving the nonce-based CSP behavior, and upgraded Next to `16.2.10`.
+- Removed the deprecated `pnpm` field from `package.json`; workspace build settings are read from `pnpm-workspace.yaml`.
+- Standardized the mobile application identifier and aligned all workspace package versions and the API version output to `1.1.0`.
+
 ### Security
 
 - Enforced a mandatory signature nonce for trusted-proxy identity headers on both the API and dashboard; the legacy nonce-less payload shape is no longer accepted, closing a replay window where a nonce-less signed request could bypass the replay cache indefinitely inside the 5-minute timestamp window.

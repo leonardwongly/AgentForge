@@ -62,7 +62,7 @@ type RawBodyRequest = {
   rawBody?: Buffer;
 };
 
-const AGENTFORGE_VERSION = "1.0.0";
+const AGENTFORGE_VERSION = "1.1.0";
 
 type RouteSchema<T = unknown> = {
   safeParse: (value: unknown) =>

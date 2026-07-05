@@ -64,7 +64,7 @@ describe("runtime data surfaces", () => {
         runtimeStore: "in_memory",
         database: expect.stringMatching(/^(configured|not_configured)$/u),
         workerQueue: expect.stringMatching(/^(configured|in_memory)$/u),
-        version: "1.0.0"
+        version: "1.1.0"
       })
     );
 
@@ -80,7 +80,7 @@ describe("runtime data surfaces", () => {
     expect(health.statusCode).toBe(200);
     expect(health.json()).toEqual({
       status: "ok",
-      version: "1.0.0"
+      version: "1.1.0"
     });
     expect(health.body).not.toContain("database");
     expect(health.body).not.toContain("workerQueue");
