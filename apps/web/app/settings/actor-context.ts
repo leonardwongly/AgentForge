@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { SignatureReplayGuard } from "@agentforge/core";
+import { SignatureReplayGuard } from "@agentforge/core/cache";
 import { readDashboardSessionFromCookieHeader } from "../auth/session";
 
 export type DashboardActorContext = {

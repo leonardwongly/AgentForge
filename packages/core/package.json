@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./cache": "./src/cache.ts"
   },
   "dependencies": {
     "ioredis": "5.11.1"
