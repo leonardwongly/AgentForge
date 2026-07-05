@@ -1,4 +1,4 @@
-package com.example.agentforge.data
+package com.leonardwongly.agentforge.data
 
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -17,15 +17,15 @@ import kotlinx.serialization.json.jsonPrimitive
 
 private const val NETWORK_TIMEOUT_MS = 10_000
 
-class AgentForgeApiClient(
+open class AgentForgeApiClient(
   private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
-  suspend fun fetchHealth(apiBaseUrl: String): ProbeResult<HealthSnapshot> =
+  open suspend fun fetchHealth(apiBaseUrl: String): ProbeResult<HealthSnapshot> =
     fetchJson("$apiBaseUrl/health") { statusCode, body ->
       parseHealth(statusCode = statusCode, body = body, checkedAt = Instant.now())
     }
 
-  suspend fun fetchReadiness(apiBaseUrl: String): ProbeResult<ReadinessSnapshot> =
+  open suspend fun fetchReadiness(apiBaseUrl: String): ProbeResult<ReadinessSnapshot> =
     fetchJson("$apiBaseUrl/ready") { statusCode, body ->
       parseReadiness(statusCode = statusCode, body = body, checkedAt = Instant.now())
     }

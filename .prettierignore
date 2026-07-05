@@ -10,3 +10,7 @@ playwright-report/
 test-results/
 .playwright-mcp/
 **/generated/
+
+# Swift Package Manager / Xcode build output
+**/.build/
+**/DerivedData/

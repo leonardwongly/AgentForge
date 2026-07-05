@@ -1,4 +1,4 @@
-package com.example.agentforge.theme
+package com.leonardwongly.agentforge.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme

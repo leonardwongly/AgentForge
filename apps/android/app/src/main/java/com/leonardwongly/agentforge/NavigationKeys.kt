@@ -1,4 +1,4 @@
-package com.example.agentforge
+package com.leonardwongly.agentforge
 
 import androidx.navigation3.runtime.NavKey
 import kotlinx.serialization.Serializable

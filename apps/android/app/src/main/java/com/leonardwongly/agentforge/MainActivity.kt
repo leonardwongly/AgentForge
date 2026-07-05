@@ -1,4 +1,4 @@
-package com.example.agentforge
+package com.leonardwongly.agentforge
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -8,7 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
-import com.example.agentforge.theme.AgentForgeTheme
+import com.leonardwongly.agentforge.theme.AgentForgeTheme
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {

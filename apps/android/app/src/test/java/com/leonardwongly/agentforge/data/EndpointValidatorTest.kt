@@ -1,4 +1,4 @@
-package com.example.agentforge.data
+package com.leonardwongly.agentforge.data
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

@@ -1,4 +1,4 @@
-package com.example.agentforge.ui.main
+package com.leonardwongly.agentforge.ui.main
 
 import android.content.ActivityNotFoundException
 import android.content.Context
@@ -30,6 +30,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -41,18 +42,26 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.agentforge.data.HealthSnapshot
-import com.example.agentforge.data.ReadinessSnapshot
-import com.example.agentforge.theme.AgentForgeTheme
+import com.leonardwongly.agentforge.data.HealthSnapshot
+import com.leonardwongly.agentforge.data.ReadinessSnapshot
+import com.leonardwongly.agentforge.data.SharedPreferencesOperatorSettingsStore
+import com.leonardwongly.agentforge.theme.AgentForgeTheme
 import java.time.Instant
 
 @Composable
 fun MainScreen(
   modifier: Modifier = Modifier,
-  viewModel: MainScreenViewModel = viewModel { MainScreenViewModel() },
 ) {
-  val state by viewModel.uiState.collectAsStateWithLifecycle()
   val context = LocalContext.current
+  val viewModel: MainScreenViewModel =
+    viewModel {
+      MainScreenViewModel(
+        settings = SharedPreferencesOperatorSettingsStore(context.applicationContext),
+      )
+    }
+  val state by viewModel.uiState.collectAsStateWithLifecycle()
+
+  LaunchedEffect(Unit) { viewModel.startInitialCheck() }
 
   MainScreen(
     state = state,

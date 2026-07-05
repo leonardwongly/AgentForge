@@ -57,8 +57,8 @@ apps/
   api/       Fastify API, webhook receiver, dashboard APIs, queue admin
   web/       Next.js dashboard and Playwright smoke coverage
   worker/    BullMQ worker for PR evaluation jobs
-  android/   Pre-GA Android operator console prototype, not covered by the main CI pipeline
-  ios/       Pre-GA iOS operator console prototype, not covered by the main CI pipeline
+  android/   Android operator console (read-only health/readiness + GitHub OAuth handoff), built and tested in the mobile CI workflow
+  ios/       iOS operator console (read-only health/readiness + GitHub OAuth handoff), built and tested in the mobile CI workflow
 packages/
   config/    Environment loading and production safety validation
   core/      Shared domain types and queue constants
