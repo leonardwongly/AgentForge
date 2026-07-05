@@ -1,5 +1,8 @@
 # Roadmap
 
+> This document covers the V1 roadmap, which has shipped. See
+> [docs/roadmap-v2.md](roadmap-v2.md) for V2+ planning.
+
 ## Sprint 0: Validation
 
 - Customer interviews

@@ -57,6 +57,8 @@ apps/
   api/       Fastify API, webhook receiver, dashboard APIs, queue admin
   web/       Next.js dashboard and Playwright smoke coverage
   worker/    BullMQ worker for PR evaluation jobs
+  android/   Pre-GA Android operator console prototype, not covered by the main CI pipeline
+  ios/       Pre-GA iOS operator console prototype, not covered by the main CI pipeline
 packages/
   config/    Environment loading and production safety validation
   core/      Shared domain types and queue constants
@@ -221,36 +223,38 @@ Copy [.env.example](.env.example) to `.env` for local development. Defaults are 
 
 Important variables:
 
-| Variable                                          | Purpose                                                                                                                |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                                    | PostgreSQL connection string. Local default is `postgresql://agentforge:agentforge@localhost:15432/agentforge`.        |
-| `REDIS_URL`                                       | Redis connection string used by BullMQ. Local default is `redis://localhost:6379`.                                     |
-| `NODE_ENV`                                        | `development`, `test`, or `production`. Production enables fail-closed config checks.                                  |
-| `GITHUB_APP_ID`                                   | Numeric GitHub App ID.                                                                                                 |
-| `GITHUB_APP_PRIVATE_KEY`                          | GitHub App private key. Use escaped newlines in hosted environment variables when required.                            |
-| `GITHUB_INSTALLATION_ID`                          | Optional installation id for smoke tests. Runtime jobs use webhook payload installation ids.                           |
-| `GITHUB_WEBHOOK_SECRET`                           | Shared secret used to verify GitHub webhook signatures. Required in production.                                        |
-| `GITHUB_APP_SLUG`                                 | GitHub App slug used by Settings and Onboarding to open the install flow. Required in production.                      |
-| `ALLOW_UNSIGNED_GITHUB_WEBHOOKS`                  | Local fixture escape hatch. Keep `false` outside explicit local replay tests.                                          |
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`       | GitHub App OAuth values for installation flows.                                                                        |
-| `APP_BASE_URL`                                    | Public dashboard URL. Local default is `http://localhost:3000`.                                                        |
-| `API_BASE_URL`                                    | Public API URL. Local default is `http://localhost:4000`.                                                              |
-| `DEFAULT_POLICY_MODE`                             | `observe`, `warn`, `enforce`, or `optimize`.                                                                           |
-| `SOURCE_CODE_STORAGE`                             | Must remain `false` for the V1 production posture.                                                                     |
-| `FULL_DIFF_RETENTION`                             | `disabled`, `7d`, `30d`, or `custom`.                                                                                  |
-| `REDACT_SECRETS`                                  | Redacts secrets in logs, snippets, check output, dashboard display, exports, and prompts.                              |
-| `LLM_FEATURES`                                    | Optional advisory AI features. Blocking decisions never depend on this.                                                |
-| `AUDIT_RECORD_RETENTION_DAYS`                     | Retention period for audit and change-control records.                                                                 |
-| `EXPORT_STORAGE_BUCKET` / `EXPORT_STORAGE_REGION` | Reserved for a future object-storage export adapter. V1 export delivery is API job download.                           |
-| `SESSION_SECRET`                                  | Session signing secret. Required before production deployment.                                                         |
-| `AGENTFORGE_GITHUB_ADMIN_LOGINS`                  | Comma-separated GitHub logins that receive `platform_admin` when built-in GitHub OAuth is used.                        |
-| `AGENTFORGE_GITHUB_ALLOWED_LOGINS`                | Comma-separated GitHub logins that receive `developer` when built-in GitHub OAuth is used.                             |
-| `AGENTFORGE_API_TRUST_PROXY_HEADERS`              | Trust authenticated API actor headers only behind a verified stripping auth proxy.                                     |
-| `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS`        | Local-only API fallback for raw actor headers. Keep `false` in deployed environments.                                  |
-| `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS`        | Trust authenticated dashboard actor headers only behind a verified auth proxy.                                         |
-| `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR`          | Local-only dashboard fallback. Keep `false` in deployed environments.                                                  |
-| `AGENTFORGE_ENABLE_SAMPLE_PREVIEW`                | Explicitly exposes the local sample-preview onboarding action in production-like E2E runs. Keep `false` when deployed. |
-| `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS`            | Production acknowledgement that ingress strips spoofable identity headers before injecting trusted headers.            |
+| Variable                                          | Purpose                                                                                                                                                                                                                  |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DATABASE_URL`                                    | PostgreSQL connection string. Local default is `postgresql://agentforge:agentforge@localhost:15432/agentforge`.                                                                                                          |
+| `REDIS_URL`                                       | Redis connection string used by BullMQ. Local default is `redis://localhost:6379`.                                                                                                                                       |
+| `NODE_ENV`                                        | `development`, `test`, or `production`. Production enables fail-closed config checks.                                                                                                                                    |
+| `GITHUB_APP_ID`                                   | Numeric GitHub App ID.                                                                                                                                                                                                   |
+| `GITHUB_APP_PRIVATE_KEY`                          | GitHub App private key. Use escaped newlines in hosted environment variables when required.                                                                                                                              |
+| `GITHUB_INSTALLATION_ID`                          | Optional installation id for smoke tests. Runtime jobs use webhook payload installation ids.                                                                                                                             |
+| `GITHUB_WEBHOOK_SECRET`                           | Shared secret used to verify GitHub webhook signatures. Required in production.                                                                                                                                          |
+| `GITHUB_APP_SLUG`                                 | GitHub App slug used by Settings and Onboarding to open the install flow. Required in production.                                                                                                                        |
+| `ALLOW_UNSIGNED_GITHUB_WEBHOOKS`                  | Local fixture escape hatch. Keep `false` outside explicit local replay tests.                                                                                                                                            |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`       | GitHub App OAuth values for installation flows.                                                                                                                                                                          |
+| `APP_BASE_URL`                                    | Public dashboard URL. Local default is `http://localhost:3000`.                                                                                                                                                          |
+| `API_BASE_URL`                                    | Public API URL. Local default is `http://localhost:4000`.                                                                                                                                                                |
+| `DEFAULT_POLICY_MODE`                             | `observe`, `warn`, `enforce`, or `optimize`.                                                                                                                                                                             |
+| `SOURCE_CODE_STORAGE`                             | Must remain `false` for the V1 production posture.                                                                                                                                                                       |
+| `FULL_DIFF_RETENTION`                             | `disabled`, `7d`, `30d`, or `custom`.                                                                                                                                                                                    |
+| `REDACT_SECRETS`                                  | Redacts secrets in logs, snippets, check output, dashboard display, exports, and prompts.                                                                                                                                |
+| `LLM_FEATURES`                                    | Optional advisory AI features. Blocking decisions never depend on this.                                                                                                                                                  |
+| `AUDIT_RECORD_RETENTION_DAYS`                     | Retention period for audit and change-control records.                                                                                                                                                                   |
+| `EXPORT_STORAGE_BUCKET` / `EXPORT_STORAGE_REGION` | Reserved for a future object-storage export adapter. V1 export delivery is API job download.                                                                                                                             |
+| `SESSION_SECRET`                                  | Session signing secret. Required before production deployment.                                                                                                                                                           |
+| `AGENTFORGE_GITHUB_ADMIN_LOGINS`                  | Comma-separated GitHub logins that receive `platform_admin` when built-in GitHub OAuth is used.                                                                                                                          |
+| `AGENTFORGE_GITHUB_ALLOWED_LOGINS`                | Comma-separated GitHub logins that receive `developer` when built-in GitHub OAuth is used.                                                                                                                               |
+| `AGENTFORGE_API_TRUST_PROXY_HEADERS`              | Trust authenticated API actor headers only behind a verified stripping auth proxy.                                                                                                                                       |
+| `AGENTFORGE_API_PROXY_SECRET`                     | Shared HMAC secret the dashboard uses to sign forwarded identity headers; the API verifies the signature and a timestamp window. Required in production when `AGENTFORGE_API_TRUST_PROXY_HEADERS=true`.                  |
+| `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS`        | Local-only API fallback for raw actor headers. Keep `false` in deployed environments.                                                                                                                                    |
+| `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS`        | Trust authenticated dashboard actor headers only behind a verified auth proxy.                                                                                                                                           |
+| `AGENTFORGE_DASHBOARD_PROXY_SECRET`               | Shared HMAC secret the ingress/auth proxy uses to sign inbound identity headers; the dashboard verifies the signature before trusting them. Required in production when `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true`. |
+| `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR`          | Local-only dashboard fallback. Keep `false` in deployed environments.                                                                                                                                                    |
+| `AGENTFORGE_ENABLE_SAMPLE_PREVIEW`                | Explicitly exposes the local sample-preview onboarding action in production-like E2E runs. Keep `false` when deployed.                                                                                                   |
+| `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS`            | Production acknowledgement that ingress strips spoofable identity headers before injecting trusted headers.                                                                                                              |
 
 When `NODE_ENV=production`, startup fails closed if webhook signing, redaction, source-code storage, trusted proxy identity, local actor fallback, or header-stripping requirements are unsafe.
 
@@ -575,8 +579,14 @@ For API, worker, database, or dashboard changes, also run the relevant integrati
 - [docs/policy-packs.md](docs/policy-packs.md) - built-in policy packs.
 - [docs/change-control-records.md](docs/change-control-records.md) - CCR lifecycle and export model.
 - [docs/security-and-data-handling.md](docs/security-and-data-handling.md) - security and privacy posture.
+- [docs/self-hosting.md](docs/self-hosting.md) - hardened self-hosting reference, production security contract, and go-live checklist.
+- [docs/tenant-isolation-rls.md](docs/tenant-isolation-rls.md) - application-layer and Postgres RLS tenant isolation model.
+- [docs/self-governance.md](docs/self-governance.md) - how AgentForge governs its own repository with the Merge Guard check.
 - [docs/testing.md](docs/testing.md) - validation strategy and E2E details.
 - [docs/runtime-boundaries.md](docs/runtime-boundaries.md) - in-memory versus Postgres/Redis capability contract.
 - [docs/railway-deployment.md](docs/railway-deployment.md) - Railway topology, variables, deploy, validation, and rollback.
 - [docs/runbook.md](docs/runbook.md) - operational launch and rollback steps.
 - [docs/roadmap.md](docs/roadmap.md) - backlog and intentionally excluded V1 capabilities.
+- [docs/roadmap-v2.md](docs/roadmap-v2.md) - V2+ planning: intelligence layer, integration surface, platform expansion, and compliance depth.
+- [docs/release-checklist.md](docs/release-checklist.md) - public OSS release checklist for repository metadata, secret hygiene, and auth readiness.
+- [docs/launch-readiness-evidence.md](docs/launch-readiness-evidence.md) - V1 launch-readiness evidence and re-check commands.
