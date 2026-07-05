@@ -21,7 +21,12 @@ import {
   RedisCacheManager,
   getMembershipCacheKey
 } from "@agentforge/core";
-import { createPrismaClient, enterOrgContext, type PrismaClient } from "@agentforge/db";
+import {
+  createPrismaClient,
+  enterOrgContext,
+  withUnmanagedOrgBinding,
+  type PrismaClient
+} from "@agentforge/db";
 import {
   createGithubAppToken,
   createGithubInstallationToken,
@@ -162,7 +167,7 @@ type AppDependencyOverrides = {
 
 type PrismaTransactionClient = Pick<
   PrismaClient,
-  "ownerMapping" | "policyVersion" | "repository" | "repositorySetting"
+  "ownerMapping" | "policyVersion" | "repository" | "repositorySetting" | "$executeRaw"
 >;
 
 type PageInfo = {
@@ -716,8 +721,8 @@ export function createApp(
     const record = await getRecord(recordId);
     return record ? [record] : [];
   };
-  const requireReadActor = (request: FastifyRequest, reply: FastifyReply) => {
-    const actor = requireApiActor(request);
+  const requireReadActor = async (request: FastifyRequest, reply: FastifyReply) => {
+    const actor = await requireApiActor(request);
     if (isAuthzFailure(actor)) {
       const errorCode =
         actor.statusCode === 401 ? "api_actor_required" : "api_actor_not_authorized";
@@ -810,7 +815,7 @@ export function createApp(
   // permissively — route-level requireOrganizationAccess remains the primary check.
   app.addHook("onRequest", async (request) => {
     try {
-      const actor = resolveApiActor(request);
+      const actor = await resolveApiActor(request);
       if (actor) {
         enterOrgContext(actor.organizationId);
       }
@@ -1430,27 +1435,35 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         if (!repository) {
           throw new Error("Repository must exist before assigning an active policy.");
         }
-        const row = await prisma.$transaction(async (tx: PrismaTransactionClient) => {
-          const createdRow = await tx.policyVersion.create({
-            data: {
-              organizationId: repository.organizationId,
-              repositoryId: repository.id,
-              version: policy.version,
-              mode: policy.mode,
-              contentYaml: policy.contentYaml,
-              contentHash: policy.contentHash,
-              createdBy: policy.createdBy
-            }
-          });
-          await tx.repository.update({
-            where: { id: repository.id },
-            data: {
-              currentPolicyVersionId: createdRow.id,
-              mode: policy.mode
-            }
-          });
-          return createdRow;
-        });
+        // Interactive transaction: bind the org GUC explicitly as the
+        // transaction's own first statement on the real `tx` connection (see
+        // createPrismaClient's doc comment in @agentforge/db for why the
+        // automatic hook cannot safely do this for operations already running
+        // on a `tx` handle).
+        const row = await withUnmanagedOrgBinding(() =>
+          prisma.$transaction(async (tx: PrismaTransactionClient) => {
+            await tx.$executeRaw`SELECT set_config('agentforge.current_org', ${repository.organizationId}, true)`;
+            const createdRow = await tx.policyVersion.create({
+              data: {
+                organizationId: repository.organizationId,
+                repositoryId: repository.id,
+                version: policy.version,
+                mode: policy.mode,
+                contentYaml: policy.contentYaml,
+                contentHash: policy.contentHash,
+                createdBy: policy.createdBy
+              }
+            });
+            await tx.repository.update({
+              where: { id: repository.id },
+              data: {
+                currentPolicyVersionId: createdRow.id,
+                mode: policy.mode
+              }
+            });
+            return createdRow;
+          })
+        );
 
         const finalizedPolicy = {
           ...policy,

@@ -49,17 +49,17 @@ function signedRequest(
 describe("Proxy Authentication cryptographic security", () => {
   const secret = "super-secret-key-12345";
 
-  it("accepts valid proxy headers with correct signature, timestamp, and nonce", () => {
+  it("accepts valid proxy headers with correct signature, timestamp, and nonce", async () => {
     process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
     process.env.AGENTFORGE_API_PROXY_SECRET = secret;
 
     const req = signedRequest(secret, { actor: "alex", role: "platform_admin", org: "org_test" });
 
-    const result = resolveApiActor(req);
+    const result = await resolveApiActor(req);
     expect(result).toEqual({ login: "alex", role: "platform_admin", organizationId: "org_test" });
   });
 
-  it("rejects when proxy secret is not configured", () => {
+  it("rejects when proxy secret is not configured", async () => {
     process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
     delete process.env.AGENTFORGE_API_PROXY_SECRET;
 
@@ -72,12 +72,12 @@ describe("Proxy Authentication cryptographic security", () => {
       "x-agentforge-signature": "somesignature"
     });
 
-    expect(() => resolveApiActor(req)).toThrowError(
+    await expect(resolveApiActor(req)).rejects.toThrowError(
       "AGENTFORGE_API_PROXY_SECRET must be configured when AGENTFORGE_API_TRUST_PROXY_HEADERS is enabled."
     );
   });
 
-  it("rejects when signature is missing", () => {
+  it("rejects when signature is missing", async () => {
     process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
     process.env.AGENTFORGE_API_PROXY_SECRET = secret;
 
@@ -89,11 +89,11 @@ describe("Proxy Authentication cryptographic security", () => {
       "x-agentforge-signature-nonce": randomUUID()
     });
 
-    const result = resolveApiActor(req);
+    const result = await resolveApiActor(req);
     expect(result).toBeUndefined();
   });
 
-  it("rejects when the nonce is missing, even with an otherwise-valid legacy-style signature", () => {
+  it("rejects when the nonce is missing, even with an otherwise-valid legacy-style signature", async () => {
     // The nonce is mandatory: a nonce-less signed request has no per-request
     // binding, so registerSignatureUse is never consulted and it could be
     // replayed indefinitely within the timestamp window if this were accepted.
@@ -117,11 +117,11 @@ describe("Proxy Authentication cryptographic security", () => {
       // No x-agentforge-signature-nonce header.
     });
 
-    const result = resolveApiActor(req);
+    const result = await resolveApiActor(req);
     expect(result).toBeUndefined();
   });
 
-  it("rejects when signature is invalid", () => {
+  it("rejects when signature is invalid", async () => {
     process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
     process.env.AGENTFORGE_API_PROXY_SECRET = secret;
 
@@ -134,11 +134,11 @@ describe("Proxy Authentication cryptographic security", () => {
       "x-agentforge-signature": "incorrectsignaturehex"
     });
 
-    const result = resolveApiActor(req);
+    const result = await resolveApiActor(req);
     expect(result).toBeUndefined();
   });
 
-  it("rejects when timestamp has expired (outside 5-minute window)", () => {
+  it("rejects when timestamp has expired (outside 5-minute window)", async () => {
     process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
     process.env.AGENTFORGE_API_PROXY_SECRET = secret;
 
@@ -151,11 +151,11 @@ describe("Proxy Authentication cryptographic security", () => {
       timestamp
     });
 
-    const result = resolveApiActor(req);
+    const result = await resolveApiActor(req);
     expect(result).toBeUndefined();
   });
 
-  it("rejects when timestamp is in the future (outside 5-minute window)", () => {
+  it("rejects when timestamp is in the future (outside 5-minute window)", async () => {
     process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
     process.env.AGENTFORGE_API_PROXY_SECRET = secret;
 
@@ -168,11 +168,11 @@ describe("Proxy Authentication cryptographic security", () => {
       timestamp
     });
 
-    const result = resolveApiActor(req);
+    const result = await resolveApiActor(req);
     expect(result).toBeUndefined();
   });
 
-  it("rejects when actor contains invalid characters", () => {
+  it("rejects when actor contains invalid characters", async () => {
     process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
     process.env.AGENTFORGE_API_PROXY_SECRET = secret;
 
@@ -182,11 +182,11 @@ describe("Proxy Authentication cryptographic security", () => {
       org: "org_test"
     });
 
-    const result = resolveApiActor(req);
+    const result = await resolveApiActor(req);
     expect(result).toBeUndefined();
   });
 
-  it("rejects a replayed nonce: resolving the exact same signed headers twice (as distinct request objects) succeeds once, then fails", () => {
+  it("rejects a replayed nonce: resolving the exact same signed headers twice (as distinct request objects) succeeds once, then fails", async () => {
     // Direct proof of the replay-protection guarantee the nonce exists for: the
     // SAME signed headers cannot be accepted twice, even well within the
     // timestamp window, when presented as two separate requests.
@@ -195,14 +195,14 @@ describe("Proxy Authentication cryptographic security", () => {
 
     const req = signedRequest(secret, { actor: "alex", role: "platform_admin", org: "org_test" });
 
-    const first = resolveApiActor(requestFromHeaders({ ...req.headers }));
+    const first = await resolveApiActor(requestFromHeaders({ ...req.headers }));
     expect(first).toEqual({ login: "alex", role: "platform_admin", organizationId: "org_test" });
 
-    const second = resolveApiActor(requestFromHeaders({ ...req.headers }));
+    const second = await resolveApiActor(requestFromHeaders({ ...req.headers }));
     expect(second).toBeUndefined();
   });
 
-  it("does not self-replay-reject when the SAME request object is resolved twice (onRequest hook + route handler)", () => {
+  it("does not self-replay-reject when the SAME request object is resolved twice (onRequest hook + route handler)", async () => {
     // Regression test for a real bug: app.ts's onRequest hook calls
     // resolveApiActor(request) to bind RLS org context on every request. If a
     // route handler's own requireApiActor -> resolveApiActor call on that exact
@@ -216,12 +216,12 @@ describe("Proxy Authentication cryptographic security", () => {
     const req = signedRequest(secret, { actor: "alex", role: "platform_admin", org: "org_test" });
 
     // Simulates app.ts's onRequest hook resolving the actor first.
-    const fromHook = resolveApiActor(req);
+    const fromHook = await resolveApiActor(req);
     expect(fromHook).toEqual({ login: "alex", role: "platform_admin", organizationId: "org_test" });
 
     // Simulates the route handler's requireApiActor resolving the SAME request
     // object again later in the same request's lifecycle.
-    const fromRouteHandler = resolveApiActor(req);
+    const fromRouteHandler = await resolveApiActor(req);
     expect(fromRouteHandler).toEqual({
       login: "alex",
       role: "platform_admin",
@@ -229,7 +229,31 @@ describe("Proxy Authentication cryptographic security", () => {
     });
   });
 
-  it("rejects a request carrying a raw spoofable x-agentforge-actor header alongside otherwise-valid signed headers", () => {
+  it("resolves the SAME request object exactly once even when awaited concurrently (onRequest hook racing a route handler)", async () => {
+    // Stronger regression guard than the sequential case above: two
+    // concurrent (not sequential) resolveApiActor(request) calls on the same
+    // request object must share one in-flight resolution, not race to both
+    // call the nonce-claiming replay guard before either has settled -- which
+    // would non-deterministically 401 one of two entirely legitimate,
+    // concurrent callers.
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
+    process.env.AGENTFORGE_API_PROXY_SECRET = secret;
+
+    const req = signedRequest(secret, { actor: "alex", role: "platform_admin", org: "org_test" });
+
+    const [fromHook, fromRouteHandler] = await Promise.all([
+      resolveApiActor(req),
+      resolveApiActor(req)
+    ]);
+    expect(fromHook).toEqual({ login: "alex", role: "platform_admin", organizationId: "org_test" });
+    expect(fromRouteHandler).toEqual({
+      login: "alex",
+      role: "platform_admin",
+      organizationId: "org_test"
+    });
+  });
+
+  it("rejects a request carrying a raw spoofable x-agentforge-actor header alongside otherwise-valid signed headers", async () => {
     // Proves AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS is enforced at request time: if the
     // ingress proxy failed to strip the raw header (or an attacker reaches the app
     // directly), the request is rejected outright rather than silently resolved from
@@ -243,11 +267,11 @@ describe("Proxy Authentication cryptographic security", () => {
     req.headers["x-agentforge-role"] = "platform_admin";
     req.headers["x-agentforge-organization"] = "org_victim";
 
-    const result = resolveApiActor(req);
+    const result = await resolveApiActor(req);
     expect(result).toBeUndefined();
   });
 
-  it("rejects a request carrying only a raw spoofable header with no signed headers at all", () => {
+  it("rejects a request carrying only a raw spoofable header with no signed headers at all", async () => {
     process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
     process.env.AGENTFORGE_API_PROXY_SECRET = secret;
 
@@ -257,17 +281,17 @@ describe("Proxy Authentication cryptographic security", () => {
       "x-agentforge-organization": "org_victim"
     });
 
-    const result = resolveApiActor(req);
+    const result = await resolveApiActor(req);
     expect(result).toBeUndefined();
   });
 
-  it("still accepts a valid signed request with no raw headers present (regression guard)", () => {
+  it("still accepts a valid signed request with no raw headers present (regression guard)", async () => {
     process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
     process.env.AGENTFORGE_API_PROXY_SECRET = secret;
 
     const req = signedRequest(secret, { actor: "alex", role: "platform_admin", org: "org_test" });
 
-    const result = resolveApiActor(req);
+    const result = await resolveApiActor(req);
     expect(result).toEqual({ login: "alex", role: "platform_admin", organizationId: "org_test" });
   });
 });
