@@ -259,14 +259,25 @@ class MemorySignatureReplayBackend {
  */
 export class SignatureReplayGuard {
   private redis: Redis | null = null;
-  private memoryFallback = new MemorySignatureReplayBackend();
+  private memoryFallback: MemorySignatureReplayBackend;
   private hasConnectionError = false;
 
-  constructor(redisUrl?: string) {
+  /**
+   * `memoryFallbackMaxEntries` is exposed (rather than only using the
+   * production default) so tests can force the eviction branch
+   * deterministically with a small cap, instead of needing tens of
+   * thousands of claims to exhaust the real default.
+   */
+  constructor(redisUrl?: string, memoryFallbackMaxEntries?: number) {
+    this.memoryFallback = new MemorySignatureReplayBackend(memoryFallbackMaxEntries);
     if (redisUrl) {
       try {
         this.redis = new Redis(redisUrl, {
-          maxRetriesPerRequest: null,
+          // Caps retry attempts (distinct from commandTimeout, which caps
+          // how long any single attempt waits) so a persistently
+          // unreachable Redis gives up retrying and surfaces as an error
+          // promptly, rather than requeueing indefinitely.
+          maxRetriesPerRequest: 3,
           showFriendlyErrorStack: true,
           lazyConnect: true,
           // Bounds how long a single command can hang waiting on a

@@ -2,7 +2,7 @@
 
 > This document covers V2+ planning. See [docs/roadmap.md](roadmap.md) for
 > historical V1 context.
-
+>
 > V1 proved deterministic governance works. V2 makes it faster to act on.
 
 ## Guiding Principle

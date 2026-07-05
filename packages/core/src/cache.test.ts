@@ -280,23 +280,43 @@ describe("Caching Layer", () => {
     });
 
     it("bounds in-memory fallback growth and evicts the oldest claim once the cap is exceeded", async () => {
-      // Exercise the private cap via the public claim() surface: after the cap
-      // is exceeded, the oldest key's claim is evicted, so re-claiming it
-      // succeeds again even though it hasn't expired.
-      const guard = new SignatureReplayGuard();
+      // Injects a small cap (SignatureReplayGuard's second constructor
+      // argument) so this test actually exercises the eviction branch
+      // deterministically, rather than needing tens of thousands of claims
+      // to exhaust the real 50,000-entry production default.
+      const guard = new SignatureReplayGuard(undefined, 3);
       const now = Date.now();
-      // No redisUrl means every claim goes through MemorySignatureReplayBackend
-      // whose default cap is 50,000 -- too large to exhaust directly in a fast
-      // unit test, so this test instead verifies the documented, exercised
-      // behavior (independent-key claims, no cross-key interference) that the
-      // eviction logic depends on being correct, without asserting on the
-      // private cap constant itself.
-      for (let i = 0; i < 25; i += 1) {
-        expect(await guard.claim(`bulk-${i}`, 300, now)).toBe(true);
-      }
-      for (let i = 0; i < 25; i += 1) {
-        expect(await guard.claim(`bulk-${i}`, 300, now)).toBe(false);
-      }
+
+      // Fill exactly to the cap of 3: no eviction has happened yet.
+      expect(await guard.claim("key-1", 300, now)).toBe(true);
+      expect(await guard.claim("key-2", 300, now)).toBe(true);
+      expect(await guard.claim("key-3", 300, now)).toBe(true);
+
+      // All three correctly reject a replay while still within their window
+      // and before any eviction has occurred.
+      expect(await guard.claim("key-1", 300, now + 1_000)).toBe(false);
+      expect(await guard.claim("key-2", 300, now + 1_000)).toBe(false);
+      expect(await guard.claim("key-3", 300, now + 1_000)).toBe(false);
+
+      // A 4th distinct claim exceeds the cap of 3 and evicts the oldest
+      // entry ("key-1") to make room. Direct proof of eviction, not just
+      // independent-key behavior: "key-1" can now be claimed again even
+      // though its original 300s TTL has not elapsed.
+      expect(await guard.claim("key-4", 300, now + 2_000)).toBe(true);
+      expect(await guard.claim("key-1", 300, now + 3_000)).toBe(true);
+
+      // Re-claiming "key-1" is itself a new distinct entry at the cap, which
+      // evicts whichever entry is now oldest ("key-2") in turn -- FIFO
+      // eviction keeps evicting the current oldest at each insert once the
+      // store is at capacity, not just once for the whole test. "key-2" can
+      // now also be claimed again.
+      expect(await guard.claim("key-2", 300, now + 3_000)).toBe(true);
+
+      // Claiming "key-2" again evicted the new oldest ("key-3") in the same
+      // way, so "key-3" can also be claimed again -- this chain of
+      // insert-evicts-oldest is the correct, verified behavior of a
+      // fixed-capacity FIFO cache, not a bug.
+      expect(await guard.claim("key-3", 300, now + 3_000)).toBe(true);
     });
   });
 });
