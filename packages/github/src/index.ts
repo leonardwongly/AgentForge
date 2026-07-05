@@ -505,16 +505,63 @@ export function createGithubClient(
     GithubCheckPublisherClient;
 }
 
+// Cache of createAppAuth(...) closures keyed by App credentials, so
+// @octokit/auth-app's own internal per-installation token cache (which lives
+// inside that closure) actually persists across calls instead of being
+// discarded on every invocation. Not a single global singleton: different
+// callers may legitimately use different GitHub App credentials (tests,
+// multi-tenant deployments), so this is keyed per (appId, privateKey).
+//
+// Bounded the same way as apps/api/src/auth.ts's seenSignatures cache: a Map
+// preserves insertion order, so the oldest entry is evicted from the front
+// once the cap is reached. One process realistically serves one or a small
+// number of GitHub Apps, so this cap is generous headroom, not a real limit.
+const MAX_CACHED_APP_AUTH_INSTANCES = 50;
+const appAuthCache = new Map<string, ReturnType<typeof createAppAuth>>();
+
+function cachedAppAuth(
+  appId: string | number,
+  privateKey: string
+): ReturnType<typeof createAppAuth> {
+  const normalizedPrivateKey = normalizePrivateKey(privateKey);
+  // The cache key incorporates the private key material so distinct GitHub
+  // Apps never share a cached auth closure, but it is never logged or thrown
+  // in an error/stack trace, so it cannot leak the key itself.
+  const cacheKey = `${String(appId)}:${normalizedPrivateKey}`;
+  const existing = appAuthCache.get(cacheKey);
+  if (existing) {
+    return existing;
+  }
+
+  const auth = createAppAuth({ appId, privateKey: normalizedPrivateKey });
+  while (appAuthCache.size >= MAX_CACHED_APP_AUTH_INSTANCES) {
+    const oldest = appAuthCache.keys().next().value;
+    if (oldest === undefined) {
+      break;
+    }
+    appAuthCache.delete(oldest);
+  }
+  appAuthCache.set(cacheKey, auth);
+  return auth;
+}
+
+/**
+ * Test-only hook to reset the module-level createAppAuth cache between test
+ * files. @octokit/auth-app tokens refresh themselves transparently near
+ * expiry, so production code never needs this; it exists purely so tests that
+ * assert on cache construction counts do not leak cached instances into
+ * unrelated test files.
+ */
+export function __resetGithubAppAuthCacheForTests(): void {
+  appAuthCache.clear();
+}
+
 export async function createGithubInstallationToken(input: {
   appId: string | number;
   privateKey: string;
   installationId: string | number;
 }): Promise<string> {
-  const auth = createAppAuth({
-    appId: input.appId,
-    privateKey: normalizePrivateKey(input.privateKey),
-    installationId: input.installationId
-  });
+  const auth = cachedAppAuth(input.appId, input.privateKey);
   const installationAuth = await auth({
     type: "installation",
     installationId: input.installationId
@@ -526,10 +573,7 @@ export async function createGithubAppToken(input: {
   appId: string | number;
   privateKey: string;
 }): Promise<string> {
-  const auth = createAppAuth({
-    appId: input.appId,
-    privateKey: normalizePrivateKey(input.privateKey)
-  });
+  const auth = cachedAppAuth(input.appId, input.privateKey);
   const appAuth = await auth({ type: "app" });
   return appAuth.token;
 }
@@ -789,14 +833,14 @@ async function writeMembershipCache(
   }
 }
 
-class GithubRequestTimeoutError extends Error {
+export class GithubRequestTimeoutError extends Error {
   constructor(readonly timeoutMs: number) {
     super(`GitHub request timed out after ${timeoutMs}ms`);
     this.name = "GithubRequestTimeoutError";
   }
 }
 
-async function withGithubRequestTimeout<T>(
+export async function withGithubRequestTimeout<T>(
   request: () => Promise<T>,
   timeoutMs: number
 ): Promise<T> {
@@ -818,7 +862,7 @@ async function withGithubRequestTimeout<T>(
   }
 }
 
-function githubRequestFailureReason(error: unknown, requestType: string): string {
+export function githubRequestFailureReason(error: unknown, requestType: string): string {
   if (error instanceof GithubRequestTimeoutError) {
     return `GitHub ${requestType} request timed out after ${error.timeoutMs}ms.`;
   }
