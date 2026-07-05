@@ -15,7 +15,17 @@ hydrateApiAuthEnvironment(config);
 // assertOrgIsolationEnforced itself); fails closed (throws, exits) in
 // production, matching every other fail-closed production check in this
 // codebase.
-if (config.databaseUrl) {
+//
+// Matches createApp's own `config.databaseUrl && config.nodeEnv !== "test"`
+// guard exactly (apps/api/src/app.ts): loadConfig() synthesizes a local-dev
+// default databaseUrl whenever NODE_ENV isn't "production", even if
+// DATABASE_URL was explicitly blanked to force in-memory runtime mode (e.g.
+// playwright.config.ts's E2E webServer sets NODE_ENV=test DATABASE_URL= to
+// intentionally run the API without a database). Without the nodeEnv check
+// here too, this would try to connect to the synthesized local-dev URL
+// (a different port than any real database actually running) and crash
+// the process at startup instead of skipping cleanly.
+if (config.databaseUrl && config.nodeEnv !== "test") {
   const isolationCheckClient = createPrismaClient(config.databaseUrl);
   try {
     await assertOrgIsolationEnforced(isolationCheckClient, config.nodeEnv);
