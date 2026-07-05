@@ -5,8 +5,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev --port 3000",
-    "build": "next build",
-    "start": "next start --port ${PORT:-3000}",
+    "build": "NODE_ENV=production next build",
+    "start": "NODE_ENV=production next start --port ${PORT:-3000}",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "cd ../.. && vitest run apps/web/app"
   },
@@ -16,7 +16,7 @@
     "@agentforge/ui": "workspace:*",
     "ioredis": "5.11.1",
     "lucide-react": "1.22.0",
-    "next": "16.2.9",
+    "next": "16.2.10",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },
