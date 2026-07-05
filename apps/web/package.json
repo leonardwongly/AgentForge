@@ -14,6 +14,7 @@
     "@agentforge/config": "workspace:*",
     "@agentforge/core": "workspace:*",
     "@agentforge/ui": "workspace:*",
+    "ioredis": "5.11.1",
     "lucide-react": "1.22.0",
     "next": "16.2.9",
     "react": "19.2.7",
