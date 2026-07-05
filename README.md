@@ -430,11 +430,10 @@ them locally:
 
 ```bash
 # Android (JDK + Android SDK)
-cd apps/android && ./gradlew testDebugUnitTest assembleDebug
+(cd apps/android && ./gradlew testDebugUnitTest assembleDebug)
 
 # iOS (Xcode with the iOS 26 SDK, plus xcodegen)
-cd apps/ios/AgentForge && xcodegen generate
-swift test --package-path Packages/AgentForgeCore
+(cd apps/ios/AgentForge && xcodegen generate && swift test --package-path Packages/AgentForgeCore)
 ```
 
 See [apps/android/README.md](apps/android/README.md) and
