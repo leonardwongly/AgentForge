@@ -92,7 +92,10 @@ export class RedisCacheManager implements CacheBackend {
     if (redisUrl) {
       try {
         this.redis = new Redis(redisUrl, {
-          maxRetriesPerRequest: null,
+          // Caps retry attempts (distinct from commandTimeout below, which
+          // caps how long any single attempt waits) -- see
+          // SignatureReplayGuard's identical setting for the full rationale.
+          maxRetriesPerRequest: 3,
           showFriendlyErrorStack: true,
           lazyConnect: true,
           // See SignatureReplayGuard's identical setting: bounds how long a
