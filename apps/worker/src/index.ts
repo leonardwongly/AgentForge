@@ -15,7 +15,13 @@ import {
   type PullRequestInput,
   type VerifiedFact
 } from "@agentforge/core";
-import { createPrismaClient, runWithOrgContext, type PrismaClient } from "@agentforge/db";
+import {
+  assertOrgIsolationEnforced,
+  createPrismaClient,
+  runWithOrgContext,
+  withUnmanagedOrgBinding,
+  type PrismaClient
+} from "@agentforge/db";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/detectors";
 import {
   buildCheckRunPayload,
@@ -370,6 +376,157 @@ function notConfiguredPolicyResult(reason: string): PolicyResult {
   };
 }
 
+function terminalFailurePolicyResult(input: {
+  attemptsMade: number;
+  maxAttempts: number;
+}): PolicyResult {
+  return {
+    mode: "enforce",
+    status: "block",
+    policyVersion: "evaluation_failed",
+    policyPackId: "evaluation_failed",
+    policyPackVersion: "evaluation_failed",
+    findings: [],
+    requiredEvidence: [],
+    requiredReviewers: [],
+    explanation: [
+      `Merge Guard could not evaluate this pull request after ${input.attemptsMade} of ${input.maxAttempts} attempt(s); contact an administrator.`,
+      "Merge Guard failed closed because the evaluation job did not complete successfully."
+    ],
+    evaluatedAt: new Date().toISOString()
+  };
+}
+
+/**
+ * Best-effort fail-closed check-run publication for a Merge Guard evaluation
+ * job that has exhausted retries (`classifyMergeGuardEvaluationFailure`'s
+ * `terminalFailure: true`), mirroring `publishNotConfiguredEvaluation`'s
+ * existing "no policy selected" fail-closed pattern: without this, a PR whose
+ * evaluation job fails every attempt is left with NO Merge Guard check-run at
+ * all (see the task report for the investigation confirming this), which is
+ * silently indistinguishable from Merge Guard never having run, and defeats a
+ * required-status-check branch protection rule that depends on this check
+ * ever completing.
+ *
+ * Deliberately best-effort and swallows its own errors: this runs from inside
+ * the BullMQ `worker.on("failed", ...)` handler, which itself has no retry and
+ * must never throw or return a rejected promise (an unhandled rejection here
+ * would crash the worker process instead of just leaving the operator-visible
+ * signal unset). If GitHub is unreachable or job.data lacks enough context to
+ * resolve a client (e.g. a directly-injected job with no `pr`/`envelope`,
+ * or a failure that occurred before `resolvePullRequestForJob` had anything to
+ * return), this logs and returns without publishing rather than throwing.
+ */
+export async function publishTerminalFailureCheckRun(input: {
+  job: {
+    data: MergeGuardEvaluationJobData;
+  };
+  config: ReturnType<typeof loadConfig>;
+  summary: MergeGuardEvaluationFailureSummary;
+}): Promise<void> {
+  try {
+    const pr = input.job.data.pr;
+    if (!pr) {
+      // No pull request payload survives onto a directly-queued job with only
+      // an `envelope` until `resolvePullRequestForJob` fetches it from GitHub --
+      // exactly the call that may be what failed. There is nothing to publish a
+      // check-run against without at least a headSha/repositoryFullName, so this
+      // fails open on publication (the terminal-failure webhookDelivery record
+      // and console.error above still capture the failure either way).
+      console.error(
+        "Skipping Merge Guard terminal-failure check-run publication: no pull request payload available on the failed job.",
+        { deliveryId: input.job.data.deliveryId }
+      );
+      return;
+    }
+    const [owner = "unknown", repo = pr.repositoryFullName] = pr.repositoryFullName.split("/");
+    const result = terminalFailurePolicyResult({
+      attemptsMade: input.summary.attemptsMade,
+      maxAttempts: input.summary.maxAttempts
+    });
+    const published = await publishCheckIfConfigured({
+      data: input.job.data,
+      githubContext: { owner, repo },
+      pr,
+      result
+    });
+    console.log("Published Merge Guard terminal-failure check-run", {
+      deliveryId: input.job.data.deliveryId,
+      repositoryFullName: pr.repositoryFullName,
+      pullRequestNumber: pr.pullRequestNumber,
+      published: published.published
+    });
+  } catch (publishError) {
+    console.error("Failed to publish Merge Guard terminal-failure check-run", {
+      deliveryId: input.job.data.deliveryId,
+      errorClass: publishError instanceof Error ? publishError.name : "UnknownError",
+      message: publishError instanceof Error ? publishError.message : String(publishError)
+    });
+  }
+}
+
+/**
+ * Optional operator-visibility hook for permanently-failed evaluation jobs.
+ * When `AGENTFORGE_WORKER_FAILURE_WEBHOOK_URL` is unset, this is a no-op --
+ * the review finding this addresses was the ABSENCE of any alerting hook, not
+ * a requirement to mandate a specific alerting backend, so nothing changes for
+ * deployments that do not opt in. Read directly from `process.env` rather than
+ * through `loadConfig()`/`AgentForgeConfig`, matching how this same file
+ * already reads `AGENTFORGE_WORKER_AUTOSTART` inline at the bottom of this
+ * file instead of threading it through the shared config schema.
+ *
+ * Best-effort: a failed or unreachable webhook endpoint must never crash the
+ * BullMQ `failed` handler or produce an unhandled rejection, so any error from
+ * the POST itself is caught and logged here.
+ */
+export async function postWorkerFailureAlert(input: {
+  job: {
+    id?: string | undefined;
+    data: MergeGuardEvaluationJobData;
+  };
+  summary: MergeGuardEvaluationFailureSummary;
+}): Promise<void> {
+  const webhookUrl = process.env.AGENTFORGE_WORKER_FAILURE_WEBHOOK_URL;
+  if (!webhookUrl) {
+    return;
+  }
+  const pr = input.job.data.pr;
+  const envelopeRepository = input.job.data.envelope?.repository;
+  const repositoryFullName =
+    pr?.repositoryFullName ?? envelopeRepository?.fullName ?? "unknown_repository";
+  const pullRequestNumber =
+    pr?.pullRequestNumber ?? input.job.data.envelope?.pullRequest?.number ?? undefined;
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jobId: input.job.id,
+        deliveryId: input.job.data.deliveryId,
+        repositoryFullName,
+        pullRequestNumber,
+        errorClass: input.summary.errorClass,
+        errorMessage: input.summary.message,
+        attemptsMade: input.summary.attemptsMade,
+        maxAttempts: input.summary.maxAttempts,
+        failedAt: input.summary.failedAt
+      })
+    });
+    if (!response.ok) {
+      console.error("Merge Guard worker failure alert webhook returned a non-2xx response", {
+        deliveryId: input.job.data.deliveryId,
+        status: response.status
+      });
+    }
+  } catch (alertError) {
+    console.error("Failed to POST Merge Guard worker failure alert webhook", {
+      deliveryId: input.job.data.deliveryId,
+      errorClass: alertError instanceof Error ? alertError.name : "UnknownError",
+      message: alertError instanceof Error ? alertError.message : String(alertError)
+    });
+  }
+}
+
 function staleCheckRunResult(
   data: MergeGuardEvaluationJobData,
   error: StaleCheckRunError
@@ -486,88 +643,98 @@ export async function runAuditRecordRetentionSweep(input: {
     });
 
     const result = await runWithOrgContext(organization.id, async () => {
-      return input.prisma.$transaction(async (tx) => {
-        const [
-          auditEventsDeleted,
-          changeControlRecordsDeleted,
-          exportJobsDeleted,
-          webhookDeliveriesDeleted
-        ] = await Promise.all([
-          tx.auditEvent.deleteMany({ where: plan.auditEventWhere }),
-          tx.changeControlRecord.deleteMany({ where: plan.changeControlRecordWhere }),
-          tx.exportJob.deleteMany({
-            where: planExportJobRetentionSweep({
-              organizationId: organization.id,
-              globalRetentionDays: input.globalRetentionDays,
-              organizationOverrideDays: organization.retentionSettings?.auditRecordRetentionDays,
-              now: input.now
-            }).exportJobWhere
-          }),
-          tx.webhookDelivery.deleteMany({
-            where: planWebhookDeliveryRetentionSweep({
-              organizationId: organization.id,
-              globalRetentionDays: input.globalRetentionDays,
-              organizationOverrideDays: organization.retentionSettings?.auditRecordRetentionDays,
-              now: input.now
-            }).webhookDeliveryWhere
-          })
-        ]);
-        const summary = summarizeAuditRecordRetentionSweep({
-          plan,
-          auditEventsDeleted: auditEventsDeleted.count,
-          changeControlRecordsDeleted: changeControlRecordsDeleted.count,
-          exportJobsDeleted: exportJobsDeleted.count,
-          webhookDeliveriesDeleted: webhookDeliveriesDeleted.count
-        });
-
-        if (
-          summary.auditEventsDeleted > 0 ||
-          summary.changeControlRecordsDeleted > 0 ||
-          summary.exportJobsDeleted > 0 ||
-          summary.webhookDeliveriesDeleted > 0
-        ) {
-          const audit = createAuditEvent({
-            organizationId: organization.id,
-            actor: "system",
-            actorRole: "system",
-            action: "retention_swept",
-            targetType: "organization",
-            targetId: organization.id,
-            source: "worker",
-            metadataJson: {
-              retentionDays: summary.retentionDays,
-              cutoff: summary.cutoff,
-              auditEventsDeleted: summary.auditEventsDeleted,
-              changeControlRecordsDeleted: summary.changeControlRecordsDeleted,
-              exportJobsDeleted: summary.exportJobsDeleted,
-              webhookDeliveriesDeleted: summary.webhookDeliveriesDeleted
-            }
+      // Interactive transaction: the automatic RLS-binding hook in
+      // @agentforge/db cannot safely re-wrap operations already running on
+      // `tx` (see createPrismaClient's doc comment), so this binds the org GUC
+      // explicitly as the transaction's own first statement on the real `tx`
+      // connection, wrapped in withUnmanagedOrgBinding so the hook forwards
+      // every operation below -- including this raw call -- straight to `tx`
+      // instead of attempting its own (disconnected) wrap-in-transaction.
+      return withUnmanagedOrgBinding(() =>
+        input.prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT set_config('agentforge.current_org', ${organization.id}, true)`;
+          const [
+            auditEventsDeleted,
+            changeControlRecordsDeleted,
+            exportJobsDeleted,
+            webhookDeliveriesDeleted
+          ] = await Promise.all([
+            tx.auditEvent.deleteMany({ where: plan.auditEventWhere }),
+            tx.changeControlRecord.deleteMany({ where: plan.changeControlRecordWhere }),
+            tx.exportJob.deleteMany({
+              where: planExportJobRetentionSweep({
+                organizationId: organization.id,
+                globalRetentionDays: input.globalRetentionDays,
+                organizationOverrideDays: organization.retentionSettings?.auditRecordRetentionDays,
+                now: input.now
+              }).exportJobWhere
+            }),
+            tx.webhookDelivery.deleteMany({
+              where: planWebhookDeliveryRetentionSweep({
+                organizationId: organization.id,
+                globalRetentionDays: input.globalRetentionDays,
+                organizationOverrideDays: organization.retentionSettings?.auditRecordRetentionDays,
+                now: input.now
+              }).webhookDeliveryWhere
+            })
+          ]);
+          const summary = summarizeAuditRecordRetentionSweep({
+            plan,
+            auditEventsDeleted: auditEventsDeleted.count,
+            changeControlRecordsDeleted: changeControlRecordsDeleted.count,
+            exportJobsDeleted: exportJobsDeleted.count,
+            webhookDeliveriesDeleted: webhookDeliveriesDeleted.count
           });
-          // Written in the SAME transaction as the deletes above: if the
-          // deletion commits, the audit record documenting it commits with it.
-          // A crash between "deletes committed" and "audit event written" would
-          // otherwise leave a permanent, silent deletion with no audit trail —
-          // exactly the failure mode this system exists to prevent for every
-          // other governance action.
-          await tx.auditEvent.create({
-            data: {
-              id: audit.id,
-              organizationId: audit.organizationId,
-              schemaVersion: audit.schemaVersion,
-              actor: audit.actor,
-              actorRole: audit.actorRole,
-              action: audit.action,
-              targetType: audit.targetType,
-              targetId: audit.targetId,
-              source: audit.source,
-              metadataJson: audit.metadataJson as never,
-              createdAt: new Date(audit.createdAt)
-            }
-          });
-        }
 
-        return summary;
-      });
+          if (
+            summary.auditEventsDeleted > 0 ||
+            summary.changeControlRecordsDeleted > 0 ||
+            summary.exportJobsDeleted > 0 ||
+            summary.webhookDeliveriesDeleted > 0
+          ) {
+            const audit = createAuditEvent({
+              organizationId: organization.id,
+              actor: "system",
+              actorRole: "system",
+              action: "retention_swept",
+              targetType: "organization",
+              targetId: organization.id,
+              source: "worker",
+              metadataJson: {
+                retentionDays: summary.retentionDays,
+                cutoff: summary.cutoff,
+                auditEventsDeleted: summary.auditEventsDeleted,
+                changeControlRecordsDeleted: summary.changeControlRecordsDeleted,
+                exportJobsDeleted: summary.exportJobsDeleted,
+                webhookDeliveriesDeleted: summary.webhookDeliveriesDeleted
+              }
+            });
+            // Written in the SAME transaction as the deletes above: if the
+            // deletion commits, the audit record documenting it commits with it.
+            // A crash between "deletes committed" and "audit event written" would
+            // otherwise leave a permanent, silent deletion with no audit trail —
+            // exactly the failure mode this system exists to prevent for every
+            // other governance action.
+            await tx.auditEvent.create({
+              data: {
+                id: audit.id,
+                organizationId: audit.organizationId,
+                schemaVersion: audit.schemaVersion,
+                actor: audit.actor,
+                actorRole: audit.actorRole,
+                action: audit.action,
+                targetType: audit.targetType,
+                targetId: audit.targetId,
+                source: audit.source,
+                metadataJson: audit.metadataJson as never,
+                createdAt: new Date(audit.createdAt)
+              }
+            });
+          }
+
+          return summary;
+        })
+      );
     });
     results.push(result);
   }
@@ -703,12 +870,24 @@ export function computeBackoffDelay(
 
 let workerCache: RedisCacheManager | undefined;
 
-function startWorker(): void {
+async function startWorker(): Promise<void> {
   const config = loadConfig();
 
   if (!config.redisUrl) {
     console.log("AgentForge worker started without REDIS_URL; queue processing is disabled.");
     return;
+  }
+
+  if (config.databaseUrl) {
+    // Verify the RLS tenant-isolation backstop is actually enforceable for
+    // the connected Postgres role before processing any jobs. Reuses the
+    // same lazy singleton getWorkerPrisma(config) that the rest of this
+    // module uses, so this adds no extra connection. Best-effort in
+    // non-production (warns only); fails closed (throws) in production.
+    const isolationCheckClient = getWorkerPrisma(config);
+    if (isolationCheckClient) {
+      await assertOrgIsolationEnforced(isolationCheckClient, config.nodeEnv);
+    }
   }
 
   workerCache = new RedisCacheManager(config.redisUrl);
@@ -807,6 +986,19 @@ function startWorker(): void {
           message: failureSummary.message
         });
       });
+    }
+    // Terminal failure means BullMQ will not retry this job again (see
+    // classifyMergeGuardEvaluationFailure: !retryable || attemptsMade >=
+    // maxAttempts). Before this, the only signals were the console.error above
+    // and the webhookDelivery row updated by recordMergeGuardEvaluationFailure --
+    // neither is visible on the PR itself. Both steps below are best-effort
+    // (each catches its own errors internally) and run only once retries are
+    // actually exhausted, so a job that will still retry (attemptsMade <
+    // maxAttempts, retryable) does not get a premature failure check-run or
+    // alert while it may yet succeed on a later attempt.
+    if (job && summary.terminalFailure) {
+      void publishTerminalFailureCheckRun({ job, config, summary });
+      void postWorkerFailureAlert({ job, summary });
     }
   });
 }
@@ -1863,80 +2055,87 @@ async function persistWorkerEvaluationSnapshot(input: {
     completedAt: new Date(input.record.updatedAt),
     explanationJson: explainChangeControlRecord(input.record) as never
   };
-  await input.prisma.$transaction(async (tx: PrismaTransactionClient) => {
-    await tx.evaluation.upsert({
-      where: { id: evaluationId },
-      update: evaluationData,
-      create: {
-        id: evaluationId,
-        ...evaluationData
+  // Interactive transaction: bind the org GUC explicitly as the transaction's
+  // own first statement on the real `tx` connection (see createPrismaClient's
+  // doc comment in @agentforge/db for why the automatic hook cannot safely do
+  // this for operations already running on a `tx` handle).
+  await withUnmanagedOrgBinding(() =>
+    input.prisma.$transaction(async (tx: PrismaTransactionClient) => {
+      await tx.$executeRaw`SELECT set_config('agentforge.current_org', ${input.organizationId}, true)`;
+      await tx.evaluation.upsert({
+        where: { id: evaluationId },
+        update: evaluationData,
+        create: {
+          id: evaluationId,
+          ...evaluationData
+        }
+      });
+      await Promise.all([
+        tx.verifiedFactRecord.deleteMany({ where: { evaluationId } }),
+        tx.evidenceRequirementRecord.deleteMany({ where: { evaluationId } }),
+        tx.reviewerRequirementRecord.deleteMany({ where: { evaluationId } })
+      ]);
+      if (input.record.verifiedFindings.length > 0) {
+        await tx.verifiedFactRecord.createMany({
+          data: input.record.verifiedFindings.map((fact) => ({
+            evaluationId,
+            type: fact.type,
+            source: fact.source,
+            path: fact.path ?? null,
+            evidence: fact.evidence,
+            confidence: fact.confidence,
+            severity: fact.severity ?? null,
+            metadataJson: (fact.metadata ?? null) as never
+          }))
+        });
       }
-    });
-    await Promise.all([
-      tx.verifiedFactRecord.deleteMany({ where: { evaluationId } }),
-      tx.evidenceRequirementRecord.deleteMany({ where: { evaluationId } }),
-      tx.reviewerRequirementRecord.deleteMany({ where: { evaluationId } })
-    ]);
-    if (input.record.verifiedFindings.length > 0) {
-      await tx.verifiedFactRecord.createMany({
-        data: input.record.verifiedFindings.map((fact) => ({
-          evaluationId,
-          type: fact.type,
-          source: fact.source,
-          path: fact.path ?? null,
-          evidence: fact.evidence,
-          confidence: fact.confidence,
-          severity: fact.severity ?? null,
-          metadataJson: (fact.metadata ?? null) as never
-        }))
+      if (input.record.requiredEvidence.length > 0) {
+        await tx.evidenceRequirementRecord.createMany({
+          data: input.record.requiredEvidence.map((evidence) => ({
+            evaluationId,
+            kind: evidence.kind,
+            status: evidence.status,
+            source: evidence.source ?? null,
+            requiredByFindingId: evidence.requiredByFindingId,
+            providedBy: evidence.providedBy ?? null,
+            providedAt: evidence.providedAt ? new Date(evidence.providedAt) : null,
+            approvedBy: evidence.approvedBy ?? null,
+            approvedAt: evidence.approvedAt ? new Date(evidence.approvedAt) : null,
+            contentSummary: evidence.contentSummary ?? null
+          }))
+        });
+      }
+      if (input.record.requiredReviewers.length > 0) {
+        await tx.reviewerRequirementRecord.createMany({
+          data: input.record.requiredReviewers.map((reviewer) => ({
+            evaluationId,
+            reviewer: reviewer.reviewer,
+            reviewerType: reviewer.reviewerType,
+            tier: reviewer.tier,
+            reason: reviewer.reason,
+            triggeredByFindingId: reviewer.triggeredByFindingId,
+            clearsWhen: reviewer.clearsWhen ?? null,
+            approved: reviewer.approved,
+            approvedBy: reviewer.approvedBy ?? null,
+            approvedAt: reviewer.approvedAt ? new Date(reviewer.approvedAt) : null
+          }))
+        });
+      }
+      const checkRunData = {
+        evaluationId,
+        githubCheckRunId: input.publishedCheckRunId ? BigInt(input.publishedCheckRunId) : null,
+        conclusion: input.checkConclusion,
+        outputTitle: "AgentForge Merge Guard",
+        outputSummary: explainChangeControlRecord(input.record).join(" "),
+        updatedAt: new Date(input.record.updatedAt)
+      };
+      await tx.checkRun.upsert({
+        where: { evaluationId },
+        update: checkRunData,
+        create: checkRunData
       });
-    }
-    if (input.record.requiredEvidence.length > 0) {
-      await tx.evidenceRequirementRecord.createMany({
-        data: input.record.requiredEvidence.map((evidence) => ({
-          evaluationId,
-          kind: evidence.kind,
-          status: evidence.status,
-          source: evidence.source ?? null,
-          requiredByFindingId: evidence.requiredByFindingId,
-          providedBy: evidence.providedBy ?? null,
-          providedAt: evidence.providedAt ? new Date(evidence.providedAt) : null,
-          approvedBy: evidence.approvedBy ?? null,
-          approvedAt: evidence.approvedAt ? new Date(evidence.approvedAt) : null,
-          contentSummary: evidence.contentSummary ?? null
-        }))
-      });
-    }
-    if (input.record.requiredReviewers.length > 0) {
-      await tx.reviewerRequirementRecord.createMany({
-        data: input.record.requiredReviewers.map((reviewer) => ({
-          evaluationId,
-          reviewer: reviewer.reviewer,
-          reviewerType: reviewer.reviewerType,
-          tier: reviewer.tier,
-          reason: reviewer.reason,
-          triggeredByFindingId: reviewer.triggeredByFindingId,
-          clearsWhen: reviewer.clearsWhen ?? null,
-          approved: reviewer.approved,
-          approvedBy: reviewer.approvedBy ?? null,
-          approvedAt: reviewer.approvedAt ? new Date(reviewer.approvedAt) : null
-        }))
-      });
-    }
-    const checkRunData = {
-      evaluationId,
-      githubCheckRunId: input.publishedCheckRunId ? BigInt(input.publishedCheckRunId) : null,
-      conclusion: input.checkConclusion,
-      outputTitle: "AgentForge Merge Guard",
-      outputSummary: explainChangeControlRecord(input.record).join(" "),
-      updatedAt: new Date(input.record.updatedAt)
-    };
-    await tx.checkRun.upsert({
-      where: { evaluationId },
-      update: checkRunData,
-      create: checkRunData
-    });
-  });
+    })
+  );
 }
 
 function workerEvaluationId(input: {
@@ -2046,5 +2245,5 @@ function stableBigInt(value: string): bigint {
 }
 
 if (process.env.NODE_ENV !== "test" && process.env.AGENTFORGE_WORKER_AUTOSTART !== "false") {
-  startWorker();
+  await startWorker();
 }

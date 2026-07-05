@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // since runAuditRecordRetentionSweep takes an already-constructed `prisma` client.
 vi.mock("@agentforge/db", () => ({
   runWithOrgContext: <T>(_organizationId: string, callback: () => Promise<T> | T) =>
-    Promise.resolve(callback())
+    Promise.resolve(callback()),
+  withUnmanagedOrgBinding: <T>(callback: () => Promise<T> | T) => Promise.resolve(callback())
 }));
 
 const { runAuditRecordRetentionSweep, sweepUnassignedExportJobsAndWebhookDeliveries } =
@@ -173,6 +174,55 @@ function createFakePrisma(input: {
   // This fake has no real transaction boundary -- every method already mutates
   // the shared in-memory arrays directly and synchronously -- so passing the
   // client itself as `tx` to the callback form is a faithful stand-in.
+  //
+  // $executeRaw is the RLS org-binding call (`tx.$executeRaw\`SELECT
+  // set_config('agentforge.current_org', ${orgId}, true)\``, see
+  // withUnmanagedOrgBinding's doc comment in @agentforge/db). It is recorded
+  // into __state.executeRawCalls -- a plain array of `{ strings, values }`
+  // captured from vi.fn's own mock.calls, mirroring the raw shape a Prisma Sql
+  // template tag call actually receives -- so tests below can assert on the
+  // SQL text, the organization id parameter, and (via __state.callOrder) that
+  // this call happens before the model deletes it is meant to precede, not
+  // just that it resolves without throwing.
+  const executeRawCalls: Array<{ strings: readonly string[]; values: unknown[] }> = [];
+  const callOrder: string[] = [];
+  client.$executeRaw = vi.fn((strings: readonly string[], ...values: unknown[]) => {
+    executeRawCalls.push({ strings, values });
+    callOrder.push("set_config");
+    return Promise.resolve(0);
+  });
+  client.__state.executeRawCalls = executeRawCalls;
+  client.__state.callOrder = callOrder;
+  const originalDeleteMany = {
+    auditEvent: client.auditEvent.deleteMany,
+    changeControlRecord: client.changeControlRecord.deleteMany,
+    exportJob: client.exportJob.deleteMany,
+    webhookDelivery: client.webhookDelivery.deleteMany
+  };
+  client.auditEvent.deleteMany = vi.fn(
+    (...args: Parameters<typeof originalDeleteMany.auditEvent>) => {
+      callOrder.push("auditEvent.deleteMany");
+      return originalDeleteMany.auditEvent(...args);
+    }
+  );
+  client.changeControlRecord.deleteMany = vi.fn(
+    (...args: Parameters<typeof originalDeleteMany.changeControlRecord>) => {
+      callOrder.push("changeControlRecord.deleteMany");
+      return originalDeleteMany.changeControlRecord(...args);
+    }
+  );
+  client.exportJob.deleteMany = vi.fn(
+    (...args: Parameters<typeof originalDeleteMany.exportJob>) => {
+      callOrder.push("exportJob.deleteMany");
+      return originalDeleteMany.exportJob(...args);
+    }
+  );
+  client.webhookDelivery.deleteMany = vi.fn(
+    (...args: Parameters<typeof originalDeleteMany.webhookDelivery>) => {
+      callOrder.push("webhookDelivery.deleteMany");
+      return originalDeleteMany.webhookDelivery(...args);
+    }
+  );
   client.$transaction = vi.fn(
     (operationsOrCallback: Promise<unknown>[] | ((tx: typeof client) => Promise<unknown>)) =>
       typeof operationsOrCallback === "function"
@@ -218,6 +268,88 @@ describe("runAuditRecordRetentionSweep", () => {
       changeControlRecordsDeleted: 0
     });
     expect(prisma.__state.auditEvents.map((row) => row.id)).toEqual(["recent"]);
+
+    // Asserts the RLS org-binding call itself, not just that the sweep produced
+    // the right result: $executeRaw was actually invoked, with a SQL template
+    // that references set_config/agentforge.current_org, bound to this
+    // organization's own id (not some other org's, and not undefined).
+    expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.__state.executeRawCalls).toHaveLength(1);
+    const [{ strings, values }] = prisma.__state.executeRawCalls;
+    expect(strings.join("")).toContain("set_config");
+    expect(strings.join("")).toContain("agentforge.current_org");
+    expect(values).toEqual(["org_a"]);
+  });
+
+  it("binds the agentforge.current_org GUC via set_config BEFORE deleting any model rows in the same transaction", async () => {
+    const prisma = createFakePrisma({
+      organizations: [{ id: "org_a" }],
+      auditEvents: [
+        { id: "old", organizationId: "org_a", createdAt: new Date("2024-01-01T00:00:00.000Z") }
+      ],
+      changeControlRecords: [
+        { id: "ccr_old", organizationId: "org_a", updatedAt: new Date("2020-01-01T00:00:00.000Z") }
+      ],
+      exportJobs: [
+        {
+          id: "export_old",
+          organizationId: "org_a",
+          createdAt: new Date("2024-01-01T00:00:00.000Z")
+        }
+      ],
+      webhookDeliveries: [
+        {
+          id: "delivery_old",
+          organizationId: "org_a",
+          createdAt: new Date("2024-01-01T00:00:00.000Z")
+        }
+      ]
+    });
+
+    await runAuditRecordRetentionSweep({
+      prisma: prisma as never,
+      globalRetentionDays: 365,
+      now
+    });
+
+    const setConfigIndex = prisma.__state.callOrder.indexOf("set_config");
+    expect(setConfigIndex).toBe(0);
+    for (const modelCall of [
+      "auditEvent.deleteMany",
+      "changeControlRecord.deleteMany",
+      "exportJob.deleteMany",
+      "webhookDelivery.deleteMany"
+    ]) {
+      const modelCallIndex = prisma.__state.callOrder.indexOf(modelCall);
+      expect(modelCallIndex).toBeGreaterThan(setConfigIndex);
+    }
+  });
+
+  it("binds set_config with the CORRECT organization id per-organization when sweeping multiple organizations, never a different org's id", async () => {
+    const rowFromNinetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    const prisma = createFakePrisma({
+      organizations: [{ id: "org_alpha" }, { id: "org_beta" }],
+      auditEvents: [
+        { id: "alpha_row", organizationId: "org_alpha", createdAt: rowFromNinetyDaysAgo },
+        { id: "beta_row", organizationId: "org_beta", createdAt: rowFromNinetyDaysAgo }
+      ],
+      changeControlRecords: []
+    });
+
+    await runAuditRecordRetentionSweep({
+      prisma: prisma as never,
+      globalRetentionDays: 30,
+      now
+    });
+
+    expect(prisma.__state.executeRawCalls).toHaveLength(2);
+    const boundOrgIds = prisma.__state.executeRawCalls.map(
+      (call: { values: unknown[] }) => call.values[0]
+    );
+    expect(boundOrgIds).toEqual(["org_alpha", "org_beta"]);
+    for (const boundOrgId of boundOrgIds) {
+      expect(boundOrgId).toBeDefined();
+    }
   });
 
   it("deletes ChangeControlRecord rows older than the retention window scoped through the pull request's repository organization", async () => {
