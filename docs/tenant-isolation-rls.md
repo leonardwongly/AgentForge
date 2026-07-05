@@ -65,6 +65,44 @@ API and worker as `agentforge_app`. Until this role split is in place, isolation
 relies solely on the (already-enforced) application layer; once it is, the database
 enforces it independently.
 
+For Railway's managed Postgres specifically, the default `DATABASE_URL` connects
+as a superuser-equivalent role, so this role-provisioning step is required and
+not automatic; see [docs/railway-deployment.md](railway-deployment.md#tenant-isolation-provision-a-non-superuser-database-role)
+for the concrete, copy-pasteable version of the SQL above against a Railway
+Postgres instance.
+
+## Runtime enforcement: `assertOrgIsolationEnforced`
+
+Because the role misconfiguration above is otherwise silent, `@agentforge/db`
+exports `assertOrgIsolationEnforced(prisma, nodeEnv)`, which queries
+`pg_roles` for the connected role and fails closed:
+
+```ts
+import { assertOrgIsolationEnforced, createPrismaClient } from "@agentforge/db";
+
+const prisma = createPrismaClient(config.databaseUrl);
+await assertOrgIsolationEnforced(prisma, config.nodeEnv);
+```
+
+- In production (`nodeEnv === "production"`), a role with `rolsuper` or
+  `rolbypassrls` throws, matching the fail-closed pattern used by
+  `validateProductionConfig` in `@agentforge/config` — the process must not
+  start serving traffic or processing jobs against a connection where RLS is
+  silently inert.
+- Outside production, it only logs a warning. Local Docker Compose's default
+  `agentforge`/`agentforge` role is a superuser (an accepted local-dev
+  simplification), so this keeps local/test startup unaffected.
+
+`apps/api` (`apps/api/src/server.ts`) and `apps/worker`
+(`apps/worker/src/index.ts`'s `startWorker`) both invoke this once at process
+startup, immediately after constructing their `PrismaClient`
+(`apps/api` via a short-lived dedicated check connection; `apps/worker` reuses
+its existing lazy `getWorkerPrisma` singleton) and before serving traffic or
+processing jobs, so a misconfigured production deployment fails at boot
+rather than silently losing the RLS backstop. Both call sites are skipped
+entirely when `databaseUrl` is not configured (in-memory runtime mode has no
+RLS backstop to verify in the first place).
+
 ## Verifying
 
 ```bash

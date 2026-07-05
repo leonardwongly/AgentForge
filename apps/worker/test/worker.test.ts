@@ -3,11 +3,17 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "@agentforge/config";
 import type { PolicyResult, PullRequestInput } from "@agentforge/core";
-import type { GithubAdapterClient, GithubWebhookEnvelope } from "@agentforge/github";
+import type {
+  CheckRunPayload,
+  GithubAdapterClient,
+  GithubWebhookEnvelope
+} from "@agentforge/github";
 import {
   classifyMergeGuardEvaluationFailure,
   computeBackoffDelay,
+  postWorkerFailureAlert,
   processMergeGuardEvaluationJob,
+  publishTerminalFailureCheckRun,
   recordMergeGuardEvaluationFailure,
   RepositoryNotConfiguredError,
   resolveRuntimeEvaluationContext
@@ -18,6 +24,16 @@ const mockWebhookDeliveryFindUnique = vi.fn();
 const mockWebhookDeliveryUpdateMany = vi.fn();
 const mockEvaluationUpsert = vi.fn();
 const mockCheckRunUpsert = vi.fn();
+// Captures each `tx.$executeRaw` call's raw template-tag arguments (see
+// packages/db/src/index.ts's withUnmanagedOrgBinding doc comment: the RLS
+// org-binding call is `tx.$executeRaw\`SELECT set_config('agentforge.current_org',
+// ${orgId}, true)\``, a Prisma Sql template-tag invocation). `mockCallOrder`
+// tracks this call relative to `evaluation.upsert` -- the first model write
+// inside the same `persistWorkerEvaluationSnapshot` transaction -- following
+// the same push-based call-order tracking pattern already used by
+// `updateManyCallOrder` in the concurrent-publish test further down this file.
+const mockExecuteRawCalls: Array<{ strings: readonly string[]; values: unknown[] }> = [];
+const mockCallOrder: string[] = [];
 vi.mock("@agentforge/db", () => {
   class MockPrismaClient {
     organization = { upsert: vi.fn().mockResolvedValue({ id: "org" }) };
@@ -36,7 +52,12 @@ vi.mock("@agentforge/db", () => {
     changeControlRecord = {
       upsert: mockPrismaUpsert
     };
-    evaluation = { upsert: mockEvaluationUpsert };
+    evaluation = {
+      upsert: vi.fn((...args: Parameters<typeof mockEvaluationUpsert>) => {
+        mockCallOrder.push("evaluation.upsert");
+        return mockEvaluationUpsert(...args);
+      })
+    };
     verifiedFactRecord = {
       deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       createMany: vi.fn().mockResolvedValue({})
@@ -58,6 +79,11 @@ vi.mock("@agentforge/db", () => {
       findUnique: mockWebhookDeliveryFindUnique,
       updateMany: mockWebhookDeliveryUpdateMany
     };
+    $executeRaw = vi.fn((strings: readonly string[], ...values: unknown[]) => {
+      mockExecuteRawCalls.push({ strings, values });
+      mockCallOrder.push("set_config");
+      return Promise.resolve(0);
+    });
     $transaction = vi.fn(async (callback: (tx: MockPrismaClient) => Promise<unknown>) =>
       callback(this)
     );
@@ -66,7 +92,8 @@ vi.mock("@agentforge/db", () => {
     PrismaClient: MockPrismaClient,
     createPrismaClient: () => new MockPrismaClient(),
     runWithOrgContext: <T>(_organizationId: string, callback: () => Promise<T> | T) =>
-      Promise.resolve(callback())
+      Promise.resolve(callback()),
+    withUnmanagedOrgBinding: <T>(callback: () => Promise<T> | T) => Promise.resolve(callback())
   };
 });
 
@@ -76,7 +103,8 @@ const mutableEnvKeys = [
   "REDIS_URL",
   "GITHUB_APP_ID",
   "GITHUB_APP_PRIVATE_KEY",
-  "GITHUB_INSTALLATION_ID"
+  "GITHUB_INSTALLATION_ID",
+  "AGENTFORGE_WORKER_FAILURE_WEBHOOK_URL"
 ] as const;
 const originalEnv = new Map<string, string | undefined>(
   mutableEnvKeys.map((key) => [key, process.env[key]])
@@ -107,6 +135,8 @@ describe("Merge Guard worker evaluation jobs", () => {
     mockWebhookDeliveryUpdateMany.mockResolvedValue({ count: 1 });
     mockEvaluationUpsert.mockResolvedValue({ id: "eval" });
     mockCheckRunUpsert.mockResolvedValue({});
+    mockExecuteRawCalls.length = 0;
+    mockCallOrder.length = 0;
   });
 
   afterEach(() => {
@@ -320,6 +350,27 @@ describe("Merge Guard worker evaluation jobs", () => {
           githubCheckRunId: BigInt(42)
         })
       })
+    );
+
+    // Hardens the mocked RLS org-binding call in persistWorkerEvaluationSnapshot's
+    // transaction beyond "it did not throw": asserts $executeRaw was actually
+    // invoked, with a SQL template referencing set_config/agentforge.current_org,
+    // bound to this job's own organization id ("org", from the mocked
+    // repository.findFirst response above) -- not undefined, and not some other
+    // organization's id.
+    expect(mockExecuteRawCalls).toHaveLength(1);
+    const [{ strings: setConfigStrings, values: setConfigValues }] = mockExecuteRawCalls;
+    expect(setConfigStrings.join("")).toContain("set_config");
+    expect(setConfigStrings.join("")).toContain("agentforge.current_org");
+    expect(setConfigValues).toEqual(["org"]);
+
+    // Call ordering: set_config (the org GUC binding) must run BEFORE
+    // evaluation.upsert -- the first model write inside the same interactive
+    // transaction -- so the RLS policy is actually in effect for every query
+    // that follows it, not applied after the fact.
+    expect(mockCallOrder.indexOf("set_config")).toBe(0);
+    expect(mockCallOrder.indexOf("evaluation.upsert")).toBeGreaterThan(
+      mockCallOrder.indexOf("set_config")
     );
   });
 
@@ -770,6 +821,245 @@ describe("Merge Guard worker evaluation jobs", () => {
     });
     expect(JSON.stringify(updateMany.mock.calls)).not.toContain("envelope");
     expect(JSON.stringify(updateMany.mock.calls)).not.toContain("payload");
+  });
+
+  describe("publishTerminalFailureCheckRun", () => {
+    it("publishes exactly one failure/neutral check-run for a job that has exhausted all retries (terminalFailure: true)", async () => {
+      const pr = await loadPr("billing-path.json");
+      const config = loadConfig();
+      const publishedChecks: Array<{ result: PolicyResult }> = [];
+      const summary = classifyMergeGuardEvaluationFailure({
+        error: new Error("GitHub API unreachable"),
+        deliveryId: "delivery-terminal-check-run",
+        attemptsMade: 3,
+        maxAttempts: 3
+      });
+      expect(summary.terminalFailure).toBe(true);
+
+      await publishTerminalFailureCheckRun({
+        job: {
+          data: {
+            deliveryId: "delivery-terminal-check-run",
+            pr,
+            githubCheckPublisher: async (input) => {
+              publishedChecks.push({ result: input.result });
+              return { id: 77, conclusion: "failure" as const };
+            }
+          }
+        },
+        config,
+        summary
+      });
+
+      expect(publishedChecks).toHaveLength(1);
+      expect(publishedChecks[0]?.result.status).toBe("block");
+      expect(publishedChecks[0]?.result.explanation.join(" ")).toContain(
+        "could not evaluate this pull request after 3"
+      );
+    });
+
+    it('is gated on terminalFailure in the worker.on("failed") handler, so a job with attemptsMade < maxAttempts (still eligible to retry) never reaches this publish path', async () => {
+      // The actual call site (`if (job && summary.terminalFailure) { void
+      // publishTerminalFailureCheckRun(...); ... }` inside worker.on("failed",
+      // ...) in startWorker) is not independently invokable without a live
+      // BullMQ Worker/Job pair. What IS directly testable, and is the exact
+      // boolean condition that call site branches on, is
+      // classifyMergeGuardEvaluationFailure's own terminalFailure computation
+      // (`!retryable || attemptsMade >= maxAttempts`) -- asserting that a
+      // still-retryable failure classifies as non-terminal is what proves the
+      // gate would not have called publishTerminalFailureCheckRun at all for
+      // this job, matching how computeBackoffDelay is unit tested directly
+      // above rather than via a live Worker's backoffStrategy hook.
+      const stillRetryingSummary = classifyMergeGuardEvaluationFailure({
+        error: new Error("GitHub API timeout while fetching files"),
+        deliveryId: "delivery-still-retrying",
+        attemptsMade: 1,
+        maxAttempts: 3
+      });
+
+      expect(stillRetryingSummary.terminalFailure).toBe(false);
+    });
+
+    it("publishes a check-run with a failure/neutral conclusion, never a passing one, for the terminal-failure case", async () => {
+      const pr = await loadPr("billing-path.json");
+      const config = loadConfig();
+      const publishedConclusions: Array<CheckRunPayload["conclusion"] | undefined> = [];
+      const summary = classifyMergeGuardEvaluationFailure({
+        error: new Error("policy validation failed: invalid mode"),
+        deliveryId: "delivery-terminal-conclusion",
+        attemptsMade: 1,
+        maxAttempts: 3
+      });
+      expect(summary.terminalFailure).toBe(true);
+
+      await publishTerminalFailureCheckRun({
+        job: {
+          data: {
+            deliveryId: "delivery-terminal-conclusion",
+            pr,
+            githubCheckPublisher: async (input) => {
+              publishedConclusions.push(input.result.status === "block" ? "failure" : "neutral");
+              return { id: 79, conclusion: "failure" as const };
+            }
+          }
+        },
+        config,
+        summary
+      });
+
+      expect(publishedConclusions).toEqual(["failure"]);
+    });
+
+    it("does not throw when the check-run publish itself fails (e.g. GitHub unreachable), logging instead of crashing the caller", async () => {
+      const pr = await loadPr("billing-path.json");
+      const config = loadConfig();
+      const summary = classifyMergeGuardEvaluationFailure({
+        error: new Error("boom"),
+        deliveryId: "delivery-publish-throws",
+        attemptsMade: 3,
+        maxAttempts: 3
+      });
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      await expect(
+        publishTerminalFailureCheckRun({
+          job: {
+            data: {
+              deliveryId: "delivery-publish-throws",
+              pr,
+              githubCheckPublisher: async () => {
+                throw new Error("GitHub API unreachable");
+              }
+            }
+          },
+          config,
+          summary
+        })
+      ).resolves.toBeUndefined();
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "Failed to publish Merge Guard terminal-failure check-run",
+        expect.objectContaining({ deliveryId: "delivery-publish-throws" })
+      );
+      consoleErrorSpy.mockRestore();
+    });
+
+    it("skips publication without throwing when the failed job has no pull request payload to publish against", async () => {
+      const config = loadConfig();
+      const summary = classifyMergeGuardEvaluationFailure({
+        error: new Error("requires a pull request payload"),
+        deliveryId: "delivery-no-pr-payload",
+        attemptsMade: 3,
+        maxAttempts: 3
+      });
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      await expect(
+        publishTerminalFailureCheckRun({
+          job: { data: { deliveryId: "delivery-no-pr-payload" } },
+          config,
+          summary
+        })
+      ).resolves.toBeUndefined();
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("no pull request payload"),
+        expect.objectContaining({ deliveryId: "delivery-no-pr-payload" })
+      );
+      consoleErrorSpy.mockRestore();
+    });
+  });
+
+  describe("postWorkerFailureAlert", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("POSTs the expected payload shape to AGENTFORGE_WORKER_FAILURE_WEBHOOK_URL when it is set", async () => {
+      process.env.AGENTFORGE_WORKER_FAILURE_WEBHOOK_URL = "https://alerts.example.com/hooks/worker";
+      const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const pr = await loadPr("billing-path.json");
+      const summary = classifyMergeGuardEvaluationFailure({
+        error: new Error("GitHub API unreachable"),
+        deliveryId: "delivery-alert-webhook",
+        attemptsMade: 3,
+        maxAttempts: 3,
+        failedAt: "2026-05-19T00:00:00.000Z"
+      });
+
+      await postWorkerFailureAlert({
+        job: { id: "job-42", data: { deliveryId: "delivery-alert-webhook", pr } },
+        summary
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("https://alerts.example.com/hooks/worker");
+      expect(init.method).toBe("POST");
+      const body = JSON.parse(init.body as string);
+      expect(body).toMatchObject({
+        jobId: "job-42",
+        deliveryId: "delivery-alert-webhook",
+        repositoryFullName: pr.repositoryFullName,
+        pullRequestNumber: pr.pullRequestNumber,
+        errorClass: "Error",
+        errorMessage: "GitHub API unreachable",
+        attemptsMade: 3,
+        maxAttempts: 3,
+        failedAt: "2026-05-19T00:00:00.000Z"
+      });
+    });
+
+    it("does not call fetch, and does not throw, when AGENTFORGE_WORKER_FAILURE_WEBHOOK_URL is unset", async () => {
+      delete process.env.AGENTFORGE_WORKER_FAILURE_WEBHOOK_URL;
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const pr = await loadPr("billing-path.json");
+      const summary = classifyMergeGuardEvaluationFailure({
+        error: new Error("boom"),
+        deliveryId: "delivery-no-webhook-configured",
+        attemptsMade: 3,
+        maxAttempts: 3
+      });
+
+      await expect(
+        postWorkerFailureAlert({
+          job: { id: "job-43", data: { deliveryId: "delivery-no-webhook-configured", pr } },
+          summary
+        })
+      ).resolves.toBeUndefined();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("does not propagate or crash the caller when the alerting POST itself rejects (e.g. network failure)", async () => {
+      process.env.AGENTFORGE_WORKER_FAILURE_WEBHOOK_URL = "https://alerts.example.com/hooks/worker";
+      const fetchMock = vi.fn().mockRejectedValue(new Error("fetch failed: network unreachable"));
+      vi.stubGlobal("fetch", fetchMock);
+      const pr = await loadPr("billing-path.json");
+      const summary = classifyMergeGuardEvaluationFailure({
+        error: new Error("boom"),
+        deliveryId: "delivery-alert-post-rejects",
+        attemptsMade: 3,
+        maxAttempts: 3
+      });
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      await expect(
+        postWorkerFailureAlert({
+          job: { id: "job-44", data: { deliveryId: "delivery-alert-post-rejects", pr } },
+          summary
+        })
+      ).resolves.toBeUndefined();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        "Failed to POST Merge Guard worker failure alert webhook",
+        expect.objectContaining({ deliveryId: "delivery-alert-post-rejects" })
+      );
+      consoleErrorSpy.mockRestore();
+    });
   });
 
   it("generates AI pre-drafts and persists them inside requiredEvidenceJson when llmFeatures is enabled", async () => {

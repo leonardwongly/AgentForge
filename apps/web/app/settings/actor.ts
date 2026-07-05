@@ -12,7 +12,7 @@ export async function resolveDashboardActor(): Promise<DashboardActorContext> {
   } catch {
     requestHeaders = undefined;
   }
-  const actor = resolveDashboardActorContext({
+  const actor = await resolveDashboardActorContext({
     headers: requestHeaders,
     env: process.env,
     nodeEnv: process.env.NODE_ENV

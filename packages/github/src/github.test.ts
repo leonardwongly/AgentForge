@@ -1,18 +1,35 @@
 import { createHmac } from "node:crypto";
-import { describe, expect, it, vi } from "vitest";
+import { createAppAuth } from "@octokit/auth-app";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import {
   buildCheckRunPayload,
+  createGithubAppToken,
+  createGithubInstallationToken,
   enrichPullRequestReviewsWithTeamMemberships,
   fetchPullRequestInputFromGithub,
+  githubRequestFailureReason,
   githubRetryAfterMs,
+  GithubRequestTimeoutError,
   MERGE_GUARD_CHECK_NAME,
   normalizeGithubWebhook,
   pullRequestInputFromFixture,
   shouldEnqueueEvaluation,
   verifyGithubSignature,
+  withGithubRequestTimeout,
+  __resetGithubAppAuthCacheForTests,
   type GithubAdapterClient
 } from "./index.js";
 import { type PolicyResult, RedisCacheManager, getFileContentCacheKey } from "@agentforge/core";
+
+vi.mock("@octokit/auth-app", () => ({
+  createAppAuth: vi.fn(() =>
+    vi.fn(async (options: { type: string; installationId?: string | number }) =>
+      options.type === "installation"
+        ? { type: "installation", token: `installation-token-${options.installationId}` }
+        : { type: "app", token: "app-token" }
+    )
+  )
+}));
 
 describe("github integration", () => {
   it("validates webhook signatures", () => {
@@ -917,5 +934,172 @@ describe("github integration", () => {
     malformed.response = { headers: { "retry-after": "not-a-number" } };
 
     expect(githubRetryAfterMs(malformed)).toBeUndefined();
+  });
+
+  describe("withGithubRequestTimeout", () => {
+    it("rejects with GithubRequestTimeoutError when the wrapped promise exceeds the timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const pending = new Promise<string>(() => {
+          // Never resolves; the timeout race is the only way this settles.
+        });
+        const result = withGithubRequestTimeout(() => pending, 1000);
+        const assertion = expect(result).rejects.toBeInstanceOf(GithubRequestTimeoutError);
+
+        await vi.advanceTimersByTimeAsync(1000);
+        await assertion;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("resolves normally when the wrapped promise settles before the timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const request = () =>
+          new Promise<string>((resolve) => {
+            setTimeout(() => resolve("fast-value"), 10);
+          });
+        const result = withGithubRequestTimeout(request, 1000);
+
+        await vi.advanceTimersByTimeAsync(10);
+
+        await expect(result).resolves.toBe("fast-value");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("githubRequestFailureReason", () => {
+    it("formats a GithubRequestTimeoutError into a timeout-specific message", () => {
+      const timeoutError = new GithubRequestTimeoutError(5000);
+
+      expect(githubRequestFailureReason(timeoutError, "team membership")).toBe(
+        "GitHub team membership request timed out after 5000ms."
+      );
+    });
+
+    it("distinguishes a rate-limited error from a timeout error", () => {
+      const rateLimited = new Error("secondary rate limit") as Error & {
+        status: number;
+        response: { headers: Record<string, string> };
+      };
+      rateLimited.status = 403;
+      rateLimited.response = { headers: { "x-ratelimit-remaining": "0" } };
+
+      expect(githubRequestFailureReason(rateLimited, "team membership")).toBe(
+        "GitHub team membership request was rate limited: secondary rate limit."
+      );
+    });
+
+    it("falls back to a generic API-rejection message for errors that are neither timeouts nor rate limits", () => {
+      const notFound = new Error("Not Found") as Error & {
+        status: number;
+        response: { headers: Record<string, string> };
+      };
+      notFound.status = 404;
+      notFound.response = { headers: {} };
+
+      expect(githubRequestFailureReason(notFound, "team membership")).toBe(
+        "GitHub team membership API rejected the verification request: Not Found."
+      );
+    });
+  });
+
+  describe("GitHub App auth instance caching", () => {
+    beforeEach(() => {
+      __resetGithubAppAuthCacheForTests();
+      vi.mocked(createAppAuth).mockClear();
+    });
+
+    it("reuses one createAppAuth instance across repeated calls with the same credentials", async () => {
+      const appId = 1001;
+      const privateKey = "app-1001-private-key";
+
+      const firstToken = await createGithubInstallationToken({
+        appId,
+        privateKey,
+        installationId: 55
+      });
+      const secondToken = await createGithubInstallationToken({
+        appId,
+        privateKey,
+        installationId: 55
+      });
+
+      expect(createAppAuth).toHaveBeenCalledTimes(1);
+      expect(firstToken).toBe("installation-token-55");
+      expect(secondToken).toBe("installation-token-55");
+    });
+
+    it("reuses the cached instance across createGithubAppToken and createGithubInstallationToken for the same credentials", async () => {
+      const appId = 2002;
+      const privateKey = "app-2002-private-key";
+
+      await createGithubInstallationToken({ appId, privateKey, installationId: 7 });
+      const appToken = await createGithubAppToken({ appId, privateKey });
+
+      expect(createAppAuth).toHaveBeenCalledTimes(1);
+      expect(appToken).toBe("app-token");
+    });
+
+    it("constructs a separate instance for a different appId/privateKey combination", async () => {
+      await createGithubInstallationToken({
+        appId: 3003,
+        privateKey: "app-3003-private-key",
+        installationId: 1
+      });
+      await createGithubInstallationToken({
+        appId: 3003,
+        privateKey: "a-different-private-key-for-the-same-app-id",
+        installationId: 1
+      });
+      await createGithubInstallationToken({
+        appId: 4004,
+        privateKey: "app-3003-private-key",
+        installationId: 1
+      });
+
+      expect(createAppAuth).toHaveBeenCalledTimes(3);
+    });
+
+    it("evicts the oldest entry once the bounded cache exceeds its cap", async () => {
+      // Fill the cache to the documented cap (50) with distinct credentials.
+      for (let index = 0; index < 50; index += 1) {
+        await createGithubInstallationToken({
+          appId: index,
+          privateKey: `private-key-${index}`,
+          installationId: 1
+        });
+      }
+      expect(createAppAuth).toHaveBeenCalledTimes(50);
+
+      // Re-using appId 0 should still be a cache hit at this point.
+      await createGithubInstallationToken({
+        appId: 0,
+        privateKey: "private-key-0",
+        installationId: 1
+      });
+      expect(createAppAuth).toHaveBeenCalledTimes(50);
+
+      // Pushing one more distinct entry over the cap evicts the oldest entry
+      // (appId 0, the first one inserted).
+      await createGithubInstallationToken({
+        appId: 50,
+        privateKey: "private-key-50",
+        installationId: 1
+      });
+      expect(createAppAuth).toHaveBeenCalledTimes(51);
+
+      // appId 0 was evicted, so requesting it again reconstructs the auth
+      // instance rather than reusing a cached one.
+      await createGithubInstallationToken({
+        appId: 0,
+        privateKey: "private-key-0",
+        installationId: 1
+      });
+      expect(createAppAuth).toHaveBeenCalledTimes(52);
+    });
   });
 });

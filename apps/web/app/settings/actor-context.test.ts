@@ -34,9 +34,9 @@ function headers(values: Record<string, string | undefined>) {
 }
 
 describe("dashboard actor context", () => {
-  it("uses trusted authenticated headers when explicitly enabled and signed", () => {
+  it("uses trusted authenticated headers when explicitly enabled and signed", async () => {
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: {
           AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
           AGENTFORGE_DASHBOARD_PROXY_SECRET: DASHBOARD_PROXY_SECRET
@@ -58,9 +58,9 @@ describe("dashboard actor context", () => {
     });
   });
 
-  it("rejects unsigned trusted authenticated headers", () => {
+  it("rejects unsigned trusted authenticated headers", async () => {
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: {
           AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
           AGENTFORGE_DASHBOARD_PROXY_SECRET: DASHBOARD_PROXY_SECRET
@@ -75,9 +75,9 @@ describe("dashboard actor context", () => {
     ).toBeUndefined();
   });
 
-  it("rejects trusted headers signed with the wrong secret", () => {
+  it("rejects trusted headers signed with the wrong secret", async () => {
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: {
           AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
           AGENTFORGE_DASHBOARD_PROXY_SECRET: DASHBOARD_PROXY_SECRET
@@ -93,9 +93,9 @@ describe("dashboard actor context", () => {
     ).toBeUndefined();
   });
 
-  it("rejects trusted headers when no dashboard proxy secret is configured", () => {
+  it("rejects trusted headers when no dashboard proxy secret is configured", async () => {
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: { AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true" },
         headers: headers(
           signedTrustedHeaders({
@@ -109,7 +109,42 @@ describe("dashboard actor context", () => {
     ).toBeUndefined();
   });
 
-  it("rejects a replayed signed trusted-header request", () => {
+  it("rejects a request carrying an otherwise-valid signature with no nonce (mandatory-nonce enforcement)", async () => {
+    // Regression test for the fix that removed the legacy nonce-less fallback:
+    // dashboardActorFromTrustedHeaders must reject a nonce-less signed payload
+    // outright, mirroring apps/api/src/auth.ts's resolveApiActor. Without this,
+    // a nonce-less signature could be replayed indefinitely within the
+    // 5-minute timestamp window since registerDashboardSignatureUse is never
+    // consulted for it.
+    const secret = DASHBOARD_PROXY_SECRET;
+    const login = "alex";
+    const role = "platform_admin";
+    const organizationId = "org-a";
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    // Legacy nonce-less payload shape (no nonce segment).
+    const payload = [timestamp, login, role, organizationId].join(":");
+    const signature = createHmac("sha256", secret).update(payload).digest("hex");
+
+    expect(
+      await resolveDashboardActorContext({
+        env: {
+          AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+          AGENTFORGE_DASHBOARD_PROXY_SECRET: secret
+        },
+        headers: headers({
+          "x-agentforge-authenticated-actor": login,
+          "x-agentforge-authenticated-role": role,
+          "x-agentforge-authenticated-organization": organizationId,
+          "x-agentforge-signature-timestamp": timestamp,
+          "x-agentforge-signature": signature
+          // No x-agentforge-signature-nonce header.
+        }),
+        nodeEnv: "production"
+      })
+    ).toBeUndefined();
+  });
+
+  it("rejects a replayed signed trusted-header request", async () => {
     const env = {
       AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
       AGENTFORGE_DASHBOARD_PROXY_SECRET: DASHBOARD_PROXY_SECRET
@@ -120,7 +155,7 @@ describe("dashboard actor context", () => {
       organizationId: "org-a"
     });
     expect(
-      resolveDashboardActorContext({ env, headers: headers(signed), nodeEnv: "production" })
+      await resolveDashboardActorContext({ env, headers: headers(signed), nodeEnv: "production" })
     ).toEqual({
       login: "alex",
       role: "platform_admin",
@@ -129,18 +164,51 @@ describe("dashboard actor context", () => {
     });
     // Same signature replayed within the window is rejected.
     expect(
-      resolveDashboardActorContext({ env, headers: headers(signed), nodeEnv: "production" })
+      await resolveDashboardActorContext({ env, headers: headers(signed), nodeEnv: "production" })
     ).toBeUndefined();
   });
 
-  it("requires trusted authenticated headers to include organization identity", () => {
+  it("resolves the SAME signed headers exactly once even when awaited concurrently", async () => {
+    // Stronger regression guard than the sequential replay case above: two
+    // concurrent resolutions of the identical signed header set must not both
+    // succeed just because neither had claimed the nonce yet when the other
+    // started -- the Redis-backed SignatureReplayGuard's atomic SET NX EX
+    // must still allow only one winner even under a real race.
+    const env = {
+      AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+      AGENTFORGE_DASHBOARD_PROXY_SECRET: DASHBOARD_PROXY_SECRET
+    };
+    const signed = signedTrustedHeaders({
+      login: "alex",
+      role: "platform_admin",
+      organizationId: "org-a"
+    });
+
+    const [first, second] = await Promise.all([
+      resolveDashboardActorContext({ env, headers: headers(signed), nodeEnv: "production" }),
+      resolveDashboardActorContext({ env, headers: headers(signed), nodeEnv: "production" })
+    ]);
+    const results = [first, second];
+    const winners = results.filter((result) => result !== undefined);
+    const losers = results.filter((result) => result === undefined);
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+    expect(winners[0]).toEqual({
+      login: "alex",
+      role: "platform_admin",
+      organizationId: "org-a",
+      source: "trusted_headers"
+    });
+  });
+
+  it("requires trusted authenticated headers to include organization identity", async () => {
     const timestamp = String(Math.floor(Date.now() / 1000));
     const nonce = "fixednonce";
     const signature = createHmac("sha256", DASHBOARD_PROXY_SECRET)
       .update([timestamp, nonce, "alex", "platform_admin"].join(":"))
       .digest("hex");
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: {
           AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
           AGENTFORGE_DASHBOARD_PROXY_SECRET: DASHBOARD_PROXY_SECRET
@@ -157,9 +225,9 @@ describe("dashboard actor context", () => {
     ).toBeUndefined();
   });
 
-  it("does not trust incoming actor headers unless proxy header trust is enabled", () => {
+  it("does not trust incoming actor headers unless proxy header trust is enabled", async () => {
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: {},
         headers: headers({
           "x-agentforge-authenticated-actor": "alex",
@@ -170,7 +238,7 @@ describe("dashboard actor context", () => {
     ).toBeUndefined();
   });
 
-  it("uses a signed GitHub OAuth session when trusted proxy headers are absent", () => {
+  it("uses a signed GitHub OAuth session when trusted proxy headers are absent", async () => {
     const session = createDashboardSessionCookie(
       {
         login: "octocat",
@@ -182,7 +250,7 @@ describe("dashboard actor context", () => {
     );
 
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: { SESSION_SECRET: "test-session-secret" },
         headers: headers({
           cookie: `${DASHBOARD_SESSION_COOKIE}=${session}`
@@ -197,7 +265,7 @@ describe("dashboard actor context", () => {
     });
   });
 
-  it("rejects tampered GitHub OAuth session cookies", () => {
+  it("rejects tampered GitHub OAuth session cookies", async () => {
     const session = createDashboardSessionCookie(
       {
         login: "octocat",
@@ -209,7 +277,7 @@ describe("dashboard actor context", () => {
     );
 
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: { SESSION_SECRET: "test-session-secret" },
         headers: headers({
           cookie: `${DASHBOARD_SESSION_COOKIE}=${session}x`
@@ -219,9 +287,9 @@ describe("dashboard actor context", () => {
     ).toBeUndefined();
   });
 
-  it("does not treat raw actor headers as trusted proxy identity", () => {
+  it("does not treat raw actor headers as trusted proxy identity", async () => {
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: { AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true" },
         headers: headers({
           "x-agentforge-actor": "alex",
@@ -232,9 +300,9 @@ describe("dashboard actor context", () => {
     ).toBeUndefined();
   });
 
-  it("requires explicit local actor fallback outside production", () => {
+  it("requires explicit local actor fallback outside production", async () => {
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: {
           AGENTFORGE_DASHBOARD_ACTOR: "dashboard-local",
           AGENTFORGE_DASHBOARD_ROLE: "engineering_manager",
@@ -245,7 +313,7 @@ describe("dashboard actor context", () => {
     ).toBeUndefined();
 
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: {
           AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: "true",
           AGENTFORGE_DASHBOARD_ACTOR: "dashboard-local",
@@ -262,9 +330,9 @@ describe("dashboard actor context", () => {
     });
   });
 
-  it("uses a non-admin local actor by default", () => {
+  it("uses a non-admin local actor by default", async () => {
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: {
           AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: "true",
           AGENTFORGE_DASHBOARD_ACTOR: "dashboard-local"
@@ -279,9 +347,9 @@ describe("dashboard actor context", () => {
     });
   });
 
-  it("allows an explicit admin local actor override", () => {
+  it("allows an explicit admin local actor override", async () => {
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: {
           AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: "true",
           AGENTFORGE_DASHBOARD_ACTOR: "dashboard-local",
@@ -297,9 +365,9 @@ describe("dashboard actor context", () => {
     });
   });
 
-  it("rejects invalid actor and role values", () => {
+  it("rejects invalid actor and role values", async () => {
     expect(
-      resolveDashboardActorContext({
+      await resolveDashboardActorContext({
         env: {
           AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: "true",
           AGENTFORGE_DASHBOARD_ACTOR: "bad\r\nactor",

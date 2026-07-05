@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { FastifyRequest } from "fastify";
+import { SignatureReplayGuard } from "@agentforge/core";
 
 export type ApiActor = {
   login: string;
@@ -23,42 +24,22 @@ const organizationPattern = /^[A-Za-z0-9_.-]{1,128}$/u;
 const localOrganizationId = "org_local";
 
 const SIGNATURE_REPLAY_WINDOW_SECONDS = 5 * 60;
-// Best-effort in-process replay cache. Each signed request carries a unique
-// nonce; once a signature is seen it is rejected until its window expires.
-// NOTE: this is per-instance. Multi-instance API deployments behind a load
-// balancer should use sticky routing or a shared store for cross-instance
-// replay protection; the timestamp window still bounds replay regardless.
-const seenSignatures = new Map<string, number>();
-const SIGNATURE_SWEEP_INTERVAL_MS = 60_000;
-const MAX_SEEN_SIGNATURES = 50_000;
-let lastSignatureSweepMs = 0;
+// Cross-instance-safe replay cache backed by Redis (SET NX EX), falling back
+// to a bounded in-process claim set when REDIS_URL is unset/unreachable. A
+// single module-level instance is intentional: this guard's own internal
+// Redis connection lifecycle (lazy connect, error/reconnect tracking) is
+// meant to be shared process-wide, exactly like packages/core/src/cache.ts's
+// RedisCacheManager instances in apps/api/src/app.ts and
+// apps/worker/src/index.ts. AF-SEC: closes the multi-instance replay gap a
+// per-process Map could not.
+const signatureReplayGuard = new SignatureReplayGuard(process.env.REDIS_URL);
 
-function registerSignatureUse(signature: string, nowMs: number): boolean {
-  // Throttle the expiry sweep to at most once per interval so it never runs an
-  // O(N) loop on the hot path of every request (CPU-DoS guard).
-  if (nowMs - lastSignatureSweepMs > SIGNATURE_SWEEP_INTERVAL_MS) {
-    lastSignatureSweepMs = nowMs;
-    for (const [key, expiry] of seenSignatures) {
-      if (expiry <= nowMs) {
-        seenSignatures.delete(key);
-      }
-    }
-  }
-  const existing = seenSignatures.get(signature);
-  if (existing !== undefined && existing > nowMs) {
-    return false;
-  }
-  // Hard memory bound: evict oldest entries (Map preserves insertion order) in
-  // amortized O(1) per insert.
-  while (seenSignatures.size >= MAX_SEEN_SIGNATURES) {
-    const oldest = seenSignatures.keys().next().value;
-    if (oldest === undefined) {
-      break;
-    }
-    seenSignatures.delete(oldest);
-  }
-  seenSignatures.set(signature, nowMs + SIGNATURE_REPLAY_WINDOW_SECONDS * 1000);
-  return true;
+async function registerSignatureUse(signature: string, nowMs: number): Promise<boolean> {
+  return signatureReplayGuard.claim(
+    `agentforge:replay:api:${signature}`,
+    SIGNATURE_REPLAY_WINDOW_SECONDS,
+    nowMs
+  );
 }
 
 // Raw, unsigned identity headers a spoofing client could set directly. These are
@@ -87,15 +68,24 @@ function rawIdentityHeaderNamesPresent(request: FastifyRequest): string[] {
 // binding RLS org context in app.ts's onRequest hook) would consume the nonce,
 // and the route handler's own later resolveApiActor call on the SAME request
 // would then see it as an already-used replay and reject a legitimate request.
+// Caches the in-flight Promise itself (not just its resolved value): two
+// near-simultaneous resolveApiActor calls on the same request object (e.g. the
+// onRequest hook and a route handler both awaiting before either has settled)
+// must share one nonce claim, not race to both call registerSignatureUse.
 // WeakMap avoids any manual cleanup: entries are collected with the request.
-const resolvedActorCache = new WeakMap<FastifyRequest, ApiActor>();
+const resolvedActorCache = new WeakMap<FastifyRequest, Promise<ApiActor | undefined>>();
 
-export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
-  const cachedActor = resolvedActorCache.get(request);
-  if (cachedActor) {
-    return cachedActor;
+export function resolveApiActor(request: FastifyRequest): Promise<ApiActor | undefined> {
+  const cached = resolvedActorCache.get(request);
+  if (cached) {
+    return cached;
   }
+  const resolution = resolveApiActorUncached(request);
+  resolvedActorCache.set(request, resolution);
+  return resolution;
+}
 
+async function resolveApiActorUncached(request: FastifyRequest): Promise<ApiActor | undefined> {
   if (process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS === "true") {
     const secret = process.env.AGENTFORGE_API_PROXY_SECRET;
     if (!secret) {
@@ -168,10 +158,9 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
     if (actor) {
       // Reject replays of a previously seen signed request within the window.
       // The nonce is now mandatory (checked above), so this always runs.
-      if (!registerSignatureUse(signatureStr, Date.now())) {
+      if (!(await registerSignatureUse(signatureStr, Date.now()))) {
         return undefined;
       }
-      resolvedActorCache.set(request, actor);
       return actor;
     }
   }
@@ -191,8 +180,8 @@ export function resolveApiActor(request: FastifyRequest): ApiActor | undefined {
   return undefined;
 }
 
-export function requireApiActor(request: FastifyRequest): ApiActor | AuthzFailure {
-  const actor = resolveApiActor(request);
+export async function requireApiActor(request: FastifyRequest): Promise<ApiActor | AuthzFailure> {
+  const actor = await resolveApiActor(request);
   if (!actor) {
     return {
       ok: false,

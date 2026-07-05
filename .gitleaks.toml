@@ -9,6 +9,7 @@ paths = [
   '''apps/api/test/security-hardening\.test\.ts''',
   '''fixtures/repos/secret-like-token\.json''',
   '''packages/detectors/src/detectors\.test\.ts''',
+  '''packages/github/src/github\.test\.ts''',
   '''packages/records/src/records\.test\.ts''',
   '''packages/security/src/draft\.test\.ts''',
   '''packages/security/src/redaction\.test\.ts''',

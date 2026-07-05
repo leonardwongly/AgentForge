@@ -498,17 +498,17 @@ describe("security and audit hardening", () => {
     await app.close();
   });
 
-  it("requires an explicit flag before raw local actor headers resolve outside tests", () => {
+  it("requires an explicit flag before raw local actor headers resolve outside tests", async () => {
     process.env.NODE_ENV = "development";
     delete process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS;
 
     expect(
-      resolveApiActor(requestFromHeaders(actorHeaders("sam", "developer", "org-dev")))
+      await resolveApiActor(requestFromHeaders(actorHeaders("sam", "developer", "org-dev")))
     ).toBeUndefined();
 
     process.env.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS = "true";
     expect(
-      resolveApiActor(requestFromHeaders(actorHeaders("sam", "developer", "org-dev")))
+      await resolveApiActor(requestFromHeaders(actorHeaders("sam", "developer", "org-dev")))
     ).toEqual({ login: "sam", role: "developer", organizationId: "org-dev" });
   });
 

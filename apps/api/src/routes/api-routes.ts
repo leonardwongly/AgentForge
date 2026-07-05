@@ -305,7 +305,7 @@ type ResolvedApiRouteContext = {
   paginateRecords: (records: ChangeControlRecord[], query: RecordPageQuery) => PaginatedRecords;
   dashboardSummary: (records: ChangeControlRecord[]) => Record<string, unknown>;
   groupBy: <T>(items: T[], getKey: (item: T) => string) => Record<string, number>;
-  requireReadActor: (request: FastifyRequest, reply: FastifyReply) => ApiActor | undefined;
+  requireReadActor: (request: FastifyRequest, reply: FastifyReply) => Promise<ApiActor | undefined>;
   routingDiagnosticsFromOwnerMappings: (
     mappings: OwnerMapping[],
     githubConnected: boolean
@@ -397,17 +397,17 @@ function handleAuthzFailure(
   });
 }
 
-function requireOperationalEndpointAccess(
+async function requireOperationalEndpointAccess(
   request: FastifyRequest,
   reply: FastifyReply,
   config: ApiConfig,
   endpointName: string
-): true | ReturnType<typeof handleAuthzFailure> {
+): Promise<true | ReturnType<typeof handleAuthzFailure>> {
   if (config.nodeEnv !== "production") {
     return true;
   }
 
-  const actor = requireApiActor(request);
+  const actor = await requireApiActor(request);
   if (isAuthzFailure(actor)) {
     return handleAuthzFailure(request, reply, actor);
   }
@@ -529,7 +529,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         }
       },
       async (request, reply) => {
-        const operationalAccess = requireOperationalEndpointAccess(
+        const operationalAccess = await requireOperationalEndpointAccess(
           request,
           reply,
           config,
@@ -563,7 +563,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         }
       },
       async (request, reply) => {
-        const operationalAccess = requireOperationalEndpointAccess(
+        const operationalAccess = await requireOperationalEndpointAccess(
           request,
           reply,
           config,
@@ -687,7 +687,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
 
   void app.register(async function queueAdminRoutes(app) {
     app.get("/api/admin/queue", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -706,7 +706,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.post("/api/admin/queue/replay", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -824,7 +824,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
 
   void app.register(async function repositorySettingsRoutes(app) {
     app.get("/api/repositories", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -834,7 +834,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.get("/api/settings", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -874,7 +874,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.get("/api/onboarding/status", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -903,7 +903,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.get("/api/github/installations", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -923,7 +923,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.post("/api/github/installations/verify", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -976,7 +976,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.post("/api/github/installations/:id/approve", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -1022,7 +1022,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.post("/api/github/installations/:id/reject", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -1061,7 +1061,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.patch("/api/repositories/:id/settings", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -1185,7 +1185,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
   void app.register(async function policyRoutes(app) {
     app.get("/api/policy-packs", async () => ({ policyPacks: builtinPolicyPacks }));
     app.post("/api/codeowners/preview", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -1212,7 +1212,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       return pack;
     });
     app.post("/api/policy-packs/:id/fork", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -1237,7 +1237,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.get("/api/repositories/:id/policy", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -1268,7 +1268,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.put("/api/repositories/:id/policy", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -1347,7 +1347,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.get("/api/repositories/:id/policy/versions", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -1375,7 +1375,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         }
       },
       async (request, reply) => {
-        const actor = requireApiActor(request);
+        const actor = await requireApiActor(request);
         if (isAuthzFailure(actor)) {
           return handleAuthzFailure(request, reply, actor);
         }
@@ -1507,7 +1507,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         let actor: ApiActor | undefined;
         const requiresStoredPolicyAccess = body.persist || body.contentYaml === undefined;
         if (requiresStoredPolicyAccess) {
-          const resolvedActor = requireApiActor(request);
+          const resolvedActor = await requireApiActor(request);
           if (isAuthzFailure(resolvedActor)) {
             return handleAuthzFailure(request, reply, resolvedActor);
           }
@@ -1523,7 +1523,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
             }
           }
         } else {
-          actor = resolveApiActor(request);
+          actor = await resolveApiActor(request);
         }
         if (!body.pr) {
           return reply.code(400).send({ error: "pull request input is required" });
@@ -1614,7 +1614,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         }
 
         if (!actor) {
-          const resolvedActor = requireApiActor(request);
+          const resolvedActor = await requireApiActor(request);
           if (isAuthzFailure(resolvedActor)) {
             return handleAuthzFailure(request, reply, resolvedActor);
           }
@@ -1655,7 +1655,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
 
   void app.register(async function recordEvidenceReviewerRoutes(app) {
     app.get("/api/pull-requests", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -1677,7 +1677,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.get("/api/pull-requests/:id/change-control-record", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -1702,7 +1702,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     app.get(
       "/api/repositories/:id/pull-requests/:number/change-control-record",
       async (request, reply) => {
-        const actor = requireReadActor(request, reply);
+        const actor = await requireReadActor(request, reply);
         if (!actor) {
           return;
         }
@@ -1722,7 +1722,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     );
 
     app.post("/api/pull-requests/:id/evidence", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -1809,7 +1809,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.patch("/api/evidence/:id/approve", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -1882,7 +1882,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.patch("/api/evidence/:id/reject", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -1959,7 +1959,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.patch("/api/reviewers/:id/approve", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -2027,7 +2027,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.post("/api/pull-requests/:id/override", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -2093,14 +2093,14 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.get("/api/dashboard/summary", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
       return safe(dashboardSummary(await recordsVisibleTo(actor)));
     });
     app.get("/api/dashboard/records", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -2123,7 +2123,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       };
     });
     app.get("/api/dashboard/blocked-prs", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -2144,7 +2144,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       };
     });
     app.get("/api/dashboard/policy-violations", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -2170,7 +2170,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       };
     });
     app.get("/api/dashboard/overrides", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -2194,7 +2194,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       };
     });
     app.get("/api/dashboard/evidence-completion", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -2220,7 +2220,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       };
     });
     app.get("/api/dashboard/reviewers", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -2241,7 +2241,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       };
     });
     app.get("/api/dashboard/policy-insights", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }
@@ -2267,7 +2267,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
 
   void app.register(async function exportAuditRoutes(app) {
     app.post("/api/exports/change-control-records", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -2346,7 +2346,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.post("/api/exports/compliance-evidence-package", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -2449,7 +2449,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.get("/api/exports/:id", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -2477,7 +2477,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.get("/api/audit-events", async (request, reply) => {
-      const actor = requireApiActor(request);
+      const actor = await requireApiActor(request);
       if (isAuthzFailure(actor)) {
         return handleAuthzFailure(request, reply, actor);
       }
@@ -2493,7 +2493,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     });
 
     app.get("/api/check-output/:recordId", async (request, reply) => {
-      const actor = requireReadActor(request, reply);
+      const actor = await requireReadActor(request, reply);
       if (!actor) {
         return;
       }

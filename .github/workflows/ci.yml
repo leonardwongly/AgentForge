@@ -51,7 +51,6 @@ jobs:
       - run: pnpm policy:validate fixtures/policies/fintech.yaml
       - run: pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.json
       - run: pnpm fixtures:run
-      - run: pnpm test:unit
-      - run: pnpm test:integration
+      - run: pnpm test -- --coverage
       - run: pnpm build
       - run: pnpm prisma:validate

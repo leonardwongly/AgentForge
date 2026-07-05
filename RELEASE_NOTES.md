@@ -4,6 +4,28 @@ AgentForge Merge Guard v1.0.0 is the first public release candidate for the self
 
 Deterministic checks decide. AI explains and assists. Humans approve risk.
 
+## Unreleased Since v1.0.0
+
+Security-hardening work in progress on top of the v1.0.0 baseline. Not yet tagged.
+
+### Highlights
+
+- Mandatory signature nonce enforcement for trusted-proxy identity on both the API and dashboard, closing a replay window that the optional-nonce legacy payload shape left open.
+- Header-stripping attestation is now enforced at request time, not just at config load: the API rejects requests carrying raw actor headers alongside or instead of the signed header set when proxy trust is enabled.
+- Weak production secrets (`SESSION_SECRET`, `GITHUB_WEBHOOK_SECRET`, `AGENTFORGE_API_PROXY_SECRET`, `AGENTFORGE_DASHBOARD_PROXY_SECRET`) are now rejected below a 32-character minimum or against a common-placeholder denylist.
+- Postgres Row-Level Security tenant binding now sets the `agentforge.current_org` session GUC inside the same interactive transaction as the scoped query, closing a pooled-connection gap. See [docs/tenant-isolation-rls.md](docs/tenant-isolation-rls.md).
+- Retention-sweep deletes and their audit-event write are now atomic, so a crash mid-sweep can no longer leave an undocumented deletion.
+- Detector precision fixes for `coverage_threshold_reduced` and `test_skipped` to reduce false-positive blocking findings.
+
+### Security Posture
+
+- Trusted-proxy identity replay protection now requires a nonce on every signed request on both the dashboard and API paths; the pre-nonce legacy signing scheme is no longer accepted.
+- Header-stripping is verified per-request, not only attested at startup.
+- Production secret strength is enforced with a minimum length and placeholder denylist.
+- Tenant isolation via Postgres RLS is bound within the same transaction as the query it scopes.
+
+See [docs/self-hosting.md](docs/self-hosting.md) for the current production security contract.
+
 ## Highlights
 
 - GitHub App webhook ingestion with signed webhook verification, durable delivery records, queue handoff, replay controls, and GitHub check publication.

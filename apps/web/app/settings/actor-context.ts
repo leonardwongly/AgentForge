@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { SignatureReplayGuard } from "@agentforge/core/cache";
 import { readDashboardSessionFromCookieHeader } from "../auth/session";
 
 export type DashboardActorContext = {
@@ -31,46 +32,28 @@ const organizationPattern = /^[A-Za-z0-9_.-]{1,128}$/u;
 const localOrganizationId = "org_local";
 
 const SIGNATURE_WINDOW_SECONDS = 5 * 60;
-// Best-effort in-process replay cache for signed inbound identity headers.
-// Per-instance only; the timestamp window bounds replay regardless.
-const seenDashboardSignatures = new Map<string, number>();
-const DASHBOARD_SIGNATURE_SWEEP_INTERVAL_MS = 60_000;
-const MAX_SEEN_DASHBOARD_SIGNATURES = 50_000;
-let lastDashboardSignatureSweepMs = 0;
+// Cross-instance-safe replay cache backed by Redis (SET NX EX), falling back
+// to a bounded in-process claim set when REDIS_URL is unset/unreachable. See
+// apps/api/src/auth.ts's identical pattern; a distinct key namespace
+// ("agentforge:replay:dashboard:") keeps API and dashboard replay claims from
+// ever colliding even though both share the same Redis instance in most
+// deployments.
+const dashboardSignatureReplayGuard = new SignatureReplayGuard(process.env.REDIS_URL);
 
-function registerDashboardSignatureUse(signature: string, nowMs: number): boolean {
-  // Throttle the expiry sweep to at most once per interval so it never runs an
-  // O(N) loop on every request (CPU-DoS guard).
-  if (nowMs - lastDashboardSignatureSweepMs > DASHBOARD_SIGNATURE_SWEEP_INTERVAL_MS) {
-    lastDashboardSignatureSweepMs = nowMs;
-    for (const [key, expiry] of seenDashboardSignatures) {
-      if (expiry <= nowMs) {
-        seenDashboardSignatures.delete(key);
-      }
-    }
-  }
-  const existing = seenDashboardSignatures.get(signature);
-  if (existing !== undefined && existing > nowMs) {
-    return false;
-  }
-  // Hard memory bound: evict oldest entries (Map preserves insertion order).
-  while (seenDashboardSignatures.size >= MAX_SEEN_DASHBOARD_SIGNATURES) {
-    const oldest = seenDashboardSignatures.keys().next().value;
-    if (oldest === undefined) {
-      break;
-    }
-    seenDashboardSignatures.delete(oldest);
-  }
-  seenDashboardSignatures.set(signature, nowMs + SIGNATURE_WINDOW_SECONDS * 1000);
-  return true;
+async function registerDashboardSignatureUse(signature: string, nowMs: number): Promise<boolean> {
+  return dashboardSignatureReplayGuard.claim(
+    `agentforge:replay:dashboard:${signature}`,
+    SIGNATURE_WINDOW_SECONDS,
+    nowMs
+  );
 }
 
-export function resolveDashboardActorContext(
+export async function resolveDashboardActorContext(
   input: ActorContextInput = {}
-): DashboardActorContext | undefined {
+): Promise<DashboardActorContext | undefined> {
   const env = input.env ?? process.env;
   if (env.AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS === "true" && input.headers) {
-    const fromHeaders = dashboardActorFromTrustedHeaders(
+    const fromHeaders = await dashboardActorFromTrustedHeaders(
       input.headers,
       env.AGENTFORGE_DASHBOARD_PROXY_SECRET
     );
@@ -100,11 +83,11 @@ export function dashboardActorErrorMessage(): string {
   ].join(" ");
 }
 
-function dashboardActorFromTrustedHeaders(
+async function dashboardActorFromTrustedHeaders(
   headers: HeaderReader,
   secret: string | undefined,
   now: number = Date.now()
-): DashboardActorContext | undefined {
+): Promise<DashboardActorContext | undefined> {
   // Fail closed: trusted identity headers are honored ONLY when the ingress
   // proxy signs them with the shared secret (same HMAC-SHA256 scheme the API
   // uses). Without this, anyone able to reach the dashboard directly could
@@ -120,7 +103,12 @@ function dashboardActorFromTrustedHeaders(
   const timestampStr = headers.get("x-agentforge-signature-timestamp")?.trim() || undefined;
   const signatureStr = headers.get("x-agentforge-signature")?.trim() || undefined;
   const nonceStr = headers.get("x-agentforge-signature-nonce")?.trim() || undefined;
-  if (!login || !role || !organizationId || !timestampStr || !signatureStr) {
+  // The nonce is mandatory, not optional: a nonce-less signed request has no
+  // per-request binding, so registerDashboardSignatureUse is never consulted
+  // for it and it could otherwise be replayed indefinitely within the
+  // 5-minute timestamp window. Reject rather than silently accept a legacy
+  // nonce-less payload (mirrors apps/api/src/auth.ts's resolveApiActor).
+  if (!login || !role || !organizationId || !timestampStr || !signatureStr || !nonceStr) {
     return undefined;
   }
   const timestamp = Number.parseInt(timestampStr, 10);
@@ -133,16 +121,16 @@ function dashboardActorFromTrustedHeaders(
   if (!/^[a-fA-F0-9]+$/u.test(signatureStr)) {
     return undefined;
   }
-  const payload = nonceStr
-    ? [timestampStr, nonceStr, login, role, organizationId].join(":")
-    : [timestampStr, login, role, organizationId].join(":");
+  const payload = [timestampStr, nonceStr, login, role, organizationId].join(":");
   const expected = createHmac("sha256", secret).update(payload).digest("hex");
   const provided = Buffer.from(signatureStr, "hex");
   const expectedBuf = Buffer.from(expected, "hex");
   if (provided.length !== expectedBuf.length || !timingSafeEqual(provided, expectedBuf)) {
     return undefined;
   }
-  if (nonceStr && !registerDashboardSignatureUse(signatureStr, now)) {
+  // Reject replays of a previously seen signed request within the window.
+  // The nonce is now mandatory (checked above), so this always runs.
+  if (!(await registerDashboardSignatureUse(signatureStr, now))) {
     return undefined;
   }
   const safeLogin = safeActorValue(login);
