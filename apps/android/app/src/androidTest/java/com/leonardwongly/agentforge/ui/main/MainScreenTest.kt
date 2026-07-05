@@ -1,10 +1,10 @@
-package com.example.agentforge.ui.main
+package com.leonardwongly.agentforge.ui.main
 
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
-import com.example.agentforge.data.HealthSnapshot
-import com.example.agentforge.data.ReadinessSnapshot
+import com.leonardwongly.agentforge.data.HealthSnapshot
+import com.leonardwongly.agentforge.data.ReadinessSnapshot
 import java.time.Instant
 import org.junit.Before
 import org.junit.Rule

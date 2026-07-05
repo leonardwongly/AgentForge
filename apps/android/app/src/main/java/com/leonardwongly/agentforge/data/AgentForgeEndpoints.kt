@@ -1,4 +1,4 @@
-package com.example.agentforge.data
+package com.leonardwongly.agentforge.data
 
 import java.net.URI
 

@@ -1,4 +1,4 @@
-package com.example.agentforge
+package com.leonardwongly.agentforge
 
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
@@ -8,7 +8,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
-import com.example.agentforge.ui.main.MainScreen
+import com.leonardwongly.agentforge.ui.main.MainScreen
 
 @Composable
 fun MainNavigation() {

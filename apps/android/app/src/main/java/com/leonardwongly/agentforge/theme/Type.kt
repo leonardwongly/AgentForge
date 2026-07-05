@@ -1,4 +1,4 @@
-package com.example.agentforge.theme
+package com.leonardwongly.agentforge.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle

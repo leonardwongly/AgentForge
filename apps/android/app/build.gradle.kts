@@ -5,14 +5,14 @@ plugins {
 }
 
 android {
-    namespace = "com.example.agentforge"
+    namespace = "com.leonardwongly.agentforge"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.example.agentforge"
+        applicationId = "com.leonardwongly.agentforge"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.0.0"
     }
 
     buildTypes {

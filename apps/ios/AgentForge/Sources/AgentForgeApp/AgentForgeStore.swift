@@ -17,9 +17,16 @@ final class AgentForgeStore {
     var isCheckingReadiness = false
 
     private let client: AgentForgeAPIClient
+    private let settings: OperatorSettingsStore
 
-    init(client: AgentForgeAPIClient = AgentForgeAPIClient()) {
+    init(
+        client: AgentForgeAPIClient = AgentForgeAPIClient(),
+        settings: OperatorSettingsStore = UserDefaultsOperatorSettingsStore()
+    ) {
         self.client = client
+        self.settings = settings
+        self.apiBaseURLText = settings.loadAPIBaseURL() ?? defaultAPIBaseURL
+        self.dashboardBaseURLText = settings.loadDashboardBaseURL() ?? defaultDashboardBaseURL
     }
 
     var endpoints: AgentForgeEndpoints? {
@@ -51,6 +58,8 @@ final class AgentForgeStore {
         dashboardBaseURLText = defaultDashboardBaseURL
         apiURLError = nil
         dashboardURLError = nil
+        settings.saveAPIBaseURL(defaultAPIBaseURL)
+        settings.saveDashboardBaseURL(defaultDashboardBaseURL)
     }
 
     func checkAll() async {
@@ -107,6 +116,7 @@ final class AgentForgeStore {
             let url = try EndpointValidator.normalizedBaseURL(from: apiBaseURLText)
             apiBaseURLText = url.absoluteString
             apiURLError = nil
+            settings.saveAPIBaseURL(url.absoluteString)
             return url
         } catch {
             apiURLError = error.localizedDescription
@@ -120,6 +130,7 @@ final class AgentForgeStore {
             let url = try EndpointValidator.normalizedBaseURL(from: dashboardBaseURLText)
             dashboardBaseURLText = url.absoluteString
             dashboardURLError = nil
+            settings.saveDashboardBaseURL(url.absoluteString)
             return url
         } catch {
             dashboardURLError = error.localizedDescription

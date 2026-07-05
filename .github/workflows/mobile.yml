@@ -1,0 +1,66 @@
+name: Mobile
+
+on:
+  pull_request:
+    paths:
+      - "apps/android/**"
+      - "apps/ios/**"
+      - ".github/workflows/mobile.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/android/**"
+      - "apps/ios/**"
+      - ".github/workflows/mobile.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/android
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      # The Android SDK is preinstalled on GitHub-hosted ubuntu runners; the
+      # Gradle wrapper provisions Gradle itself. This mirrors the local checks
+      # `./gradlew testDebugUnitTest` and `./gradlew assembleDebug`.
+      - run: ./gradlew --no-daemon testDebugUnitTest
+      - run: ./gradlew --no-daemon assembleDebug
+
+  ios:
+    # Requires an Xcode with the iOS 26 SDK (the app uses SwiftUI Liquid Glass
+    # APIs and targets iOS 26). Uses the runner's default Xcode.
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: apps/ios/AgentForge
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - run: xcodebuild -version
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      # Sim-free package tests for the endpoint/readiness/persistence logic.
+      - run: swift test --package-path Packages/AgentForgeCore
+      # Compile the full SwiftUI app target for the simulator.
+      - run: >-
+          xcodebuild
+          -project AgentForge.xcodeproj
+          -scheme AgentForge
+          -destination 'generic/platform=iOS Simulator'
+          build

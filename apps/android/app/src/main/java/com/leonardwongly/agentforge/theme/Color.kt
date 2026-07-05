@@ -1,4 +1,4 @@
-package com.example.agentforge.theme
+package com.leonardwongly.agentforge.theme
 
 import androidx.compose.ui.graphics.Color
 
