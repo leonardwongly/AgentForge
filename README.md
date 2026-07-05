@@ -20,17 +20,19 @@ This repository is a working TypeScript monorepo for the Merge Guard V1 runtime:
 - Built-in policy packs and YAML policy validation/preview tooling.
 - Security-focused defaults: signed GitHub webhooks, fail-closed production config, metadata-only storage, secret redaction, source-code storage disabled, and trusted-proxy identity requirements for deployed state-changing actions.
 - Dashboard authentication supports both trusted proxy identity and built-in GitHub OAuth, with GitHub App installations requiring platform admin approval before repositories are governed.
+- Native Android and iOS operator consoles for read-only health/readiness monitoring and GitHub OAuth handoff, built and tested in a dedicated mobile CI workflow.
 - Local Docker Compose services for Postgres, Redis, and optional MinIO-backed export experiments.
 
 For product positioning and non-goals, see [docs/product-overview.md](docs/product-overview.md) and [docs/launch-positioning-and-pricing.md](docs/launch-positioning-and-pricing.md).
 
-## V1.0 Release Scope
+## Release Scope
 
-AgentForge v1.0 is a self-hosted GitHub governance release. The repository can
-be published publicly on GitHub, but the workspace packages intentionally remain
-`private: true` and are not published to npm.
+AgentForge is a self-hosted GitHub governance service. The current release is
+`v1.1.0` (see [CHANGELOG.md](CHANGELOG.md) and [RELEASE_NOTES.md](RELEASE_NOTES.md)).
+The repository can be published publicly on GitHub, but the workspace packages
+intentionally remain `private: true` and are not published to npm.
 
-Included in v1.0:
+Included:
 
 - GitHub App webhook ingestion, durable delivery records, queue-backed
   evaluation, check publication, and platform-admin replay.
@@ -38,11 +40,13 @@ Included in v1.0:
   login is intentionally out of scope.
 - Policy-as-code evaluation, evidence requirements, reviewer routing, Change
   Control Records, audit events, and authorized exports.
+- Native Android and iOS operator consoles for read-only health/readiness
+  monitoring and GitHub OAuth handoff.
 - Production fail-closed configuration for signed webhooks, auth proxy trust,
   local actor fallback, source-code storage, secret redaction, and session/OAuth
   settings.
 
-Not included in v1.0:
+Not included:
 
 - Hosted SaaS operation.
 - npm package publication.
@@ -87,6 +91,7 @@ scripts/     Local validation, policy, fixture, GitHub, and E2E helpers
 - `pnpm 11.1.1`, preferably through Corepack.
 - Docker Desktop or another Docker-compatible runtime for local Postgres, Redis, and MinIO.
 - GitHub App credentials only when testing real GitHub webhook or check-run flows.
+- Only for the mobile operator consoles: a JDK with the Android SDK (Android) and Xcode with the iOS 26 SDK plus `xcodegen` (iOS).
 
 The repository uses:
 
@@ -406,6 +411,33 @@ Each evaluated PR receives a Change Control Record containing repository, PR num
 The runtime also normalizes evaluations into queryable tables for audit views and exports. JSON/CSV Change Control Record exports and JSON compliance evidence packages intentionally exclude full source code by default and apply redaction before output.
 
 See [docs/change-control-records.md](docs/change-control-records.md) and [docs/security-and-data-handling.md](docs/security-and-data-handling.md).
+
+## Mobile Operator Consoles
+
+`apps/android` (Kotlin and Jetpack Compose) and `apps/ios` (SwiftUI) are native,
+read-only operator consoles for a deployed AgentForge instance. They call the
+public `/health` and `/ready` endpoints, interpret full-stack readiness, persist
+the configured API and dashboard URLs across launches, and hand GitHub sign-in
+to the deployed dashboard's OAuth route.
+
+They never connect directly to Postgres, Redis, MinIO, GitHub private keys,
+webhook secrets, OAuth secrets, or installation tokens; all authenticated and
+infrastructure access stays behind the deployed dashboard and API. Deployed URLs
+must use HTTPS, and plain HTTP is accepted only for local development hosts.
+
+Both apps are built and tested in the `mobile` CI workflow. To build and test
+them locally:
+
+```bash
+# Android (JDK + Android SDK)
+(cd apps/android && ./gradlew testDebugUnitTest assembleDebug)
+
+# iOS (Xcode with the iOS 26 SDK, plus xcodegen)
+(cd apps/ios/AgentForge && xcodegen generate && swift test --package-path Packages/AgentForgeCore)
+```
+
+See [apps/android/README.md](apps/android/README.md) and
+[apps/ios/AgentForge/README.md](apps/ios/AgentForge/README.md).
 
 ## Testing
 
