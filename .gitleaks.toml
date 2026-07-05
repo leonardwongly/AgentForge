@@ -14,3 +14,7 @@ paths = [
   '''packages/security/src/redaction\.test\.ts''',
   '''packages/security/src/redaction\.ts'''
 ]
+
+[[allowlists]]
+description = "packages/github/src/github.test.ts:1090 -- a plain placeholder string ('private-key-0') used to test the GitHub App auth-instance cache's eviction logic, not a real credential. Scoped to the exact introducing commit rather than the whole file/path so this file's real GitHub-auth-relevant scanning coverage stays fully active going forward."
+commits = ["8010b709940e9008505e8c6c09cf34d054bfb4d7"]
