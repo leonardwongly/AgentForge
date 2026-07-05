@@ -500,6 +500,11 @@ export async function postWorkerFailureAlert(input: {
     const response = await fetch(webhookUrl, {
       method: "POST",
       headers: { "content-type": "application/json" },
+      // Best-effort, fire-and-forget alert on every terminally-failed job: an
+      // unresponsive endpoint should fail fast rather than leave this
+      // promise pending for undici's much longer default timeout, which
+      // could accumulate open sockets/promises during a burst of failures.
+      signal: AbortSignal.timeout(10_000),
       body: JSON.stringify({
         jobId: input.job.id,
         deliveryId: input.job.data.deliveryId,
@@ -653,31 +658,35 @@ export async function runAuditRecordRetentionSweep(input: {
       return withUnmanagedOrgBinding(() =>
         input.prisma.$transaction(async (tx) => {
           await tx.$executeRaw`SELECT set_config('agentforge.current_org', ${organization.id}, true)`;
-          const [
-            auditEventsDeleted,
-            changeControlRecordsDeleted,
-            exportJobsDeleted,
-            webhookDeliveriesDeleted
-          ] = await Promise.all([
-            tx.auditEvent.deleteMany({ where: plan.auditEventWhere }),
-            tx.changeControlRecord.deleteMany({ where: plan.changeControlRecordWhere }),
-            tx.exportJob.deleteMany({
-              where: planExportJobRetentionSweep({
-                organizationId: organization.id,
-                globalRetentionDays: input.globalRetentionDays,
-                organizationOverrideDays: organization.retentionSettings?.auditRecordRetentionDays,
-                now: input.now
-              }).exportJobWhere
-            }),
-            tx.webhookDelivery.deleteMany({
-              where: planWebhookDeliveryRetentionSweep({
-                organizationId: organization.id,
-                globalRetentionDays: input.globalRetentionDays,
-                organizationOverrideDays: organization.retentionSettings?.auditRecordRetentionDays,
-                now: input.now
-              }).webhookDeliveryWhere
-            })
-          ]);
+          // Sequential, not Promise.all: see the identical fix and rationale
+          // a few dozen lines below in persistWorkerEvaluationSnapshot --
+          // these four deleteMany calls share this transaction's single
+          // connection, so real concurrency isn't possible here regardless,
+          // only the documented Prisma hang/deadlock risk of running
+          // multiple operations "concurrently" against one interactive
+          // transaction client.
+          const auditEventsDeleted = await tx.auditEvent.deleteMany({
+            where: plan.auditEventWhere
+          });
+          const changeControlRecordsDeleted = await tx.changeControlRecord.deleteMany({
+            where: plan.changeControlRecordWhere
+          });
+          const exportJobsDeleted = await tx.exportJob.deleteMany({
+            where: planExportJobRetentionSweep({
+              organizationId: organization.id,
+              globalRetentionDays: input.globalRetentionDays,
+              organizationOverrideDays: organization.retentionSettings?.auditRecordRetentionDays,
+              now: input.now
+            }).exportJobWhere
+          });
+          const webhookDeliveriesDeleted = await tx.webhookDelivery.deleteMany({
+            where: planWebhookDeliveryRetentionSweep({
+              organizationId: organization.id,
+              globalRetentionDays: input.globalRetentionDays,
+              organizationOverrideDays: organization.retentionSettings?.auditRecordRetentionDays,
+              now: input.now
+            }).webhookDeliveryWhere
+          });
           const summary = summarizeAuditRecordRetentionSweep({
             plan,
             auditEventsDeleted: auditEventsDeleted.count,
@@ -2070,11 +2079,16 @@ async function persistWorkerEvaluationSnapshot(input: {
           ...evaluationData
         }
       });
-      await Promise.all([
-        tx.verifiedFactRecord.deleteMany({ where: { evaluationId } }),
-        tx.evidenceRequirementRecord.deleteMany({ where: { evaluationId } }),
-        tx.reviewerRequirementRecord.deleteMany({ where: { evaluationId } })
-      ]);
+      // Sequential, not Promise.all: these three deleteMany calls share the
+      // single connection this interactive transaction holds, so running
+      // them "concurrently" cannot actually parallelize at the database
+      // level -- it only risks the documented Prisma hang/deadlock class
+      // that concurrent operations on one interactive-transaction client can
+      // trigger (prisma/prisma#8707, #11750, #8880). The atomicity this code
+      // needs comes from the transaction itself, not from concurrency here.
+      await tx.verifiedFactRecord.deleteMany({ where: { evaluationId } });
+      await tx.evidenceRequirementRecord.deleteMany({ where: { evaluationId } });
+      await tx.reviewerRequirementRecord.deleteMany({ where: { evaluationId } });
       if (input.record.verifiedFindings.length > 0) {
         await tx.verifiedFactRecord.createMany({
           data: input.record.verifiedFindings.map((fact) => ({

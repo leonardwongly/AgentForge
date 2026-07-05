@@ -80,7 +80,6 @@ function isTransientConnectionError(error: unknown): boolean {
 }
 
 // Wraps the ENTIRE role-provisioning sequence (DROP OWNED BY / DROP ROLE /
-// Wraps the ENTIRE role-provisioning sequence (DROP OWNED BY / DROP ROLE /
 // CREATE ROLE / GRANT ...), not just the initial connectivity probe. Postgres
 // legitimately raises "tuple concurrently updated" (XX000) when two sessions
 // concurrently modify the same system catalog rows (e.g. two test files each
@@ -88,7 +87,7 @@ function isTransientConnectionError(error: unknown): boolean {
 // expected, standard behavior under concurrent DDL, not a bug in the grants
 // themselves, and the correct response is to retry the whole provisioning
 // sequence, not to treat it as either a real failure or a silent skip.
-async function provisionRestrictedRoleAndFixtures(client: PrismaClient): Promise<void> {
+async function provisionRestrictedRole(client: PrismaClient): Promise<void> {
   // Provision a restricted (RLS-subject) role. DROP OWNED BY first so a
   // leftover role (which still holds table privileges) can be dropped.
   await client.$executeRawUnsafe(
@@ -107,7 +106,19 @@ async function provisionRestrictedRoleAndFixtures(client: PrismaClient): Promise
   await client.$executeRawUnsafe(
     `GRANT EXECUTE ON FUNCTION agentforge_current_org() TO ${RESTRICTED_ROLE}`
   );
+}
 
+// Deliberately NOT retried as a unit with provisionRestrictedRole: unlike the
+// role DDL above (idempotent by its own DROP-then-CREATE guard, and the
+// actual target of the "tuple concurrently updated" contention this retry
+// exists for), these org/repo inserts use a fixed slug/fullName derived from
+// `n` (captured once at module load). A retry of THIS function after a
+// transient failure that occurred just after a prior attempt's inserts had
+// already committed would hit a duplicate-key violation on that same
+// slug/fullName -- a different, confusing error masking the original
+// transient one. Ordinary DML inserts are also far less likely to hit the
+// shared-system-catalog-row contention class the DDL retry defends against.
+async function createRlsFixtures(client: PrismaClient): Promise<void> {
   const orgA = await client.organization.create({
     data: { name: "RLS A", slug: `rls-a-${n}` }
   });
@@ -145,7 +156,8 @@ describe("tenant isolation via Postgres RLS", () => {
     try {
       superuser = createPrismaClient(superuserUrl);
       await withConnectionRetry(() => superuser!.$queryRaw`SELECT 1`);
-      await withConnectionRetry(() => provisionRestrictedRoleAndFixtures(superuser!));
+      await withConnectionRetry(() => provisionRestrictedRole(superuser!));
+      await createRlsFixtures(superuser!);
       app = createPrismaClient(restrictedUrl());
       await withConnectionRetry(() => app!.$queryRaw`SELECT 1`);
       available = true;

@@ -94,7 +94,11 @@ export class RedisCacheManager implements CacheBackend {
         this.redis = new Redis(redisUrl, {
           maxRetriesPerRequest: null,
           showFriendlyErrorStack: true,
-          lazyConnect: true
+          lazyConnect: true,
+          // See SignatureReplayGuard's identical setting: bounds how long a
+          // single command can hang on a connected-but-unresponsive Redis
+          // before ioredis rejects it and this class falls back to memory.
+          commandTimeout: 2_000
         });
 
         this.redis.on("error", (err) => {
@@ -264,7 +268,13 @@ export class SignatureReplayGuard {
         this.redis = new Redis(redisUrl, {
           maxRetriesPerRequest: null,
           showFriendlyErrorStack: true,
-          lazyConnect: true
+          lazyConnect: true,
+          // Bounds how long a single command can hang waiting on a
+          // connected-but-unresponsive Redis before ioredis rejects it. Without
+          // this, a hung (not errored) Redis leaves claim() awaiting
+          // indefinitely instead of falling back to the in-memory guard --
+          // exactly the failure mode the fallback exists to protect against.
+          commandTimeout: 2_000
         });
         this.redis.on("error", (err) => {
           console.error("Redis SignatureReplayGuard error:", err.message);
@@ -296,7 +306,16 @@ export class SignatureReplayGuard {
       const result = await this.redis.set(key, "1", "EX", ttlSeconds, "NX");
       return result === "OK";
     } catch (err) {
-      console.warn(`Redis SignatureReplayGuard claim failed for ${key}, falling back:`, err);
+      // Never log the raw key: it is namespaced as
+      // "agentforge:replay:{api|dashboard}:{signature}" and the signature
+      // itself is sensitive (the actual HMAC over the signed request). Log
+      // only the namespace prefix so failures remain diagnosable without
+      // leaking signature material into logs during a Redis outage.
+      const keyPrefix = key.split(":").slice(0, 3).join(":");
+      console.warn(
+        `Redis SignatureReplayGuard claim failed for key prefix ${keyPrefix}, falling back:`,
+        err
+      );
       return this.memoryFallback.claim(key, ttlSeconds, nowMs);
     }
   }
