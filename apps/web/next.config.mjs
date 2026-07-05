@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 // NOTE: the Content-Security-Policy is intentionally NOT set here. It is emitted
-// per-request by middleware.ts with a fresh nonce so that script-src can use
+// per-request by proxy.ts with a fresh nonce so that script-src can use
 // 'nonce-...' + 'strict-dynamic' instead of 'unsafe-inline' (AF-SEC L2). Static
 // security headers that do not need a nonce remain below.
 

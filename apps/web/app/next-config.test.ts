@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("Next.js static security headers", () => {
-  it("sets hardening headers and delegates CSP to middleware", async () => {
+  it("sets hardening headers and delegates CSP to the proxy", async () => {
     const config = await loadNextConfig();
     const headers = await config.headers();
     const headerEntries = headers[0]?.headers ?? [];
@@ -14,7 +14,7 @@ describe("Next.js static security headers", () => {
     expect(keys).toContain("Cross-Origin-Opener-Policy");
     expect(keys).toContain("Permissions-Policy");
 
-    // The CSP is emitted per-request by middleware.ts with a fresh nonce, so the
+    // The CSP is emitted per-request by proxy.ts with a fresh nonce, so the
     // static config must NOT also emit one (that would produce a conflicting,
     // nonce-less policy).
     expect(keys).not.toContain("Content-Security-Policy");

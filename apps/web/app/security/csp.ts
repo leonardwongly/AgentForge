@@ -1,4 +1,4 @@
-// Shared Content-Security-Policy builder used by the Next.js middleware (which
+// Shared Content-Security-Policy builder used by the Next.js proxy (which
 // injects a per-request nonce) and by tests. Pure/Edge-safe: no Node built-ins.
 
 export function cspOriginFromUrl(value: string | undefined): string | undefined {
