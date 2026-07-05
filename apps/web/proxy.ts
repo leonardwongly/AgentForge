@@ -10,7 +10,7 @@ import { buildContentSecurityPolicy, cspHeaderName, cspOriginFromUrl } from "./a
  * browser enforce it. This replaces the previous static `script-src 'unsafe-inline'`
  * (AF-SEC L2).
  */
-export function middleware(request: NextRequest): NextResponse {
+export function proxy(request: NextRequest): NextResponse {
   const randomBytes = new Uint8Array(16);
   crypto.getRandomValues(randomBytes);
   let binary = "";
