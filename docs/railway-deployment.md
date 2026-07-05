@@ -68,6 +68,55 @@ that environment for public webhook or dashboard traffic.
 
 Use Railway shared variables for duplicated non-public values when practical. Avoid printing `railway variable list --json` or `railway variable list --kv` output in logs because those modes include raw secret values.
 
+## Tenant Isolation: Provision a Non-Superuser Database Role
+
+Railway's managed Postgres `DATABASE_URL` connects as the database owner role,
+which is superuser-equivalent. Postgres Row-Level Security is **silently
+bypassed for superusers and roles with `BYPASSRLS`**, so pointing `DATABASE_URL`
+directly at Railway's default connection string leaves the tenant-isolation RLS
+backstop described in [docs/tenant-isolation-rls.md](tenant-isolation-rls.md)
+completely inert, with no error at startup. This is an active step operators
+must take; it is not the default.
+
+Connect to the Railway Postgres service (`railway connect Postgres`, or use the
+connection details from the Postgres service's Variables tab) and run:
+
+```sql
+CREATE ROLE agentforge_app WITH LOGIN PASSWORD '<strong-password>'
+  NOSUPERUSER NOBYPASSRLS;
+GRANT USAGE ON SCHEMA public TO agentforge_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO agentforge_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO agentforge_app;
+GRANT EXECUTE ON FUNCTION agentforge_current_org() TO agentforge_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO agentforge_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO agentforge_app;
+```
+
+Run this after `pnpm db:deploy` has applied the `20260616080000_tenant_rls`
+migration (that migration creates `agentforge_current_org()` and the `public`
+schema tables the grants above target); re-running `GRANT ... ON ALL TABLES`
+after later migrations add tables is safe and idempotent.
+
+Then split `DATABASE_URL` by service:
+
+- Leave the `agentforge-api` **pre-deploy** command (`pnpm db:deploy`) using
+  Railway's default owner-role `DATABASE_URL`, since applying migrations
+  requires elevated privileges.
+- Set the **runtime** `DATABASE_URL` for `agentforge-api` and
+  `agentforge-worker` to a connection string using `agentforge_app` and the
+  password chosen above, keeping the same host/port/database from Railway's
+  Postgres service (for example
+  `postgresql://agentforge_app:<strong-password>@${{Postgres.PGHOST}}:${{Postgres.PGPORT}}/${{Postgres.PGDATABASE}}`).
+
+At startup, `assertOrgIsolationEnforced` (exported from `@agentforge/db`, see
+[docs/tenant-isolation-rls.md](tenant-isolation-rls.md#runtime-enforcement-assertorgisolationenforced))
+queries the connected role and throws in production if it still bypasses RLS —
+confirm `agentforge-api` and `agentforge-worker` logs show a clean startup
+(no `Unsafe AgentForge production configuration` error) after switching
+`DATABASE_URL` to `agentforge_app`.
+
 ## CLI Setup
 
 The local machine can use the Railway CLI through `npx`:
