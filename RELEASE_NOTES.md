@@ -1,12 +1,12 @@
-# AgentForge Merge Guard v1.0.0
+# AgentForge Merge Guard v1.1.0
 
-AgentForge Merge Guard v1.0.0 is the first public release candidate for the self-hosted GitHub pull request governance service.
+AgentForge Merge Guard v1.1.0 builds on the v1.0.0 self-hosted GitHub pull request governance release with security hardening, completed Android and iOS operator consoles, and a production build fix.
 
 Deterministic checks decide. AI explains and assists. Humans approve risk.
 
-## Unreleased Since v1.0.0
+## v1.1.0
 
-Security-hardening work in progress on top of the v1.0.0 baseline. Not yet tagged.
+Released 2026-07-05. Highlights below; see [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 ### Highlights
 
@@ -16,6 +16,8 @@ Security-hardening work in progress on top of the v1.0.0 baseline. Not yet tagge
 - Postgres Row-Level Security tenant binding now sets the `agentforge.current_org` session GUC inside the same interactive transaction as the scoped query, closing a pooled-connection gap. See [docs/tenant-isolation-rls.md](docs/tenant-isolation-rls.md).
 - Retention-sweep deletes and their audit-event write are now atomic, so a crash mid-sweep can no longer leave an undocumented deletion.
 - Detector precision fixes for `coverage_threshold_reduced` and `test_skipped` to reduce false-positive blocking findings.
+- Completed the Android and iOS operator consoles: persisted URL configuration, orchestration-layer unit tests, an on-launch readiness check, and a mobile CI workflow that builds and tests both apps.
+- Fixed the web production build breaking when a development `NODE_ENV` leaked into `next build`, migrated the Next.js middleware to the `proxy` convention, and upgraded Next to `16.2.10`.
 
 ### Security Posture
 
@@ -25,6 +27,13 @@ Security-hardening work in progress on top of the v1.0.0 baseline. Not yet tagge
 - Tenant isolation via Postgres RLS is bound within the same transaction as the query it scopes.
 
 See [docs/self-hosting.md](docs/self-hosting.md) for the current production security contract.
+
+### Validation
+
+- `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`, `pnpm fixtures:run`, and `pnpm release:check` pass.
+- DB-backed integration tests pass against Postgres, including the RLS/tenant-isolation suite; the Playwright dashboard E2E suite passes.
+- Android (`gradlew testDebugUnitTest assembleDebug`) and iOS (`swift test`, `xcodebuild`) build and test green, and the mobile CI workflow passes on GitHub runners.
+- GitHub CI, Security, CodeQL, E2E, and Merge Guard workflows are green on `main`.
 
 ## Highlights
 

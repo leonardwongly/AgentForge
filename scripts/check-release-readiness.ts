@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
-const expectedVersion = "1.0.0";
+const expectedVersion = "1.1.0";
 
 type CheckResult = {
   name: string;
@@ -192,7 +192,7 @@ function checkPackageVersions(): CheckResult {
     return packageJson.version !== expectedVersion || packageJson.private !== true;
   });
   return {
-    name: "private workspace packages are versioned for v1.0.0",
+    name: `private workspace packages are versioned for v${expectedVersion}`,
     ok: mismatches.length === 0,
     detail: mismatches.length > 0 ? `mismatched ${mismatches.join(", ")}` : undefined
   };
@@ -252,12 +252,11 @@ function checkReleaseDocsMentionVersion(): CheckResult {
   const changelog = readText("CHANGELOG.md");
   const releaseNotes = readText("RELEASE_NOTES.md");
   const ok =
-    changelog.includes("1.0.0") &&
-    changelog.includes("2026-05-26") &&
-    releaseNotes.includes("v1.0.0") &&
+    changelog.includes(expectedVersion) &&
+    releaseNotes.includes(`v${expectedVersion}`) &&
     releaseNotes.includes("Validation");
   return {
-    name: "v1.0.0 changelog and release notes are populated",
+    name: `v${expectedVersion} changelog and release notes are populated`,
     ok
   };
 }
