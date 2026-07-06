@@ -26,6 +26,7 @@
       "@agentforge/evidence": ["packages/evidence/src/index.ts"],
       "@agentforge/github": ["packages/github/src/index.ts"],
       "@agentforge/loom-core": ["packages/loom-core/src/index.ts"],
+      "@agentforge/loom-ratify": ["packages/loom-ratify/src/index.ts"],
       "@agentforge/policy": ["packages/policy/src/index.ts"],
       "@agentforge/records": ["packages/records/src/index.ts"],
       "@agentforge/reviewers": ["packages/reviewers/src/index.ts"],
