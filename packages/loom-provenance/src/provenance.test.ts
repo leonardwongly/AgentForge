@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { createPrivateKey, createPublicKey } from "node:crypto";
+
 import type { VerifiedFact } from "@agentforge/core";
 import type { Cid } from "@agentforge/loom-core";
 
@@ -45,10 +47,13 @@ const baseInput: DeterministicCheckInput = {
 describe("generateKeyPair", () => {
   it("returns PEM-encoded SPKI public and PKCS#8 private keys", () => {
     const key = generateKeyPair();
-    expect(key.publicKeyPem).toContain("-----BEGIN PUBLIC KEY-----");
-    expect(key.publicKeyPem).toContain("-----END PUBLIC KEY-----");
-    expect(key.privateKeyPem).toContain("-----BEGIN PRIVATE KEY-----");
-    expect(key.privateKeyPem).toContain("-----END PRIVATE KEY-----");
+    // Validate by re-importing with node:crypto instead of embedding a PEM
+    // header literal (which the repo's secret scanner rejects in tracked files).
+    expect(key.publicKeyPem).toContain("BEGIN PUBLIC KEY");
+    expect(() => createPublicKey(key.publicKeyPem)).not.toThrow();
+    expect(() => createPrivateKey(key.privateKeyPem)).not.toThrow();
+    expect(createPublicKey(key.publicKeyPem).asymmetricKeyType).toBe("ed25519");
+    expect(createPrivateKey(key.privateKeyPem).asymmetricKeyType).toBe("ed25519");
   });
 
   it("round-trips: a statement signed by a key verifies with its public key", () => {
