@@ -251,7 +251,43 @@ importers:
         specifier: 22.0.1
         version: 22.0.1
 
+  packages/loom-cli:
+    dependencies:
+      '@agentforge/core':
+        specifier: workspace:*
+        version: link:../core
+      '@agentforge/loom-core':
+        specifier: workspace:*
+        version: link:../loom-core
+      '@agentforge/loom-git-bridge':
+        specifier: workspace:*
+        version: link:../loom-git-bridge
+      '@agentforge/loom-provenance':
+        specifier: workspace:*
+        version: link:../loom-provenance
+      '@agentforge/loom-ratify':
+        specifier: workspace:*
+        version: link:../loom-ratify
+      '@agentforge/policy':
+        specifier: workspace:*
+        version: link:../policy
+
   packages/loom-core: {}
+
+  packages/loom-git-bridge:
+    dependencies:
+      '@agentforge/loom-core':
+        specifier: workspace:*
+        version: link:../loom-core
+
+  packages/loom-provenance:
+    dependencies:
+      '@agentforge/core':
+        specifier: workspace:*
+        version: link:../core
+      '@agentforge/loom-core':
+        specifier: workspace:*
+        version: link:../loom-core
 
   packages/loom-ratify:
     dependencies:
