@@ -251,6 +251,8 @@ importers:
         specifier: 22.0.1
         version: 22.0.1
 
+  packages/loom-core: {}
+
   packages/policy:
     dependencies:
       '@agentforge/core':
