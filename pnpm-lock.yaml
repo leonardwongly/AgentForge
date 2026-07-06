@@ -253,6 +253,21 @@ importers:
 
   packages/loom-core: {}
 
+  packages/loom-ratify:
+    dependencies:
+      '@agentforge/core':
+        specifier: workspace:*
+        version: link:../core
+      '@agentforge/detectors':
+        specifier: workspace:*
+        version: link:../detectors
+      '@agentforge/loom-core':
+        specifier: workspace:*
+        version: link:../loom-core
+      '@agentforge/policy':
+        specifier: workspace:*
+        version: link:../policy
+
   packages/policy:
     dependencies:
       '@agentforge/core':

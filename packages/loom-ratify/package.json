@@ -1,0 +1,20 @@
+{
+  "name": "@agentforge/loom-ratify",
+  "version": "1.1.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "cd ../.. && vitest run packages/loom-ratify/src/*.test.ts"
+  },
+  "dependencies": {
+    "@agentforge/core": "workspace:*",
+    "@agentforge/detectors": "workspace:*",
+    "@agentforge/loom-core": "workspace:*",
+    "@agentforge/policy": "workspace:*"
+  }
+}
