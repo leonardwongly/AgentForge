@@ -1,7 +1,7 @@
 # @agentforge/loom-cli
 
-The `loom` CLI ties the Loom slices into a runnable end-to-end demo **on a real
-git repo**: git refs → Loom `State`s (`loom-git-bridge`) → deterministic
+The `loom` CLI ties the current Loom prototype slices into a runnable end-to-end
+demonstration on a real Git repository: Git refs → Loom `State`s (`loom-git-bridge`) → deterministic
 governance decision (`loom-ratify`) → optional signed provenance
 (`loom-provenance`) that anyone can independently verify.
 
@@ -37,9 +37,9 @@ match transform`) against a different head.
 ## Honest scope
 
 Demonstration/local tool. It generates an ephemeral signing key with `--sign`
-(no key management / KMS / transparency log — those are out of scope). The
-governance decision is the existing deterministic engine; the CLI adds no
-blocking logic of its own.
+and therefore does not satisfy the native identity, key lifecycle, admission,
+storage, or trust profiles in the Loom specification. The governance decision
+is the existing deterministic engine; the CLI adds no blocking logic of its own.
 
 ```bash
 pnpm --filter @agentforge/loom-cli test

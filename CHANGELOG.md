@@ -1,8 +1,24 @@
 # Changelog
 
-All notable AgentForge Merge Guard changes are tracked here.
+All notable changes to AgentForge Merge Guard and the Loom implementation and
+specification are tracked here.
 
 ## [Unreleased]
+
+### Added
+
+- Established the authoritative Loom VCS specification covering the native
+  object and history model, working copies, merge/reapply semantics, identity
+  and capability Grants, governed admission, provenance, storage and recovery,
+  synchronization, Git interoperability, security, and conformance gates.
+
+### Changed
+
+- Reframed the existing Loom design and validation documents around Loom as a
+  native VCS destination, with Git as a migration/interoperability bridge rather
+  than the permanent product substrate.
+- Marked the former Merge Guard V2 roadmap as a legacy product plan so it does
+  not conflict with the authoritative Loom roadmap.
 
 ## [1.1.0] - 2026-07-05
 

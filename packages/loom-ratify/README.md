@@ -15,7 +15,7 @@ to `@agentforge/policy` or `@agentforge/detectors`.
   engine expects from Loom concepts (Space→repo, Line→branch, State address→head,
   Intent→title), runs `extractVerifiedFacts` + `evaluateMergeGuard`, and returns
   the `PolicyResult` (pass/warn/block with findings, evidence, reviewers). This is
-  the RATP "derive facts → evaluate" step (design §4).
+  the native admission "derive facts → evaluate" step (core spec §13).
 
 ## Proven by test
 
@@ -26,10 +26,11 @@ under `observe` — all via the unchanged governance engine. See
 
 ## Honest scope
 
-This is the governance/text-lane re-homing only. It reuses the git-`ChangedFile`
-adapter deliberately (text lane is authoritative); it does not add a semantic
-lane, provenance envelopes, the ledger, or any networked substrate. Those remain
-kill-gated per `docs/loom/loom-detailed-design.md`.
+This is the governance/authoritative-text re-homing prototype only. It reuses a
+Git-`ChangedFile`-shaped adapter to exercise the existing detector engine; it
+does not yet implement native Proposal/admission inputs, semantic facets,
+provenance sets, a ledger, durable Lines, or synchronization. Those are required
+by later Loom conformance phases in `docs/loom/loom-detailed-design.md`.
 
 ## Develop
 

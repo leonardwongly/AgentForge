@@ -1,7 +1,7 @@
 # @agentforge/loom-core
 
-The deterministic, dependency-free core of **Loom** — the native agentic
-version-control substrate proposed in [`docs/loom/loom-detailed-design.md`](../../docs/loom/loom-detailed-design.md)
+The deterministic, dependency-free prototype core of **Loom** — the native
+version-control system specified in [`docs/loom/loom-detailed-design.md`](../../docs/loom/loom-detailed-design.md)
 and [`docs/loom/reapply-merge-engine.md`](../../docs/loom/reapply-merge-engine.md).
 
 This package is a pure library: no network, no infrastructure, no I/O. It exists
@@ -29,12 +29,12 @@ genuinely defensible and buildable today.
 
 ## Honest non-goals (deliberately NOT here)
 
-Per the design's kill-gated verdict, this package is **not** a VCS and makes no
-git-elimination claims. Out of scope (and tracked as kill-gated remaining work):
+This package alone is **not** a complete VCS and makes no native conformance
+claim. Remaining work tracked by the specification includes:
 the networked ledger + witnesses, RSP sync, DID/PKI, DSSE/in-toto provenance
-envelopes, the git bridge, working-copy materialization, and the semantic
-(AST) lane. The **text lane is authoritative** and provenance would be
-**attested, not proven**.
+envelopes, durable native storage, working-copy materialization, replication,
+admission, recovery, and the semantic lane. Authoritative bytes remain the
+safety floor and provenance remains attested, not proven.
 
 ## Design honesty baked into the code
 

@@ -20,8 +20,9 @@ change via the in-toto **subject digest** (the "subject-pin").
 
 ## Honest scope
 
-Produces and verifies signed, subject-pinned attestations. It does **not**
-integrate a transparency log / Rekor / witness network (networked, kill-gated).
+Produces and verifies signed, subject-pinned attestations. It does **not** yet
+integrate persistent actor keys, an admission record, transparency ledger, or
+independent witness network; those remain required native implementation work.
 Per the design: **attested, not proven** — a valid signature proves _who signed
 what_, not that the underlying claim is true.
 

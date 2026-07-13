@@ -1,8 +1,8 @@
 # @agentforge/loom-git-bridge
 
-The **strangler seam**: import a pair of git refs into Loom `State`s so the Loom
-governance/ratify path runs on a **real repo** (P2-on-git), without going
-git-free.
+The migration and interoperability seam: import a pair of Git refs into
+prototype Loom `State`s so the governance/ratify path runs on a real repository.
+Git is a bridge and test oracle, not Loom's normative source of truth.
 
 ## Surface
 

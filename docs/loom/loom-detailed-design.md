@@ -1,1098 +1,1192 @@
-# Loom — Native Agentic Version Control: Detailed Design
+# Loom VCS Core Specification
 
-> Status: design proposal (v3-detail). Not implemented. This document specifies the
-> end-goal reimagining of AgentForge into **Loom**, a native agentic version-control
-> substrate. The strategy and the honest verdict are settled (see Preamble); this
-> document is the implementation-grade depth: object schemas, the Transform algebra,
-> `reapply` semantics, the admission pipeline, wire formats, the detector rebuild,
-> the schema migration, per-phase engineering criteria, and worked examples.
+> Specification: `0.1.0-draft`
+>
+> Status: normative pre-1.0 draft
+>
+> Product: **Loom**
+>
+> Compatibility: wire and storage formats may change before `1.0`
 
-## Preamble (read this first — it is deliberately un-hyped)
+This document specifies Loom, a native version-control system for software
+development in which humans, agents, and automation are first-class actors.
+It evolves the original Loom detailed design into the authoritative core
+specification. Git interoperability is required for migration and ecosystem
+compatibility, but Git and GitHub are not Loom's source of truth.
 
-Loom is a **git-CLASS** model — content-addressed objects, a lineage DAG, LCA/merge-base
-base selection, and text 3-way merge on the blocking path — with a **novel identity,
-trust root, provenance model, and governance gate**. It does **not** eliminate the git
-_model_; it eliminates git-the-implementation and GitHub-the-host as dependencies, and
-inverts the coupling so intent+provenance become first-class.
+The specification index is [README.md](README.md). Merge behavior is refined by
+[reapply-merge-engine.md](reapply-merge-engine.md), and required evidence is
+defined by [validation-plan.md](validation-plan.md).
 
-Four honesty constraints hold throughout and are never re-argued:
+## 1. Normative language and status
 
-1. **Attested, not proven.** Provenance records _who/which model/which prompt/tools/context_
-   produced a change and binds it cryptographically. It does **not** prove the code is
-   correct, secure, or that the claimed model actually produced it. `attested` confidence
-   is non-blocking by construction (reuses `BLOCKABLE_CONFIDENCES = {verified, observed}`).
-2. **Text lane is authoritative.** The TEXT representation of a change is mandatory and
-   decides all blocking facts. The SEMANTIC (AST/op) lane is additive enrichment and covers
-   ~0 languages at v1. Detectors are **rebuilt** to parse a Fabric-computed diff view.
-3. **`reapply` only wins for mechanical, deterministic transformations** (codemods,
-   migrations, dependency/security remediation, generated code). For creative logic it
-   degrades to a recorded diff.
-4. **P2 (a governance + provenance LAYER on git) is the realistic product.** Owning the
-   substrate (P3+) is a **kill-gated research track**, not a promised destination.
+The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHOULD**, **SHOULD NOT**,
+and **MAY** are normative as defined by RFC 2119 and RFC 8174.
 
-## Table of contents
+The target model in this document is normative even where the current
+TypeScript prototype is smaller. A prototype mismatch is an implementation gap,
+not an implicit specification amendment.
 
-1. Scope & non-negotiables
-2. Object & change model (AFOM)
-3. Transform algebra & `reapply` (STOP)
-4. Governance write-path (RATP) & re-homing
-5. Detector rebuild
-6. Persistence schema migration
-7. Distribution (RSP)
-8. Ledger, witnesses & trust
-9. Identity, Grants & provenance (PXP / PAL)
-10. Module layout
-11. Phased roadmap & kill-gates
-12. Test & conformance strategy
-13. Repository/history migration
-14. Worked end-to-end scenario
-15. Risk register
-16. Open questions
-17. Gap register (today → end goal)
-18. Independent stress-test & scope revision
+Conformance profiles are:
 
----
+| Profile           | Required behavior                                                                                                                                                       |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LOOM-CORE`       | Canonical objects, native States and Transforms, local Lines, working-copy materialization, merge/reapply safety, durable storage, recovery, and integrity verification |
+| `LOOM-AUTHORITY`  | Shared Lines, actor verification, Grants, policy evaluation, atomic admission, audit records, and a tamper-evident ledger                                               |
+| `LOOM-AGENT`      | Structured Intents, recipe execution, agent-run provenance, delegated agent capabilities, and effect declarations                                                       |
+| `LOOM-WITNESSED`  | External checkpoint witnesses, consistency proofs, split-view detection, and offline verification bundles                                                               |
+| `LOOM-GIT-BRIDGE` | Safe Git import, export, and mirror behavior without making Git canonical                                                                                               |
 
-## 1. Scope & non-negotiables
+An implementation MUST state the exact profiles and specification version it
+claims. It MUST NOT claim general Loom conformance based only on a subset of
+prototype libraries.
 
-**In scope:** the object model, change model, governance write-path, distribution, trust
-anchor, identity, provenance, and the phased plan to get there from today's GitHub-first
-AgentForge (`v1.1.0`).
+## 2. Product vision
 
-**Reused verbatim from AgentForge** (`@agentforge/core`, `@agentforge/policy`,
-`@agentforge/evidence`, `@agentforge/records`, `@agentforge/security`, and the _routing_
-half of `@agentforge/reviewers`): `VerifiedFact`, `PolicyResult`, `EvidenceRequirement`,
-`ReviewerRequirement`, `ChangeControlRecord`, the `confidenceCanBlock` rule, the policy
-evaluator, and exports/compliance packaging. These are re-homed onto Transforms (§4).
+Loom replaces commit-and-merge workflows with intent-driven, independently
+verifiable transformations. A change is not only a byte delta. It is a binding
+among:
 
-**Discarded:** `@agentforge/github` in its entirety, the GitHub `ScmProvider` impl, the
-CODEOWNERS parser + GitHub team/review validators, check-run publication, webhook
-delivery/replay, and the `PullRequest`/`headSha`/`baseBranch` vocabulary (§6).
+- a machine-readable Intent;
+- the base State;
+- typed operations and their declared effects;
+- the resulting State;
+- actor identity and delegated authority;
+- deterministic checks and evidence;
+- human decisions where policy requires them;
+- provenance attestations; and
+- an admitted position in shared history.
 
-**Non-negotiables:** (N1) object identity, addressing, and the wire protocol are Loom's,
-not git's or GitHub's; (N2) integrity is client-verifiable against a witnessed Ledger, not
-by trusting a host (degrades honestly in single-tenant, §8); (N3) every Transform carries a
-first-class provenance attestation (attested, not proven); (N4) governance is the
-shared-history admission protocol, not a bolt-on check.
+Loom is designed around these realities:
 
----
+1. Many agents may work concurrently and continuously.
+2. Agents need bounded authority rather than borrowed human credentials.
+3. Mechanical transformations should be replayable when their base moves.
+4. Free-form model output is nondeterministic and must degrade safely to bytes.
+5. Humans need inspectable text, explicit risk, and approval of the exact result.
+6. Version-control correctness is a durability and security problem before it is
+   an automation problem.
 
-## 2. Object & change model (AFOM)
+## 3. Non-negotiable invariants
 
-AFOM (AgentForge Object Model) is the content-addressed store. Encoding is **IPLD
-dag-cbor** (canonical, deterministic); addresses are **CIDv1 + multihash**. The hash is
-`sha2-256` at v1 with documented **multihash agility** toward BLAKE3 (the swap is gated to
-P4 behind a dual-hash transition window; see §16 open question 5 and risk #9). All hashing
-goes through a single `TreeHasher` abstraction so the function can be rotated.
+Every conforming implementation MUST preserve the following invariants.
 
-### 2.1 Addressing
+### 3.1 No silent loss
 
-```
-Address (CID) = CIDv1(codec = dag-cbor (0x71), multihash = sha2-256(canonical_dagcbor(object)))
-Text form: "bafy…" (base32). In-code type: `type Cid = string & { __brand: "cid" }`.
-```
+Every input operation is either represented in the resulting State, proven
+redundant by an explicit equivalence rule, or surfaced as a typed conflict. A
+merge, reapply, synchronization, recovery, or garbage-collection operation MUST
+NOT silently discard user or agent work.
 
-`Fabric.put(object) -> Cid` computes the canonical encoding and hash; `Fabric.get(cid)`
-returns bytes; `Fabric.has(cid) -> bool`. `verifyAddress(cid, bytes)` re-hashes and rejects
-on mismatch (a single bit flip fails). Objects are immutable and de-duplicated by CID.
+### 3.2 Content-addressed integrity
 
-### 2.2 Object kinds (TS surface — canonical source of truth)
+Immutable objects are identified by a digest of their canonical bytes. Clients
+MUST verify an object's address before using it. Invalid objects MUST be rejected
+or quarantined and MUST NOT become reachable from a Line.
+
+### 3.3 Byte-authoritative state
+
+The byte representation is the executable source of truth. Semantic facets MAY
+add structure, facts, or review assistance, but they MUST NOT clear or lower a
+blocking fact derived from authoritative bytes. A semantic facet admitted as
+verified MUST reconstruct the exact authoritative bytes.
+
+### 3.4 Governed shared history
+
+Local authoring MAY be ungoverned. A Shared Line advances only through the
+admission protocol. Authorization, structural validation, policy evaluation,
+evidence, and required approvals are part of that state transition rather than
+an external status check.
+
+### 3.5 Exact-result approval
+
+Human approval is bound to an exact Transform and result State. Any merge or
+reapply that changes the result creates a new Transform and invalidates prior
+human approvals unless the approval predicate explicitly and safely covers the
+new result. The initial specification defines no such transferable approval;
+therefore changed results always require re-evaluation.
+
+### 3.6 Attested, not proven
+
+Provenance proves that a key signed a claim and that the claim is bound to
+specific content. It does not by itself prove that an opaque model produced the
+content, that the claim is truthful, or that the software is secure or correct.
+
+### 3.7 Crash-safe acknowledgement
+
+An authority MUST NOT acknowledge an admitted Line update until the objects,
+admission record, ledger event, and new head are durable according to the
+declared storage profile. Recovery MUST deterministically complete or roll back
+an interrupted update without exposing a partially admitted head.
+
+## 4. Scope and non-goals
+
+The pre-1.0 specification covers:
+
+- canonical encoding and addressing;
+- native object, State, Transform, Intent, Recipe, and Line models;
+- stable node identity and exact move tracking;
+- local and shared history;
+- working-copy materialization and change capture;
+- text three-way merge, typed conflicts, and deterministic reapply;
+- actor identity, delegation, capability Grants, and revocation;
+- deterministic governance and atomic admission;
+- DSSE/in-toto provenance;
+- tamper-evident admission history and optional external witnesses;
+- native replication and synchronization;
+- storage durability, recovery, backup, and garbage collection;
+- Git migration and interoperability; and
+- conformance and security requirements.
+
+The specification does not claim:
+
+- that model authorship can be cryptographically proven from a hosted model;
+- that semantic merge is sound for arbitrary programs;
+- that passing policy means code is safe, correct, compliant, or vulnerability-free;
+- that every operation is automatically mergeable;
+- that a single authority with self-operated witnesses is host-independent;
+- backward wire compatibility before `1.0`; or
+- automatic migration of trust, provenance, or stable identity from historical
+  Git commits where those facts never existed.
+
+## 5. Terminology
+
+| Term                | Meaning                                                                                               |
+| ------------------- | ----------------------------------------------------------------------------------------------------- |
+| **Space**           | A versioned project namespace, trust root, and collection of Lines                                    |
+| **Blob**            | Immutable raw bytes or a chunk manifest                                                               |
+| **Cell**            | A typed, stable-identity unit normally materialized as a file-like entry                              |
+| **Weave**           | An immutable path tree mapping segments to Cells, sub-Weaves, or external references                  |
+| **State**           | A complete immutable snapshot of a Space's materializable content                                     |
+| **NodeIdent**       | Stable identity of a Cell across moves and content changes                                            |
+| **Intent**          | Structured goal, acceptance criteria, constraints, and evidence expectations                          |
+| **Operation**       | Typed mutation from a base State toward a result State                                                |
+| **Transform**       | Content-addressed unit of change binding Intent, operations, effects, base, and result                |
+| **Recipe**          | Pinned executable description of a mechanical transformation                                          |
+| **Line**            | Named mutable reference to an admitted Transform and its result State                                 |
+| **Local Line**      | Client-owned Line that does not require shared admission                                              |
+| **Shared Line**     | Authority-controlled Line that advances only through admission                                        |
+| **Proposal**        | Immutable request to admit a Transform set to a Shared Line                                           |
+| **Grant**           | Signed, attenuating capability delegated to an actor                                                  |
+| **AdmissionRecord** | Immutable decision record binding a proposal, policy result, evidence, approvals, and head transition |
+| **RejectionRecord** | Immutable failed-admission record that binds reasons and evidence without advancing a Line            |
+| **Ledger**          | Append-only commitment to admitted transitions and security events                                    |
+| **Working copy**    | Filesystem projection of a State plus a journal of local changes                                      |
+
+## 6. Canonical encoding and addressing
+
+### 6.1 Codecs and hashes
+
+Normative structured objects MUST use canonical DAG-CBOR. Raw byte chunks MUST
+use the multicodec `raw` codec. Object addresses MUST use CIDv1, lowercase
+base32 text form, and multihash.
+
+The mandatory pre-1.0 hash is SHA-256. Implementations MUST route hashing through
+an algorithm-agile interface but MUST NOT create non-SHA-256 normative objects
+until a later specification defines negotiation and migration.
+
+Canonical encoders MUST:
+
+- produce one byte representation for one logical object;
+- reject duplicate map keys;
+- reject non-canonical integer and length encodings;
+- reject unsupported floating-point values;
+- preserve byte strings exactly;
+- include an explicit schema version in every structured object; and
+- reject an unsupported major schema version.
+
+Unknown fields in a known schema version MUST be rejected unless that schema
+explicitly marks an extension map. This prevents different implementations from
+hashing or interpreting the same object differently.
+
+### 6.2 Object verification
+
+`put(cid, bytes)` MUST recompute the CID before making an object reachable.
+`get(cid)` MUST return bytes whose digest matches the requested CID or fail with
+`HashMismatch`. Receivers MUST enforce configured limits before allocating or
+decompressing attacker-controlled content.
+
+### 6.3 Address domain separation
+
+Where an identifier is derived rather than a CID, Loom MUST use a versioned
+domain-separation string. Implementations MUST NOT reuse a digest directly across
+object addresses, node identities, signature messages, and cache keys.
+
+## 7. Loom object model
+
+The following TypeScript-like definitions are illustrative. The requirements in
+the surrounding prose are authoritative; machine-readable canonical schemas
+must be frozen and published before the Phase 0 exit gate can pass.
+
+### 7.1 Blob and chunking
 
 ```ts
-// A raw byte object (leaf). Large blobs are content-defined-chunked (FastCDC) into
-// a Blob tree; small blobs stored inline.
-interface Blob {
-  kind: "blob";
-  size: number;
-  chunks?: Cid[];
-  inline?: Uint8Array;
+interface BlobManifest {
+  kind: "loom.blob";
+  schema: 1;
+  size: bigint;
+  chunks: Array<{ cid: Cid; size: number }>;
 }
+```
 
-// A Cell is the typed unit of STATE. Every Cell has a *stable identity* (NodeIdent)
-// that survives moves/renames, plus a content CID that changes when content changes.
-type CellFacet = "bytes" | "text" | "structured" | "ast";
+Small content MAY be stored as one raw object. Large content SHOULD use
+content-defined chunking with a versioned parameter set. Chunk boundaries are a
+storage optimization and MUST NOT change the logical byte stream. The manifest
+MUST commit to total size, ordered chunks, and each chunk size.
+
+### 7.2 Cell and facets
+
+```ts
 interface Cell {
-  kind: "cell";
-  facet: CellFacet;
-  ident: NodeIdent; // stable identity (see 2.3)
-  content: Cid; // -> Blob (bytes/text) or a structured/ast node object
-  meta?: { mode?: number; symlinkTarget?: string; encoding?: "utf8" | "opaque" };
-  // OpaqueFragment fallback: any Cell may store byte-exact `content` even when a
-  // higher facet (ast) cannot be produced; `facet:"bytes"` is the universal floor.
+  kind: "loom.cell";
+  schema: 1;
+  ident: NodeIdent;
+  bytes: Cid;
+  size: bigint;
+  mediaType?: string;
+  mode?: number;
+  entryType: "regular" | "executable" | "symlink" | "opaque";
+  facets?: Record<string, { content: Cid; projector: Cid }>;
 }
-
-// A Weave is a tree: an ordered, path-keyed map of entries. It represents a directory.
-interface Weave {
-  kind: "weave";
-  entries: Record<string /*path segment*/, WeaveEntry>;
-}
-type WeaveEntry =
-  | { type: "cell"; cid: Cid } // a file/leaf Cell
-  | { type: "weave"; cid: Cid } // a subtree
-  | { type: "gitlink"; target: Cid }; // submodule-class pointer (P1 interop)
-
-// A State is a whole-tree snapshot: the root Weave plus content-addressed metadata.
-interface State {
-  kind: "state";
-  root: Cid; // -> Weave
-  identIndex: Cid; // -> IdentityIndex (NodeIdent -> path), enables O(1) move detect
-  createdAt: string; // RFC3339, informational only (not part of identity semantics)
-}
-
-// A Transform is THE unit of change (see §3 for ops/algebra).
-interface Transform {
-  kind: "transform";
-  parents: Cid[]; // lineage edges (usually 1; >1 for reconciliation)
-  baseState: Cid; // -> State this Transform was authored against
-  resultState: Cid; // -> State produced by applying ops to baseState
-  ops: Op[]; // STOP operations (§3.2)
-  effects: Effect[]; // declared effects (§3.3), verified against ops at admission
-  intent: Cid; // -> Intent
-  author: Did; // §9 identity
-  recipe?: Cid; // -> Recipe (present => reapply-eligible, §3.6)
-  provenance: Cid[]; // -> DSSE attestation envelopes (§9.6)
-  authoredAt: string;
-  sig: Signature; // author signature over the canonical header (excl. sig)
-}
-
-// A Line is a named moving pointer to a State + lineage. Two kinds.
-interface Line {
-  kind: "line";
-  name: string; // e.g. "line:shared:main" | "line:local:agent-7/remediate"
-  scope: "local" | "shared";
-  head: Cid; // -> Transform (tip)
-  controller?: Did; // shared lines: the admission authority root (grants chain to it)
-}
-
-// An Intent is a first-class, machine-readable goal + acceptance criteria.
-interface Intent {
-  kind: "intent";
-  title: string;
-  criteria: IntentCriterion[];
-  author: Did;
-}
-type IntentCriterion =
-  | { kind: "attestation"; statement: string } // "security-team ratifies"
-  | { kind: "check"; statement: string; check: Cid }; // -> Recipe producing a verdict
 ```
 
-### 2.3 Stable identity (NodeIdent) — the rename/move solution
+`bytes` is REQUIRED and authoritative. A symlink's bytes are its link target;
+materializers MUST treat that target as data until the symlink creation phase.
+Semantic or structured facets are OPTIONAL. A verified facet MUST identify a
+pinned projector and satisfy:
 
-Git detects renames _heuristically at diff time_ and never stores identity. AFOM assigns
-each Cell a **NodeIdent** at creation that is carried through moves, so identity is a fact,
-not a guess.
-
-```
-NodeIdent = "nid:" + base32( sha2-256( birthContext ) )
-  birthContext = { creatingTransformCid, creationOrdinal, initialPath }  // stable, unique
+```text
+project(projector, facet.content) == authoritative bytes
 ```
 
-- `move_node`/rename changes the Cell's _path in the Weave_ and updates the `IdentityIndex`
-  (`NodeIdent -> currentPath`), but the Cell's `ident` and (if content unchanged) its
-  `content` CID are unchanged. **No similarity heuristic is ever used.**
-- The `IdentityIndex` in each `State` gives O(1) "where is nid now" and O(1) move detection
-  between two States (compare index entries), which detectors and merge rely on (§3, §5).
-- Consequence tested in §12: after a pure move, the moved Cell's content CID is byte-identical
-  and rename detection is exact (fabric→git export is lossless; git→fabric import only
-  recovers git's guessed rename — asymmetric fidelity, documented in §13).
+If equality cannot be reproduced, the facet MUST be rejected or treated as
+unverified advisory metadata.
 
-### 2.4 Literal example object (a text Cell + its Weave entry)
+### 7.3 Paths and Weaves
 
-```json
-// Blob (content of src/util.ts), dag-cbor shown as JSON for readability
-{ "kind":"blob", "size":812, "inline":"<utf8 bytes>" }              // -> bafyBlobUtil
-
-{ "kind":"cell", "facet":"text", "ident":"nid:2h7f…",
-  "content":"bafyBlobUtil", "meta":{"mode":33188,"encoding":"utf8"} }  // -> bafyCellUtil
-
-{ "kind":"weave", "entries":{
-    "src": { "type":"weave", "cid":"bafyWeaveSrc" } } }              // -> bafyWeaveRoot
-// where bafyWeaveSrc.entries["util.ts"] = { "type":"cell", "cid":"bafyCellUtil" }
-
-{ "kind":"state", "root":"bafyWeaveRoot", "identIndex":"bafyIdx", "createdAt":"2026-07-06T…" }
-```
-
-### 2.5 State = deterministic fold of history (no stored working copy)
-
-Current state is defined as a **fold** over the Transform DAG from genesis:
-`fold(genesisState, [T1..Tn]) = Tn.resultState` where each `Ti.baseState == T(i-1).resultState`
-on a linear Line. This is verifiable: re-executing `fold` from genesis must reproduce the
-head State CID bit-for-bit (a determinism-replay test, §12). Working copies for toolchains
-are _materialized_ from a State on demand (§4.7 / App working-copy notes), never the source
-of truth.
-
----
-
-## 3. Transform algebra & `reapply` (STOP)
-
-STOP (Semantic Transform & Operation Protocol) defines the operations a Transform is made
-of, how facts are derived from them (dual-lane), and the `reapply` operation.
-
-### 3.1 Operation set (the `Op` union)
+A Loom path is an ordered sequence of byte-string segments. A segment MUST NOT
+be empty and MUST NOT contain NUL or `/`. `.` and `..` are forbidden as complete
+segments. The canonical model is case-sensitive and performs no Unicode
+normalization.
 
 ```ts
-type NodeSelector = { nid: NodeIdent } | { path: string }; // resolve via State.identIndex
+interface Weave {
+  kind: "loom.weave";
+  schema: 1;
+  entries: Array<{ segment: ByteString; value: WeaveEntry }>;
+}
 
-type Op =
-  | { op: "put_cell"; facet: CellFacet; ident: NodeIdent; at: string /*path*/; content: Cid }
-  | { op: "delete_cell"; sel: NodeSelector }
-  | { op: "move_cell"; sel: NodeSelector; to: string /*new path*/ } // identity preserved
-  | { op: "put_prop"; sel: NodeSelector; key: string; value: Cid } // mode, symlink, etc.
-  | { op: "patch_chunk"; sel: NodeSelector; range: [number, number]; content: Cid } // sub-blob text edit
-  | { op: "put_node"; sel: NodeSelector; nodePath: string; value: Cid } // SEMANTIC lane (AST node)
-  | { op: "delete_node"; sel: NodeSelector; nodePath: string } // SEMANTIC lane
-  | { op: "put_artifact"; ident: NodeIdent; at: string; blob: Cid }; // generated/binary output
+type WeaveEntry =
+  | { type: "cell"; cid: Cid }
+  | { type: "weave"; cid: Cid }
+  | { type: "external"; target: Cid; mediaType: string };
 ```
 
-Each op has **preconditions** (checked at apply) and **postconditions** (checked to derive
-`resultState`). Examples:
+`entries` is an array because DAG-CBOR map keys are strings, while Loom path
+segments are arbitrary permitted bytes. Entries MUST be sorted
+lexicographically by raw segment bytes and MUST NOT contain duplicate segments.
 
-| op                       | precondition                         | postcondition                                                        |
-| ------------------------ | ------------------------------------ | -------------------------------------------------------------------- |
-| `put_cell`               | `at` free, or existing cell replaced | Weave has cell at `at` with `ident`; `identIndex[ident]=at`          |
-| `delete_cell`            | `sel` resolves                       | cell removed; `identIndex[ident]` removed                            |
-| `move_cell`              | `sel` resolves; `to` free            | path changes; **same `ident` & content CID**; `identIndex[ident]=to` |
-| `patch_chunk`            | range within blob; facet=text/bytes  | new content CID = spliced blob                                       |
-| `delete_node` (semantic) | AST node exists at `nodePath`        | AST updated; **and** projected text updated (see 3.5)                |
+Display paths MAY use escaped UTF-8. Implementations MUST preserve original path
+bytes. A materializer MUST fail before mutation if the destination filesystem
+cannot represent two distinct Loom paths, including case-folding or Unicode
+normalization collisions.
 
-Applying an absent-node op is a typed error (`OpPreconditionFailed`), never a silent no-op.
+### 7.4 State
 
-### 3.2 Declared effects vocabulary
-
-`Transform.effects` is a set drawn from a closed, versioned vocabulary. At admission,
-declared effects are checked to be a **superset** of the effects implied by `ops`
-(under-declaration ⇒ rejected; over-declaration ⇒ allowed but flagged).
-
-```
-Effect ∈ {
-  adds_dependency, bumps_dependency_major, bumps_dependency_minor, removes_dependency,
-  adds_migration, deletes_migration,
-  deletes_test, skips_test, weakens_assertion, reduces_coverage_threshold,
-  changes_ci, touches_sensitive_path, adds_secret_like_value,
-  moves_cell, adds_generated_artifact, edits_source, deletes_source
+```ts
+interface State {
+  kind: "loom.state";
+  schema: 1;
+  space: SpaceId;
+  root: Cid;
+  identityIndex: Cid;
 }
 ```
 
-`effectBoundsOf(effects) -> EffectBounds` (a pure, tested projection, §16 Q8) yields the
-bounds a Grant authorizes against (§9.5): `{ maxCellsTouched, allowDelete, allowSensitive,
-allowedEffectKinds }`.
+A State contains no wall-clock timestamp. Metadata that should not affect the
+snapshot MUST live in an attestation or event object. `identityIndex` maps every
+reachable `NodeIdent` to exactly one path. It is a deterministic acceleration
+structure and MUST agree with the Weave; disagreement invalidates the State.
 
-### 3.3 Dual-lane model & the fact-authority rule
+### 7.5 Stable node identity
 
-Every Transform has a **TEXT lane** (mandatory: the byte-exact result, always present via
-the `bytes`/`text` facet) and an optional **SEMANTIC lane** (`ast`/structured ops for
-instrumented authors/languages). The lanes must agree by construction:
+The original design derived a NodeIdent from the creating Transform CID, which
+is circular because the Transform contains the operation that introduces the
+NodeIdent. This specification replaces that construction.
 
-- **Projection invariant:** for any Cell with a semantic facet, `reconstruct(ast) == bytes`.
-  This is enforced at `Fabric.put` — a Cell whose reconstructed bytes do not equal its
-  `bytes` facet is **rejected** (a lossy facet cannot enter the store). Property-tested in §12.
-- **Fact-authority / disagreement rule (fail-closed):** the **TEXT lane decides all blocking
-  facts.** The semantic lane may only **add** findings or **raise** severity/confidence; it
-  may **never clear or lower** a text-derived blocking fact. If the semantic lane says "safe"
-  and the text lane says `deletes_test`, the text fact wins and blocks. This mirrors the
-  existing `confidenceCanBlock` design.
+An authoring session MUST generate a cryptographically random 256-bit
+`creationNonce`. A new Cell identity is:
 
-### 3.4 Transform serialization (end to end)
-
-```
-1. Author computes ops against baseState; applies them to derive resultState (State CID).
-2. Author sets effects (>= implied), intent CID, optional recipe CID.
-3. Canonical header = dag-cbor of Transform minus `sig`.
-4. sig = Ed25519(authorKey, sha2-256(canonicalHeader)).   // key valid at authoredAt (§9.2)
-5. Fabric.put(Transform) -> transformCid.  Provenance envelopes (§9.6) reference this CID.
+```text
+NodeIdent = multibase(
+  sha2-256(
+    "loom-node-v1" || canonical(space, authorDid, creationNonce, ordinal)
+  )
+)
 ```
 
-### 3.5 `reapply` algebra
+The nonce and author are included in the Transform. `ordinal` is the zero-based
+creation order within that Transform. An implementation MUST reject duplicate
+NodeIdents in a State. A move preserves the NodeIdent and content; copying creates
+a new NodeIdent unless an explicit alias object is introduced by a future spec.
 
-`reapply` rebases the **intent/transformation**, not the diff. It is defined only when
-`Transform.recipe` is present.
+### 7.6 Intent
+
+```ts
+interface Intent {
+  kind: "loom.intent";
+  schema: 1;
+  title: string;
+  goal?: string;
+  criteria: IntentCriterion[];
+  constraints?: Constraint[];
+  labels?: string[];
+}
+```
+
+Intent text is a claim, not an enforcement mechanism. Machine-enforceable
+criteria MUST reference a pinned check, policy, or attestation predicate.
+
+### 7.7 Recipe
 
 ```ts
 interface Recipe {
-  engine: string;              // e.g. "dep-bump" | "codemod:jscodeshift" | "sed-rule"
+  kind: "loom.recipe";
+  schema: 1;
+  engine: string;
   determinismClass: "pinned" | "environment-sensitive" | "nondeterministic";
-  toolchain: ToolchainLock;    // pinned tool digests (CIDs) — see 3.7
-  rule: Cid;                   // the transformation program (a Blob)
-  inputSelector: NodeSelector[]; // which cells the rule reads/writes
-  expectedResultDigest?: { sha256: string }; // optional pin of the authored output
+  toolchain: {
+    engineDigest: Cid;
+    runtimeDigest: Cid;
+    environment: Record<string, string>;
+  };
+  rule: Cid;
+  inputSelector: NodeSelector[];
+  writeScope: NodeSelector[];
+  invariants: Invariant[];
+  expectedEffectFingerprint?: Cid;
 }
-
-reapply(t: Transform, newBase: State) -> ReapplyOutcome
 ```
 
-Semantics: re-execute `t.recipe.rule` under `t.recipe.toolchain` against `newBase`
-(restricted to `inputSelector`), producing `candidateState`. Outcomes:
+`expectedEffectFingerprint` commits to the expected writes or semantic effects,
+not the entire result State. Pinning the entire State would make legitimate
+reapply over an advanced base diverge because of unrelated changes.
+The `toolchain` object and each selector list are explicit even when their maps
+or arrays are empty; omitted ambient environment values cannot be part of a
+`pinned` Recipe.
+
+### 7.8 Transform
 
 ```ts
-type ReapplyOutcome =
-  | { kind: "CleanReapply"; resultState: Cid; recomputed: true } // rule ran; result derived from newBase
-  | { kind: "Divergence"; expected: Cid; actual: Cid; report: Cid } // rule ran but output != authored intent shape
-  | {
-      kind: "HardFailure";
-      reason: "precondition" | "toolchain_mismatch" | "engine_error";
-      detail: string;
-    };
+interface Transform {
+  kind: "loom.transform";
+  schema: 1;
+  space: SpaceId;
+  parents: Cid[];
+  baseState: Cid;
+  resultState: Cid;
+  intent: Cid;
+  author: Did;
+  creationNonce: ByteString;
+  operations: Operation[];
+  declaredEffects: Effect[];
+  recipe?: Cid;
+  derivedFrom?: Cid[];
+}
 ```
 
-- **CleanReapply** — the rule applied to `newBase` succeeds and (if `expectedResultDigest`
-  set) matches the invariant shape; `resultState` is the _recomputed_ State. Divergent base
-  edits that don't conflict with the rule's input set are absorbed automatically.
-- **Divergence** — the rule ran but produced something outside the authored intent (e.g. a
-  human hand-edited a target cell in a way the rule now transforms differently). Never
-  silently accepted: emits a `report` object for human/agent adjudication.
-- **HardFailure** — preconditions gone, toolchain digest mismatch (determinism self-check
-  failed), or the engine errored. Falls back to text 3-way merge over LCA (git-class).
+The Transform MUST NOT contain its own signature or post-address provenance
+attestations. Including those fields creates a content-addressing cycle: the
+signature or attestation needs the Transform CID, while the CID would need the
+signature or attestation bytes. Instead, signatures and attestations are
+separate objects that subject-pin the completed Transform CID.
 
-`reapply` only _wins_ when `determinismClass == "pinned"`. For `nondeterministic` recipes it
-is not attempted (the Transform degrades to a recorded text diff, honesty constraint 3).
+For a linear Transform, `parents` contains the current parent Transform and
+`baseState` MUST equal that parent's result State. A reconciliation Transform
+contains every reconciled head in `parents`, uses the selected LCA State as
+`baseState`, and produces the merged `resultState`.
 
-### 3.6 Worked example — a codemod across N files, base advances
+A reapply onto a new head MUST use that new head as its history parent and SHOULD
+put the original Transform in `derivedFrom`. It MUST NOT claim the original
+Transform as its sole history parent when its base is a different Line head.
 
-Authored change `T1`: a codemod `renameFn: foo(x) -> foo(x, ctx)` across 40 cells, recipe
-`engine:"codemod:jscodeshift"`, `determinismClass:"pinned"`, `rule = bafyRule`,
-`toolchain = {jscodeshift@X (digest), node@Y (digest)}`. `T1.baseState = S0`.
+`parents` and `derivedFrom` are canonical CID sets: sorted by CID bytes and
+duplicate-free. `operations` is an ordered program and MUST retain its authored
+order. `declaredEffects` is a canonical set under the effect registry's encoded
+sort order.
 
-While `T1` is in review, `S0 -> S1` lands a **conflicting** hand edit: a teammate changed
-`callers/a.ts` to add a new call `foo(y)` (which the codemod must also rewrite).
-
-- **git 3-way merge** over LCA `S0`: `callers/a.ts` was changed by both sides (codemod
-  rewrote existing calls; human added `foo(y)`) → **textual conflict** requiring manual
-  resolution, and the human's new `foo(y)` is _not_ transformed (the codemod already ran).
-- **Loom `reapply(T1, S1)`**: re-executes `renameFn` against `S1`. The rule now sees
-  `foo(y)` too and rewrites it to `foo(y, ctx)`. Outcome `CleanReapply` with a recomputed
-  `resultState` where **all** calls — including the human's new one — are correctly
-  transformed. No conflict; the intent ("rename this function everywhere") is preserved
-  rather than the diff.
-
-Objects produced: `T1'` with `baseState = S1`, recomputed `resultState = S2'`, same
-`recipe`/`intent`, new `provenance` (a fresh `loom.agent-run`/`deterministic-check` for the
-reapply run), `parents = [T1]` (the reapply is lineage-linked to the original intent).
-
-### 3.7 Determinism boundary (which facts are replayable vs attested)
-
-- **Replayable-by-content-hash (may block):** any fact that is a pure function of
-  content-addressed inputs under a pinned detector. Cache key:
-
-  ```
-  factCacheKey = sha2-256( DETECTOR_REGISTRY_VERSION
-                         ⧺ baseState.cid ⧺ resultState.cid
-                         ⧺ diffViewDigest ⧺ toolchainDigest ⧺ policyVersionHash )
-  factCid = Fabric.put(VerifiedFact[])   // re-derivable by re-running loom-detect@version
-  ```
-
-  These map to `confidence ∈ {verified, observed}` and are the **only blockable** facts.
-
-- **Attested point-in-time (never blocks):** anything depending on wall-clock, network,
-  locale, tool nondeterminism, benchmark numbers, or LLM output. Recorded as attestations
-  with the captured environment; map to `confidence ∈ {attested, inferred}`.
-
-`ToolchainLock` digests are part of the key so a tool upgrade invalidates the cached facts
-(forces re-derivation), preserving reproducibility.
-
----
-
-## 4. Governance write-path (RATP) & re-homing
-
-RATP (Ratification & Admission Protocol) is where **governance becomes the write path**.
-Local authoring is instant and ungoverned; entering a **Shared Line** runs the full
-AgentForge evaluator atomically.
-
-### 4.1 Two-tier write model
-
-- **Local Line append** — `O(1)`: content-address the Transform, add a lineage edge. No
-  coordination, no governance. Target `< 20ms`. Agent fleets author fully concurrently on
-  isolated Local Lines (zero contention).
-- **Shared Line admission (Ratification)** — the governed event. Serialized per Shared Line
-  via optimistic concurrency (expected-head CAS). Target `p50 < 2s`, `p95 < 3s`. Throughput
-  scales by **sharding Shared Lines** (per service/package); a single hot Line serializes
-  (the same limit git monorepo merge-queues face — conceded).
-
-### 4.2 Admission pipeline (pseudocode)
-
-```
-ratify(req: AdmissionRequest) -> Ratification | Rejection:
-  # req = { line, headTransform, intent, expectedLineHead, grantChain[], attestations[], idempotencyKey }
-  assertIdempotent(req.idempotencyKey)                      # dedupe (returns prior result if seen)
-  line   := loadShared(req.line)
-  if line.head != req.expectedLineHead: return RebaseRequired(lca(line.head, req.headTransform))
-  ts     := collectTransformSet(req.headTransform)          # tip back to LCA(line.head)
-  base   := lca(line.head, req.headTransform).resultState
-
-  # 1. structural validation
-  verifyTransforms(ts)                                      # sigs, effects⊇implied, resultState folds
-  # 2. authorization (Grants replace CODEOWNERS/OAuth authority)
-  for t in ts: authorize(req.grantChain, t.author, t.effects, cellsTouched(t), line.controller)
-  # 3. derive facts (REBUILT detectors over the Fabric diff view)
-  diff   := fabricDiffView(base, ts.resultState)            # ChangedFile[]-shaped, from Fabric not GitHub
-  facts  := detect(diff, base, ts)                          # VerifiedFact[]  (REUSED type)
-  # 4. governance evaluation (REUSED evaluator, unchanged logic)
-  result := evaluateTransformSet(ts, base, facts, policyForLine(line))   # -> PolicyResult
-  # 5. evidence + reviewers (REUSED)
-  evidence  := resolveEvidence(result.requiredEvidence, ts, req.attestations)
-  reviewers := routeReviewers(result.requiredReviewers, req.grantChain)  # Grant-based ownership
-  # 6. decision
-  status := decide(result, evidence, reviewers)             # pass | warn | block
-  ccr    := buildChangeControlRecord(line, ts, base, result, evidence, reviewers, status)  # REUSED shape
-  if status == block and not overridden(req): return Rejection(ccr)
-  # 7. atomic admit: two-phase
-  writeAhead(ts, ccr, ratification, ledgerLeaf)             # durable, not yet head
-  casHeadOrAbort(line, expected=req.expectedLineHead, next=req.headTransform)  # serializable flip
-  ledger.append(ledgerLeaf); signCheckpoint(); gatherWitnessCosigs()          # §8
-  return Ratification(ccr, ledgerLeaf)
-```
-
-### 4.3 Concrete re-homing (BEFORE → AFTER)
-
-| Package              | BEFORE (git/GitHub-typed, real today)                                                                              | AFTER (Loom-native)                                                                                                                                                         |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `core/scm.ts`        | `ScmProvider.fetchPullRequestInput(env): PullRequestInput` (needs `headSha`, `baseBranch`, `changedFiles[].patch`) | **deleted** for native; a `git-bridge` `LoomProvider` implements it only in the P2 interop seam                                                                             |
-| `core/types.ts`      | `VerifiedFact.source: "github_diff" \| "github_metadata" \| …`                                                     | `source: "transform_effect" \| "fabric_diff" \| "fabric_metadata" \| "recipe" \| "attestation" \| "user_attestation"`                                                       |
-| `policy/evaluate.ts` | `evaluateMergeGuard(pr: PullRequestInput, facts, policy): PolicyResult`                                            | `evaluateTransformSet(ts: TransformSet, base: Weave, facts: VerifiedFact[], policy): PolicyResult` — **body unchanged**; only the input shape and `apply_to` scoping change |
-| `policy` `apply_to`  | `repo:` / `base:` / `head:` / `branch:` / `label:` globs                                                           | `line:` / `cell:` (path or nid selector) / `effect:` / `intent-label:` selectors                                                                                            |
-| `evidence/index.ts`  | `findEvidenceInPrBody(body)`                                                                                       | `findEvidenceInProposal(intent, attachments, attestations)` — PR-body scrape → Intent + attached attestations                                                               |
-| `reviewers/index.ts` | `routeReviewers(reqs, reviews, codeowners, teamMemberships)`                                                       | `routeReviewers(reqs, grantChain)` — routing logic **reused**; CODEOWNERS parser + GitHub team/review validators **discarded** (§5/§6)                                      |
-| `records`            | `ChangeControlRecord{ pullRequestNumber, headSha, baseBranch, repositoryFullName }`                                | `ChangeControlRecord{ proposalId, stateCid, lineRef, attestationCids[], ledgerEntryId }` (other fields reused verbatim)                                                     |
-
-`evaluateTransformSet` keeps `PolicyResult`, `VerifiedFact`, `EvidenceRequirement`,
-`ReviewerRequirement`, `strictestMode`, and `confidenceCanBlock` **byte-identical**. The
-evaluator does not know or care that the substrate changed.
-
-### 4.4 Grant-based ownership (replacing CODEOWNERS + reviews)
-
-`authorize(grantChain, actor, effects, cellsTouched, controller)` (full schema §9.5) checks
-that a capability chain rooted at the Shared Line's `controller` authorizes `actor` to apply
-`effects` over `cellsTouched`. Reviewer requirements are satisfied by a `human-approval`
-attestation (§9.6) signed by an Actor holding a Grant over the affected Cells — the
-deterministic equivalent of a CODEOWNERS-required approval, but signed and ledgered.
-
----
-
-## 5. Detector rebuild
-
-Detectors are AgentForge's differentiator and today they **are** the diff parsers
-(`packages/detectors` regexes over `ChangedFile.patch`). They must be rebuilt to consume the
-**Fabric diff view** (`fabricDiffView(base, result) -> ChangedFile[]`, which reconstructs
-git-`ChangedFile`-shaped entries from Fabric, so the _fact logic_ is reusable) plus the
-**effects/semantic lane** when present. The `VerifiedFact` output type is unchanged.
-
-Three rebuilt detectors (dual-lane: prefer effects/semantic, fall back to text):
-
-```
-detectTestDeleted(diff, ts):
-  # SEMANTIC/EFFECT lane (authoritative-eligible): a Transform declaring `deletes_test`
-  facts = []
-  for t in ts where t.effects includes deletes_test:
-     for op in t.ops where op is delete_cell and isTestPath(resolve(op.sel)):
-        facts += VerifiedFact{ type:"test_deleted", source:"transform_effect",
-                               path:resolve(op.sel), confidence:"verified", severity:"high" }
-  # TEXT lane fallback (when no effects/semantic present): reuse existing heuristic on diff
-  for f in diff where isTestPath(f.filename) and f.status=="removed":
-     facts += VerifiedFact{ type:"test_deleted", source:"fabric_diff", path:f.filename,
-                            confidence:"verified", severity:"high" }
-  return dedupe(facts)   # text lane may only ADD/RAISE, never clear (fail-closed)
-
-detectDependencyAdded(diff, ts):
-  # Prefer effects: a Transform op that put_cell/patch_chunk a manifest with adds_dependency
-  # Parse the manifest Cell's structured facet if present; else parse the text blob (reuse
-  # existing parsePackageJsonDeps / parseRequirements over the Fabric blob bytes).
-  # Emit VerifiedFact{ type:"dependency_added"|"dependency_bumped", source:"transform_effect"|"fabric_diff",
-  #                    confidence:"verified", metadata:{name,from,to,major} }
-
-detectSensitivePathChanged(diff, ts, policy):
-  # A Cell whose path (or nid's current path) matches policy.sensitive_paths[].paths.
-  # Path comes from the Weave/identIndex (exact), not from a diff header guess.
-  # Emit VerifiedFact{ type:"sensitive_path_changed", source:"fabric_metadata",
-  #                    path, confidence:"verified" } for each matching touched Cell.
-```
-
-Key wins from the rebuild: paths are **exact** (from the Weave/identIndex, not a parsed
-`+++ b/…` header); renames are **known** (nid) rather than heuristic; and effect-declared
-facts are `verified` by construction. The text-lane fallback guarantees parity with the
-current GitHub path (measured at the P2 exit gate: detector parity = 100% on
-`fixtures/repos`, §12).
-
----
-
-## 6. Persistence schema migration
-
-The Prisma schema is PR/SHA-shaped. The migration re-keys the governance tables onto Loom
-primitives and retires the GitHub-specific tables.
-
-### 6.1 Model-by-model fate (against the real `schema.prisma`)
-
-| Model (today)                                                                       | Fate                                                                                                            | Change                                                                                              |
-| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `Repository{ githubRepositoryId, fullName, defaultBranch }`                         | **transform** → `Space{ id, spaceDid, name }` (+ `Line{ id, spaceId, name, scope, headCid }`)                   | tenancy anchored on `Space`/`Actor`, not GitHub install                                             |
-| `PullRequest{ githubPullRequestId, baseBranch, headBranch, headSha, mergedAt }`     | **transform** → `Proposal{ id (proposalId:string), lineId, headTransformCid, baseStateCid, intentCid, status }` | index `[lineId, headTransformCid]`                                                                  |
-| `Evaluation{ headSha, … }`                                                          | **transform** → `Evaluation{ stateCid, … }`                                                                     | key `headSha`→`stateCid`                                                                            |
-| `ChangeControlRecord{ pullRequestNumber, headSha, baseBranch, repositoryFullName }` | **transform**                                                                                                   | → `{ proposalId, stateCid, lineRef, ledgerEntryId, attestationCids Json }`; all other fields reused |
-| `AuditEvent`, `ExportJob`, `PolicyVersion`                                          | **reuse**                                                                                                       | re-key `pullRequestId`→`proposalId`; add `ledgerEntryId?`                                           |
-| `OwnerMapping` (CODEOWNERS-derived)                                                 | **replace** → `Grant{ … }` (§9.5)                                                                               | one-shot importer seeds Grants from CODEOWNERS at P2                                                |
-| `GitHubInstallation`                                                                | **delete** (P4)                                                                                                 | tenancy via `Space`/`Actor`; kept only during P2 interop                                            |
-| `CheckRun{ githubCheckRunId, conclusion }`                                          | **delete** (P4)                                                                                                 | replaced by ledgered `Ratification` + attestations                                                  |
-| `WebhookDelivery{ deliveryId, event, action, payloadJson, replayCount }`            | **replace** → `AdmissionEvent{ idempotencyKey, requestJson, result }`                                           | RSP/RATP events replace webhook ingestion; replay → idempotent re-submit                            |
-
-### 6.2 New tables
-
-`Space`, `Line`, `Proposal`, `Grant`, `LedgerLeaf{ index, prevLeafHash, event, parentHead,
-newHead, ratificationCid, attestationCids Json, checkpointSig }`, `WitnessCosignature{
-leafIndex, witnessDid, sig }`, `Actor{ did, docCid, status }`. Fabric objects themselves
-live in a content-addressed object store (blob storage / S3-class + a `FabricObject{ cid,
-codec, size }` index), **not** as relational rows.
-
-### 6.3 `proposalId:number → string` is a real migration, not a rename
-
-`pullRequestNumber` is a `number` correlation key across `records`, `audit`, and migrations.
-Moving to `proposalId:string` (a ULID or the head Transform CID) changes column types and
-foreign keys across several tables. Sequence: **expand** (add nullable `proposalId` columns
-
-- new tables) → **backfill** (idempotent: seed `proposalId` from a deterministic
-  `git:<repo>#<pr>` namespace for imported data; seed `Grant` rows from `OwnerMapping`) →
-  **dual-write** (write both keys during P2/P3) → **contract** (drop `pullRequestNumber`,
-  GitHub tables after P4 cutover). Reversible until parity dashboards are green.
-
----
-
-## 7. Distribution (RSP)
-
-RSP (Replication & Sync Protocol) replaces `git fetch`/`push`. Transport is HTTP/2 (gRPC or
-gRPC-web); payloads are dag-cbor. All object transfer is content-addressed and idempotent.
-
-### 7.1 Operations
-
-```
-# Content-addressed object transfer
-HasObjects(cids[])            -> { missing: cids[] }
-GetObjects(cids[])            -> stream<{ cid, bytes }>          # verifyAddress on receipt
-PutObjects(stream<{cid,bytes}>) -> { stored: cids[], rejected: [{cid, reason:"HashMismatch"}] }
-
-# Streaming change session (author a Transform incrementally)
-OpenChange(line, baseState, idempotencyKey) -> changeSessionId
-AppendOps(changeSessionId, ops[], opSeq)     -> { ackSeq }       # per-op dedupe by opSeq
-SealChange(changeSessionId, intent, recipe?, provenance[]) -> transformCid
-
-# Admission & lines
-SubmitProposal(AdmissionRequest)   -> Ratification | Rejection | RebaseRequired{lca}
-Integrate(proposalId)              -> Ratification                # idempotent
-SubscribeLine(line, sinceIndex)    -> stream<LedgerLeaf>          # replaces webhooks
-```
-
-### 7.2 Idempotency, concurrency, back-pressure
-
-- **Idempotency:** `(replicaId, idempotencyKey)` for mutating calls; content-addressed
-  writes are naturally idempotent (same CID = no-op); per-op `opSeq` dedupes stream appends.
-- **Optimistic concurrency:** `SubmitProposal` carries `expectedLineHead`. On mismatch the
-  server returns `RebaseRequired{ lca }`; the client rebases (or `reapply`s, §3.5) onto the
-  new head and resubmits. This is a CAS, analogous to `--force-with-lease`, but the loser
-  never overwrites — it rebases.
-- **Back-pressure:** HTTP/2 flow-control windows plus an application **credit** scheme
-  (server grants N in-flight object credits); exhaustion returns `QuotaExceeded` with
-  `Retry-After`. Typed error model: `HashMismatch`, `RebaseRequired`, `QuotaExceeded`,
-  `WitnessQuorumUnmet`, `Unauthorized`, `OpPreconditionFailed`, each mapped to an HTTP status.
-
-### 7.3 Offline, partition, divergence, reconciliation
-
-- **Offline authoring:** Local Lines require no server. An agent authors Transforms locally
-  (content-addressed), then syncs objects (`PutObjects`) and `SubmitProposal` on reconnect.
-- **Partition / two divergent heads on a _federated_ Shared Line:** detected at checkpoint
-  time by the witness consistency check (§8) — two admitted heads at the same logical
-  position raise **exactly one** `SplitViewEvidence` tripwire and **block further admission**
-  until healed. Healing is a **governed `line.reconcile` Transform**: `parents = [H1, H2]`,
-  `baseState = lca(H1,H2).resultState`, ops = the reconciliation (text 3-way on the blocking
-  path; `reapply` where recipes allow). It goes through RATP like any other admission — **the
-  merge is never silent**. Duplicate/replayed leaves are idempotent by CID + inclusion proof.
-
----
-
-## 8. Ledger, witnesses & trust
-
-The Ledger is a **Merkle append-only log** (RFC 6962 tree math) of admitted Transforms and
-checkpoints. It is the trust anchor that replaces "trust GitHub."
-
-### 8.1 Leaf, tree head, proofs
+### 7.9 Signatures, Proposals, admissions, and rejections
 
 ```ts
-interface LedgerLeaf {
-  index: number;               // 0-based position
-  event: "ratify" | "reconcile" | "grant" | "revoke" | "actor-update";
-  parentHead: Cid; newHead: Cid;   // line head transition (for ratify/reconcile)
-  ratification?: Cid;              // -> CCR/Ratification object
-  attestations: Cid[];             // EXACT admitted attestation set (triple-binding, §9.7)
-  grantChain?: Cid[];
-  prevLeafHash: Bytes;             // hash chain (defense-in-depth over Merkle)
+interface TransformSignature {
+  kind: "loom.transform-signature";
+  schema: 1;
+  subject: Cid;
+  signer: Did;
+  keyId: string;
+  signature: ByteString;
 }
-interface Checkpoint {           // C2SP signed-note / signed tree head
-  origin: string; treeSize: number; rootHash: Bytes; // RFC6962 Merkle Tree Hash (MTH)
-  signatures: Sig[];             // log signature + witness cosignatures (§8.2)
+
+interface Proposal {
+  kind: "loom.proposal";
+  schema: 1;
+  line: LineId;
+  expectedHead: Cid;
+  headTransform: Cid;
+  transformSignatures: Cid[];
+  attestations: Cid[];
+  grantChain: Cid[];
+  idempotencyKey: string;
 }
-// Proofs (RFC 6962):
-inclusionProof(index, treeSize)   -> Bytes[]  // audit path; length = ⌈log2(treeSize)⌉
-consistencyProof(m, n)            -> Bytes[]  // append-only proof between sizes m<n
+
+interface AdmissionRecord {
+  kind: "loom.admission";
+  schema: 1;
+  proposal: Cid;
+  line: LineId;
+  previousHead: Cid;
+  admittedHead: Cid;
+  resultState: Cid;
+  policy: Cid;
+  decision: "pass" | "warn" | "override";
+  facts: Cid;
+  evidence: Cid[];
+  approvals: Cid[];
+  attestations: Cid[];
+  grants: Cid[];
+}
+
+interface RejectionRecord {
+  kind: "loom.rejection";
+  schema: 1;
+  proposal: Cid;
+  line: LineId;
+  observedHead: Cid;
+  policy: Cid;
+  decision: "stale" | "invalid" | "unauthorized" | "conflict" | "block";
+  reasons: RejectionReason[];
+  facts?: Cid;
+  evidence: Cid[];
+  attestations: Cid[];
+  grants: Cid[];
+}
 ```
 
-`verifyInclusion(leafHash, index, treeSize, proof, rootHash)` and
-`verifyConsistency(m, rootM, n, rootN, proof)` are the standard RFC 6962 verifiers (tested
-against independent reference vectors, §12). The log is served as **tlog-tiles** (C2SP) for
-efficient fetch.
+For `TransformSignature`, the signed message is canonical DAG-CBOR encoding of
+`["loom-transform-signature-v1", schema, space, subject]`, where `space` is
+read from the subject Transform and `subject` is that Transform's CID. The
+verification algorithm is selected by the resolved `keyId`; implementations
+MUST reject an algorithm or key type that the declared DID method does not
+authorize.
 
-### 8.2 Witnesses & fork-consistency
+Proposal and AdmissionRecord arrays MUST be canonical sets: sorted by CID,
+duplicate-free, and interpreted exactly. An admission MUST bind the complete set
+used for the decision so evidence cannot be detached after the fact.
+RejectionRecord evidence, attestation, and Grant arrays follow the same rule;
+`reasons` uses a closed, versioned rejection-reason registry.
 
-Tamper-evidence (Merkle) is **not** fork-consistency: a malicious log could show different
-clients different trees ("split view"). Defense = a **k-of-n witness quorum** (CT / sigsum
-model) that co-signs checkpoints:
+## 8. Transform algebra
 
-- A checkpoint is valid to a client only with **≥ k witness cosignatures** over a **single
-  consistent** tree head, plus a consistency proof from the client's last-seen head.
-- Witnesses **gossip** heads and refuse to cosign a checkpoint that is inconsistent with one
-  they already signed (this is what makes split-view detectable). Threat model: honest
-  witness majority (`k > n/2`; or `n = 3f+1` for BFT cosign).
-- **Client verification (offline-capable):**
-  ```
-  verifyOffline(bundle, trustRoot):
-    verifyAddress on every object                       # integrity
-    assert leaf.attestations covers the object set      # nothing dropped
-    verify checkpoint log-signature under trustRoot.logKey
-    assert >= k valid witness cosignatures over the SAME (treeSize, rootHash)
-    verifyInclusion(leaf) ; verifyConsistency(lastSeen, checkpoint)
-    # zero network; target < 5ms for n <= 1e6
-  ```
+### 8.1 Operation vocabulary
 
-### 8.3 Honest single-tenant degradation
-
-In a **single-tenant, self-hosted** deployment (AgentForge's current shape) the org runs the
-log **and** the witnesses, so cosigning is theater: it provides **internal tamper-evidence**,
-not fork-consistency against the operator. This is stated plainly and is **kill-gate G1**:
-if the deployment topology is single-tenant, Loom ships as _"tamper-evident governance
-ledger"_ and does **not** claim host-independent trust. Fork-consistency is load-bearing
-only in a **federated / multi-party** topology (multiple mutually-distrusting admission
-authorities + external witnesses), which is a P5 concern.
-
----
-
-## 9. Identity, Grants & provenance (PXP / PAL)
-
-### 9.1 Actor identity — `did:loom`
-
-Actors (human | agent | automation) are DIDs. `did:loom` is a ledger-anchored DID: the DID
-document (public keys, service endpoints) is a Fabric object whose updates are **ledgered**
-(`event:"actor-update"`), giving point-in-time key resolution.
+The initial operation set is:
 
 ```ts
-interface ActorDocument {
-  did: Did; actorType: "human" | "agent" | "automation";
-  keys: { id: string; type: "Ed25519"; publicKeyMultibase: string; validFrom: string }[];
-  platformBinding?: PlatformBinding;   // §9.2
-  prev?: Cid;                          // previous doc (KERI-style pre-rotation)
-}
-resolveAt(did, ledgerIndex) -> ActorDocument   // pure fold over actor-update leaves <= index
+type Operation =
+  | { op: "put_cell"; at: Path; ident: NodeIdent; cell: Cid }
+  | { op: "delete_cell"; selector: NodeSelector }
+  | { op: "move_cell"; selector: NodeSelector; to: Path }
+  | { op: "set_metadata"; selector: NodeSelector; metadata: Cid }
+  | { op: "patch_bytes"; selector: NodeSelector; range: [bigint, bigint]; content: Cid }
+  | { op: "put_facet"; selector: NodeSelector; facet: string; content: Cid; projector: Cid }
+  | { op: "delete_facet"; selector: NodeSelector; facet: string }
+  | { op: "put_external"; at: Path; target: Cid; mediaType: string };
 ```
 
-Signature verification is **point-in-time**: a Transform's `sig` is checked against the key
-valid at the ledger index where it was admitted, not "latest." Rotation uses KERI-style
-pre-rotation (each doc commits to the next key's hash); revocation is a ledgered
-`actor-update` marking a key `revoked`.
+Every operation has explicit preconditions. An absent selector, occupied move
+destination, invalid range, identity collision, facet projection mismatch, or
+path violation MUST return a typed failure and MUST NOT become a silent no-op.
 
-### 9.2 Stronger (still-not-proof) agent binding — `PlatformBinding`
+Operations are applied in listed order. A verifier MUST apply them from
+`baseState` and reproduce `resultState` exactly. An implementation MAY use an
+optimized representation but MUST produce the same canonical result.
 
-An agent Actor may bind its key to a hardware/CI root: AWS Nitro / TPM2 / SEV-SNP / TDX
-attestation, or an OIDC identity (e.g. GitHub Actions OIDC), or WebAuthn for humans. This
-raises the bar from "someone holds the key" to "this key ran in this attested environment"
-— but it is still **attested, not proof of which model produced which bytes** (honesty
-constraint 1). Recorded as `platformBinding` in the ActorDocument and referenced by
-`loom.agent-run` attestations.
+### 8.2 Effects
 
-### 9.3 Grants — capability tokens (replacing OAuth scopes + CODEOWNERS)
+Effects are a closed, versioned vocabulary used by authorization and policy.
+The first registry includes source edits/deletes, moves, dependency changes,
+migrations, test deletion/skipping, assertion weakening, CI changes, sensitive
+paths, secret-like values, and generated artifacts.
+
+The declared effects MUST be a superset of effects implied by authoritative
+operations and bytes. Under-declaration rejects the Transform. Over-declaration
+MAY be accepted but MUST be visible to authorization and policy evaluation.
+
+Effect inference MUST be deterministic for blocking use. Facts that depend on
+network, clock, locale, unpinned tools, or model output are attestations and MUST
+NOT independently create a verified blocking fact.
+
+### 8.3 Semantic facets
+
+Semantic operations are optional enrichment. Blocking decisions MUST be stable
+when unverified semantic facets are removed. Verified semantic facts MAY add or
+raise a finding but MUST NOT clear a byte-derived finding.
+
+## 9. Lines and history
+
+### 9.1 Space genesis
+
+Space identity MUST NOT depend on the genesis Transform because the genesis
+Transform itself contains the SpaceId. The initial controller generates a
+random 256-bit `creationNonce` and derives:
+
+```text
+SpaceId = multibase(
+  sha2-256(canonical(["loom-space-v1", initialController, creationNonce]))
+)
+```
+
+```ts
+interface SpaceDescriptor {
+  kind: "loom.space";
+  schema: 1;
+  id: SpaceId;
+  creationNonce: ByteString;
+  initialController: Did;
+  genesisState: Cid;
+  genesisTransform: Cid;
+  policyRoot: Cid;
+}
+```
+
+Every Space has a genesis State and genesis Transform. The genesis Transform has
+no parents, its base and result are the genesis State, and it performs no
+operations. The descriptor commits to both genesis objects, the policy root,
+and initial controller. Space creation MUST include a separate domain-separated
+signature by the initial controller over canonical DAG-CBOR encoding of
+`["loom-space-signature-v1", descriptorCid]`; bootstrap trust in that
+controller is an explicit deployment input.
+
+### 9.2 Line references
+
+A Line is a mutable authority record:
+
+```ts
+interface LineRef {
+  id: LineId;
+  space: SpaceId;
+  name: string;
+  scope: "local" | "shared";
+  creator: Did;
+  creationNonce: ByteString;
+  headTransform: Cid;
+  headState: Cid;
+  sequence: bigint;
+  controller?: Did;
+}
+```
+
+LineId is non-circular and independent of the mutable Line head:
+
+```text
+LineId = multibase(
+  sha2-256(canonical(["loom-line-v1", space, creator, creationNonce]))
+)
+```
+
+`creationNonce` is a random 256-bit value. `headState` MUST equal the result
+State of `headTransform`. `sequence` increases by one for every committed head
+transition; every Shared Line transition is an admitted transition. A Line
+update uses compare-and-swap over `(headTransform, sequence)`; a stale writer
+receives `RebaseRequired` and MUST NOT overwrite the winning head.
+
+### 9.3 Local and Shared Lines
+
+Local Lines require structural validation but MAY omit shared policy and remote
+coordination. Shared Lines MUST use admission. Promotion from local to shared is
+a Proposal, not a raw pointer assignment. A Shared Line MUST name a controller;
+a Local Line SHOULD name its owning actor as controller.
+
+### 9.4 LCA and ancestry
+
+Ancestry is defined by Transform parents. A best common ancestor is a common
+ancestor for which no descendant is also a common ancestor of both heads. If
+there is one best common ancestor, it is the LCA. If several exist, the initial
+rule selects the lexicographically smallest CID and records the complete best
+ancestor set in reconciliation evidence. Future recursive-merge behavior
+requires a specification revision.
+
+## 10. Working copies
+
+A working copy is a projection and change-capture surface, never canonical
+history.
+
+### 10.1 Materialization
+
+Before writing, a materializer MUST validate:
+
+- every path and path collision;
+- object integrity and total expansion size;
+- file type and mode support;
+- symlink targets and destination containment policy;
+- available disk space where detectable; and
+- that no untracked local path would be overwritten without explicit consent.
+
+Materialization MUST use a crash-recoverable journal. Regular files MUST be
+written to safe temporary paths and atomically renamed. Directories and regular
+files MUST be established before symlinks. The materializer MUST NOT follow a
+workspace symlink while writing another entry.
+
+A failed checkout MUST leave either the previous complete projection or a
+recoverable journal that deterministically resumes or rolls back. It MUST NOT
+report success for a partial tree.
+
+### 10.2 Change capture
+
+Change capture MUST compare the working copy against its recorded base State. It
+MUST distinguish tracked edits, moves, deletes, type changes, permission changes,
+untracked paths, ignored paths, and path collisions. Rename inference from an
+untracked filesystem is advisory until identity is established by an explicit
+operation or journal record.
+
+### 10.3 External tools
+
+Compilers, tests, editors, and agents MAY operate on materialized files. Any tool
+output promoted to a Transform MUST be captured as authoritative bytes and MUST
+not depend on an unrecorded ambient path, environment value, clock, or network
+response when the resulting Recipe claims `pinned` determinism.
+
+### 10.4 Change sessions and agent isolation
+
+A ChangeSession is a mutable local transaction journal, not an immutable Loom
+object. It binds a random session identifier, actor, source Line, base Transform
+and State, optional delegated Grant, Intent draft, ordered operation journal,
+working-copy path, and monotonically increasing append sequence.
+
+Loom has no implicit repository-global staging index. Each concurrent human or
+agent SHOULD receive a distinct ChangeSession and working copy. Implementations
+MUST NOT capture files from one session into another merely because they share a
+host filesystem. Selective capture is explicit by path or NodeIdent and records
+the session that observed the bytes.
+
+Sealing a session MUST read a stable working-copy snapshot, validate every
+operation against the recorded base, store all reachable objects, construct the
+result State, and create exactly one Transform. If files change during sealing,
+the operation returns a typed retry rather than a mixed snapshot. The journal
+MUST remain recoverable until the Transform and its Local Line update are
+durable.
+
+### 10.5 Reference authoring flow
+
+The reference client flow is:
+
+1. initialize a Space or explicitly import one from Git;
+2. create or select a Local Line and open a ChangeSession from its current head;
+3. attach an Intent and, for a mechanical change, a pinned Recipe;
+4. let a bounded human or agent actor edit the isolated working copy;
+5. inspect status, typed operations, effects, authoritative diff, and evidence;
+6. seal the session into a Transform, issue its separate TransformSignature,
+   and advance the Local Line;
+7. propose the Transform head to a Shared Line;
+8. rebase/reapply if the Shared Line moved, then re-run facts and approvals; and
+9. receive an AdmissionRecord or RejectionRecord and synchronize the durable
+   result.
+
+Client command names are non-normative before `0.2`, but clients MUST expose the
+distinction between local sealing and shared admission. They MUST NOT present a
+locally created Transform as shared merely because its objects were uploaded.
+
+## 11. Merge and reapply
+
+The detailed algorithm is normative in
+[reapply-merge-engine.md](reapply-merge-engine.md). The core requirements are:
+
+1. Text three-way merge over a deterministic LCA is the mandatory safety floor.
+2. Stable identity allows moves and edits to be composed without path guessing.
+3. Automatic commutativity is conservative; uncertainty becomes text merge or a
+   typed conflict.
+4. Only a hermetic `pinned` Recipe may produce a verified automatic reapply.
+5. Environment-sensitive and nondeterministic recipes may produce advisory
+   candidates but MUST NOT bypass the text/conflict and approval path.
+6. Reapply executes against the new base, enforces write scope, re-derives facts,
+   and creates a new Transform.
+7. A changed result invalidates all previous human approvals.
+8. A conflict MUST preserve base, sides, affected identity, and enough evidence
+   for a human or agent to author an explicit resolution Transform.
+
+## 12. Identity and capability Grants
+
+### 12.1 Actor identity
+
+Actors are humans, agents, or automation. Normative actor identifiers use DID
+syntax. The initial implementation MAY support `did:key` and `did:web` while the
+`did:loom` method is finalized. A deployment MUST publish the supported methods
+and verification algorithms.
+
+Transform signatures MUST use a domain-separated message that includes the
+specification version and Transform CID. Admission verifies the key that was
+valid at the decision's ledger position, not merely the actor's latest key.
+
+Key rotation and revocation MUST be ledgered. Compromise recovery MUST preserve
+the ability to verify historical signatures while preventing revoked keys from
+authorizing later admissions.
+
+### 12.2 Grant model
+
+A Grant delegates the product of:
+
+```text
+operation types × path or NodeIdent selectors × effect bounds × caveats
+```
 
 ```ts
 interface Grant {
-  // UCAN/biscuit profile
+  kind: "loom.grant";
+  schema: 1;
   issuer: Did;
   audience: Did;
-  transformTypes: string[]; // e.g. ["put_cell","move_cell"] or ["*"]
-  cellSelectors: NodeSelector[]; // path globs or nids the audience may touch
-  effectBounds: EffectBounds; // { maxCellsTouched, allowDelete, allowSensitive, allowedEffectKinds }
-  caveats?: Caveat[]; // e.g. time window, requires-attestation-kind
-  expiry: string;
-  nbf?: string;
-  delegationChain: Cid[]; // proof back to a root authority (Line.controller)
-  sig: Signature;
+  operations: Array<Operation["op"] | "*">;
+  selectors: NodeSelector[];
+  effectBounds: EffectBounds;
+  notBefore?: string;
+  notAfter: string;
+  parent?: Cid;
+  signature: ByteString;
 }
 ```
 
-**Authorization check at admission (`authorize`)** — a Grant chain authorizes a Transform iff
-every hop is properly delegated (`issuer[i+1] == audience[i]`), the chain roots at the Shared
-Line's `controller`, and the requested `(transformTypes, cellsTouched, effects)` is
-**attenuated** at every hop (each capability is a subset `⊑` of its parent). Undecidable
-selector globs fail **closed**. Revocation is ledgered (`event:"revoke"`) and checked at the
-admitted index.
+Every delegated child MUST be an attenuation of its parent. It cannot add an
+operation, broaden a selector, increase a cell budget, allow deletion or
+sensitive access not allowed by the parent, extend expiry, or remove a caveat.
+Undecidable selector inclusion MUST fail closed.
 
-```
-authorize(chain, actor, effects, cells, controller):
-  assert chain[0].issuer == controller
-  for i in 0..len(chain)-1:
-     assert verify(chain[i].sig) and not revokedAt(chain[i], nowIndex)
-     if i>0: assert chain[i].issuer == chain[i-1].audience and chain[i] ⊑ chain[i-1]
-  leaf := chain[-1]
-  assert leaf.audience == actor and expiry/nbf ok
-  assert requestedTypes ⊆ leaf.transformTypes
-  assert every cell in `cells` matches some leaf.cellSelectors      # fail-closed on undecidable
-  assert effects ⊑ leaf.effectBounds
-```
+The Grant signature covers canonical DAG-CBOR encoding of
+`["loom-grant-signature-v1", unsignedGrant]`, where `unsignedGrant` is the
+complete Grant map with only the `signature` field omitted. This binds the
+issuer, audience, parent CID, operations, selectors, effect bounds, and validity
+window. Grant timestamps MUST be canonical RFC 3339 UTC instants with seconds
+precision; equivalent alternate spellings are rejected rather than normalized.
 
-### 9.4 Provenance attestations (PXP / PAL) — three predicates
+The Grant chain MUST root at the Shared Line controller. Admission MUST evaluate
+revocation and key validity at the admission ledger position. An actor MUST NOT
+approve its own Transform unless policy explicitly permits self-approval; the
+default policy forbids it.
 
-Provenance is carried as **DSSE envelopes** wrapping **in-toto Statement v1** subjects. The
-`subject[0].digest.sha256` equals the SHA-256 embedded in the Transform's CID, pinning each
-attestation to _this_ Transform. `_type`/`subject`/`digest` are [BORROWED: in-toto v1].
+## 13. Governance and admission
 
-- **`loom.agent-run/v1`** [NOVEL] — how an AI produced the Transform: `agent.did` +
-  `platformBinding`; `model` (provider/family/name, `weightsDigest` = `"undisclosed"` for
-  hosted models, decoding params); `inputs` (systemPrompt/prompt/context/toolset/toolCalls
-  **digests** only — raw text stored by digest + redacted summary via
-  `sanitizeForMetadataStorage` unless the org opts into full retention); `run`
-  (start/end, harness, transcript digest); `intent` + `producedTransform` CIDs. Honest: the
-  prompt/tools/context hash deterministically; the model stays a trusted black box.
-- **`loom.deterministic-check/v1`** [NOVEL — the reuse crown jewel] — signs the reused
-  `VerifiedFact[]`: `checker` (did + `detectorSuiteDigest` + version), `inputs`
-  (`baseState`, `headState`, `diffViewDigest`, `policyVersionHash`), `facts` (VerifiedFact[]
-  **verbatim from `@agentforge/core`**), `factsDigest`, `determinism.reproducible`. Because
-  the diff view + detector suite are hashed and the predicate is signed + ledgered, a CCR's
-  `verifiedFindings` become **independently re-derivable** (re-run `loom-detect@version` over
-  base/head, confirm `factsDigest`). This is "deterministic decides" made _verifiable_.
-- **`loom.human-approval/v1`** [NOVEL] — a person accepted risk: `approver` (did + `authMethod:
-"webauthn"`), `decision: "approve" | "override"`, `reviewedTransform`/`reviewedState`,
-  `requirement` (maps to `ReviewerRequirement.id`+`tier`), `evidenceReviewed[]`,
-  `statementDigest`. `decision:"override"` maps to `OverrideRecord`.
+### 13.1 Admission pipeline
 
-### 9.5 Triple DAG binding & `verifyProvenance`
+Admission is an atomic state machine:
 
-Provenance cannot be silently detached because of three independent bindings: (1) **forward**
-— `Transform.provenance: Cid[]` in the header; (2) **subject-pin** — the attestation subject
-digest equals the Transform CID's hash; (3) **witnessed** — `LedgerLeaf.attestations[]`
-records the _exact_ admitted set, immutable in the Merkle log.
-
-```
-verifyProvenance(transform, ledgerLeaf, resolveKey) -> ProvenanceReport:
-  assert set(transform.provenance) ⊆ set(ledgerLeaf.attestations)     # nothing dropped at admission
-  for env in fetch(ledgerLeaf.attestations):
-     assert verifyEnvelope(env, resolveKey)                           # DSSE sigs under keys valid @ leaf.index
-     stmt := decode(env.payload)
-     assert stmt.subject[0].digest.sha256 == sha256OfCid(addr(transform))
-     classify predicateType -> { agentRun?, deterministicCheck?, humanApproval? }
-  return { agentRun, deterministicCheck, humanApproval, complete: requiredSatisfied }
+```text
+receive Proposal
+  → deduplicate idempotency key
+  → compare expected head
+  → fetch and verify all objects
+  → verify Transform signatures and State reproduction
+  → verify effects cover implied effects
+  → authorize every Transform through its Grant chain
+  → derive deterministic facts from authoritative bytes and effects
+  → evaluate the pinned policy
+  → validate evidence and approval attestations
+  → create AdmissionRecord or RejectionRecord
+  → durably commit the outcome ledger event and, only for admission, the Line head transition
+  → return the committed record
 ```
 
-The three feed the **reused** `ChangeControlRecord`: agent-run → "who authored";
-deterministic-check → `verifiedFindings` (blocking facts); human-approval →
-`requiredReviewers`/`decision`. CCR exports + compliance packages now carry
-cryptographically-verifiable provenance instead of GitHub-scraped metadata. It proves _which
-Actor (bound to which platform), which model + prompt/tool/context digests, which
-deterministic checks over exactly which diff, which human accepted risk, admitted at which
-ledger index_ — **not** that the code is correct or secure.
+A RejectionRecord MUST bind the Proposal, Line, observed head, policy, complete
+fact/evidence/attestation/Grant sets, and typed rejection reasons. It has no
+`admittedHead` and MUST NOT cause a Line transition. A `warn` decision MAY
+advance only when the policy explicitly permits it. A `block` decision MUST NOT
+advance. An override requires a separate authorized human attestation, a
+reason, and a policy rule permitting override.
 
-### 9.6 Borrowed / reused / novel (trust stack)
+### 13.2 Deterministic facts
 
-- **BORROWED:** multiformats CID/multihash; IPLD dag-cbor; Ed25519 (RFC 8032); RFC 6962
-  Merkle math + proofs; C2SP checkpoint / signed-note + tlog-cosignature + tlog-tiles;
-  CT/sigsum k-of-n + fork bound; W3C DID / Multikey; KERI pre-rotation; Nitro/TPM2/SEV-SNP/
-  TDX/OIDC/WebAuthn; UCAN + Biscuit (capabilities); DSSE + PAE; in-toto Statement v1; SLSA
-  digests; git `merge-base` LCA + diff3 3-way (on the blocking path); HTTP/2.
-- **REUSED (`@agentforge/*`):** `VerifiedFact`, `ChangeControlRecord`, `PolicyResult`,
-  `EvidenceRequirement`, `ReviewerRequirement`, `BLOCKABLE_CONFIDENCES`, the detectors' fact
-  logic, records/exports/compliance, security storage policy.
-- **NOVEL:** `did:loom` (ledger-anchored, folded DID doc); ledgered Grant revocation; the
-  Loom capability shape (`transformTypes` × `cellSelectors` × `effectBounds`); governed
-  `line.reconcile` fork healing; RSP application credits; the three predicates; the
-  triple-binding of provenance into the DAG + witnessed leaf.
+The fact-cache key MUST include all inputs capable of changing the result,
+including base and result State CIDs, authoritative diff digest, detector suite
+digest, toolchain digest, and policy version CID. A changed input invalidates the
+cache. Only reproducible facts may be `verified` or `observed` for blocking.
 
----
+### 13.3 Atomicity
 
-## 10. Module layout
+The authority MUST make the following logically atomic:
 
-New packages added to the existing pnpm monorepo, alongside the reused `@agentforge/*`
-governance packages.
+- the admitted object reachability set;
+- the AdmissionRecord;
+- the ledger entry;
+- the Line sequence and head; and
+- the idempotency result.
 
-| Package               | Responsibility                                                                                                                                                                  |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/fabric`     | CID/Address, dag-cbor codec, `TreeHasher` (sha2-256, agility → BLAKE3), FastCDC chunking, object store (`has`/`get`/`put`), `verifyAddress`                                     |
-| `packages/afom`       | AFOM object schemas/types + `verify()` + `fold()` (State materialization)                                                                                                       |
-| `packages/stop`       | Op set, effects vocabulary + effect→detector map, `TransformBuilder` (sign/address/verify), lanes + `mergeFacts`, `Recipe`/`ToolchainLock`/`NodeSelector`, `reapply` + outcomes |
-| `packages/loom-diff`  | `fabricDiffView(base, result) -> ChangedFile[]` (may fold into `stop`, §16 Q1)                                                                                                  |
-| `packages/identity`   | `did:loom`, keys, `ActorDocument`, `resolveAt` fold, rotation/revocation, platform binding                                                                                      |
-| `packages/grant`      | `Grant`, `⊑` attenuation lattice, `authorize()`, ledgered `revoke`                                                                                                              |
-| `packages/ledger`     | RFC 6962 MTH, inclusion/consistency proofs + verifiers, C2SP checkpoint, `LedgerLog`                                                                                            |
-| `packages/witness`    | k-of-n cosign contract, gossip/anti-entropy, `verifyOffline`                                                                                                                    |
-| `packages/provenance` | DSSE/PAE, in-toto Statement, the three predicates, `bind` + `verifyProvenance`                                                                                                  |
-| `packages/ratify`     | RATP admission pipeline (consumed by `loom-hub`)                                                                                                                                |
-| `packages/rsp`        | HTTP/2 framing, ops, idempotency, CAS/rebase, credits, `RspError`                                                                                                               |
-| `packages/git-bridge` | `LoomProvider` (implements the legacy `ScmProvider`) + `transformSetFromGitPr` (P2 seam) + CODEOWNERS→Grant importer                                                            |
+The implementation MAY use a database transaction, write-ahead log, replicated
+consensus log, or equivalent mechanism. After recovery, observers MUST see
+either the old complete head or the new complete head with its record and ledger
+entry. An acknowledged admission MUST never disappear under the declared
+durability profile.
 
-Apps: `apps/loom-hub` (Fastify RSP server + admission authority + log node + witness
-endpoints); `apps/loomd` (local daemon for Local Lines/offline); `apps/loom-cli` (`loom …`);
-`apps/loom-lsp-proxy` (editor/agent edit-capture → native semantic Transforms). The existing
-`apps/api` mounts/proxies RSP during interop; `apps/worker` gains checkpoint-signing +
-witness-cosign-gathering BullMQ jobs; the mobile consoles add an offline `verifyOffline`
-screen.
+For a rejection, the RejectionRecord, ledger event, and idempotency result MUST
+commit atomically while the Line head and sequence remain unchanged.
 
-Dependency edges (high level): `fabric → afom → stop`; `fabric → ledger → witness`;
-`identity → grant`; `identity + fabric → provenance`; `stop + grant + ledger + provenance +
-loom-diff → ratify → rsp → loom-hub`; reused `@agentforge/core → ratify`, `@agentforge/
-detectors → loom-diff`; `git-bridge → {core, stop}`.
+## 14. Provenance and approvals
 
----
+### 14.1 Attestation format
 
-## 11. Phased roadmap & kill-gates
+Loom provenance uses DSSE envelopes containing in-toto Statement v1 subjects.
+Every attestation MUST subject-pin the Transform CID and, when it describes a
+result, MUST also include the result State CID.
 
-Every phase ships independently on git; trust/provenance value lands **before** any
-substrate bet. "Realistic product" = **P2**. "Kill-gated substrate" = **P3+**.
+Initial predicates are:
 
-| Phase                | Deliverable                                                                                                                                                                                    | Public surface                                                                               | Exit / kill-gate (measurable)                                                                                                                                                  | Effort | git/GitHub deleted                                                                                                                            |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| **P1**               | Fabric + AFOM + text lane + **byte-exact git round-trip**                                                                                                                                      | `Fabric.put/get`; `fabricDiffView`; `loom import --from-git` / `loom export --to-git`        | round-trip = **100%** on a fuzzed corpus + top-50 repos                                                                                                                        | ~10 EM | none (purely additive)                                                                                                                        |
-| **P2 — THE PRODUCT** | Governance + provenance **on git**: RATP admission (atomic CAS + ledger), `loom.deterministic-check` over a git-computed diff view, Grants replace CODEOWNERS/OAuth **at the admission check** | `loom propose`/`ratify`/`grant`/`verify`; `evaluateTransformSet`; DSSE/Grant/LedgerLeaf wire | detector parity **100%** vs current GitHub path on `fixtures/repos`; admission **p95 < 3s**; ≥1 design partner governed; Grants replace CODEOWNERS/OAuth                       | ~16 EM | demote `publishMergeGuardCheckWithClient`→mirror; **delete** `auth.ts` OAuth role-mapping; demote CODEOWNERS parser → one-shot Grant importer |
-| **P3**               | `reapply` + semantic lane v1 for TS/JS                                                                                                                                                         | `loom reapply`; semantic ops                                                                 | projector-eq **100%** (semantic reconstructs authoritative bytes) or auto-demote to advisory; mechanical reapply win-rate **≥90%** vs text-merge conflicts on a codemod corpus | ~12 EM | —                                                                                                                                             |
-| **P4 — KILL-GATED**  | Native substrate pilot: native object plane, change sessions, native Shared Lines                                                                                                              | `OpenChange`/`AppendOps`/`SealChange`; native `SubscribeLine`                                | design partner runs a project **git-free 30 days, data-loss = 0**                                                                                                              | ~14 EM | **delete** `fetchPullRequestInputFromGithub`, webhook route, `GitHubInstallation`/`WebhookDelivery`/`CheckRun` models, worker check-publish   |
-| **P5 — KILL-GATED**  | Federation + witness quorum: multi-authority admission, M-of-N checkpoints, `line.reconcile`                                                                                                   | witness endpoints; federated RSP                                                             | fork-consistency **demonstrable under partition**; **kill if** split-brain observed without detection                                                                          | ~12 EM | remaining git-bridge for migrated cohorts                                                                                                     |
+- `loom.agent-run/v1` — actor, platform binding, model claim, prompt/context/tool
+  digests, recipe, and run metadata;
+- `loom.deterministic-check/v1` — exact inputs, checker identity and suite digest,
+  facts digest, facts, policy, and decision;
+- `loom.human-approval/v1` — exact Transform and State reviewed, requirement,
+  evidence, decision, authentication method, and approver; and
+- `loom.materialization/v1` — optional checkout/build/test environment and output
+  digest evidence.
 
-Totals: shippable **P1–P3 ≈ 38 EM** (~7–8 months at 5–6 engineers); **P4–P5 ≈ 26 EM, gated**.
+Raw prompts, transcripts, secrets, and source snippets SHOULD be stored by
+digest with a redacted summary by default. Full retention requires explicit
+policy, encryption, access control, and retention limits.
 
-### 11.1 Kill-gate decision tree
+### 14.2 Non-circular binding
 
-- **G0** (P2): signed detector output must be reproducible across two independent runners. **Fail → STOP** (the "deterministic decides" claim is invalid; there is no product).
-- **G1** (P2): if the deployment is single-tenant only → ship **"tamper-evidence only"**; do **not** claim fork-consistency (§8.3).
-- **G2** (P2): if capability UX is worse than GitHub teams → keep GitHub as the authority, make **Grants advisory**.
-- **G3** (P3→P4): proceed to the substrate **only** if P1–P3 show owning it unlocks what git provably cannot — measurable `reapply`-rebase wins, or a demanded federated multi-authority admission. **Else stay at P2; git is the permanent substrate.**
-- **P5**: kill federation if split-brain is ever observed without detection.
+The binding chain is:
 
-Each milestone is independently shippable on git, so a kill at G3/P4/P5 does **not**
-invalidate the P2 product.
+1. the Transform is canonically encoded and addressed;
+2. signatures and attestations subject-pin that Transform CID;
+3. the Proposal lists the submitted set;
+4. the AdmissionRecord lists the exact accepted set; and
+5. the ledger commits to the AdmissionRecord and head transition.
 
----
+The Transform MUST NOT forward-reference those post-address objects. This
+construction prevents detachment without introducing a hash cycle.
 
-## 12. Test & conformance strategy
+### 14.3 Approval invalidation
 
-- **AFOM / Fabric:** canonical round-trip (10⁴ objects byte-identical across processes);
-  non-canonical encoding rejected; CID stability; Blob dedup; **rename-preserves-identity**
-  (headline: `move_cell` ⇒ `identIndex` path moves, Cell CID unchanged, no similarity
-  heuristic); `fold` correctness; facet byte-exactness (lossy facet rejected at `put`);
-  `verifyAddress` bit-flip rejection.
-- **STOP:** op pre/post laws (deleting an absent nid = typed error); effect coverage
-  (under-declared effects rejected); lane monotonicity property-test (semantic add/raise
-  only); **text-authority** (strip the semantic lane ⇒ identical blocking result 100%);
-  serialization determinism.
-- **`reapply`:** fast path (no engine exec when inputs unaffected); **recompute win** (the
-  §3.6 codemod yields `foo(y, ctx)` while real `git merge-file` yields exactly one conflict —
-  asserted against actual git); divergence detection never mutates the authored result;
-  determinism self-check + toolchain-mismatch → `HardFailure`; no-recipe fallback to text.
-- **Determinism boundary:** `factCacheKey` stability + per-field sensitivity; keyed on
-  content not chunking; `DETECTOR_REGISTRY_VERSION` bump invalidates all; class assignment
-  (Fabric-only ⇒ replayable/blockable, non-Fabric ⇒ attested/non-blocking).
-- **RSP:** object idempotency; CAS (one admitted, other `RebaseRequired` with valid `lca`);
-  rebase determinism; credit exhaustion → `QuotaExceeded`; `HashMismatch` rejection; error →
-  HTTP status map. **Divergence:** LCA vs reference on random DAGs; a federated fork triggers
-  exactly one tripwire and blocks until `line.reconcile` (leaf `parents=[H1,H2]`).
-- **Ledger:** inclusion proof length = `⌈log2 n⌉` for `n ∈ {1,2,3,7,8,1000,10⁶}`; consistency
-  for all `1 ≤ m < n ≤ 10⁴`; **CT interop** against an independent RFC 6962 verifier's
-  vectors; append serialization gap-free.
-- **Witness:** fork refusal + `SplitViewEvidence`; k-of-n (`k-1` ⇒ `WitnessQuorumUnmet`);
-  `verifyOffline` zero-network and `< 5ms` for `n ≤ 10⁶`.
-- **Identity/Grant:** point-in-time key validity; pre-rotation reject; `resolveAt` pure fold;
-  Grant attenuation property-test (accept iff every hop `⊑` and covered); root-authority;
-  ledgered revoke; undecidable globs fail closed.
-- **Provenance:** DSSE vs reference vectors + exact PAE; subject-pin mismatch reject;
-  non-detachment reject; reproducible facts + `attested` **never** flips `checkStatus`.
-- **Cross-cutting:** algebra laws via fast-check (identity/determinism/invertibility/
-  composition); AFOM round-trip + git byte-exact corpus fuzzing; determinism replay (re-fold
-  from genesis); **RATP golden tests reusing `fixtures/repos`** + dual-run shadow parity vs
-  the current GitHub path + Grant-authority goldens. Perf p95 targets: `HasObjects(1k) <
-30ms`; inclusion-proof gen `< 2ms`; checkpoint sign `< 3ms`; `authorize(depth≤5) < 5ms`;
-  `verifyOffline < 5ms`; **admission p95 < 3s** (P2 exit). Wired into `ci.yml` via the
-  existing `test:unit`/`test:integration` split; new fixtures under
-  `fixtures/{ledger,grants,attestations,forks}`.
+An approval is valid only when its signature, actor key, Grant, requirement,
+Transform CID, result State CID, and evidence set all verify at admission. A new
+Transform CID or result State invalidates it. Approval inheritance is forbidden
+in version `0.1`.
 
----
+## 15. Ledger and witnessed trust
 
-## 13. Repository / history migration
+Every `LOOM-AUTHORITY` implementation MUST maintain an append-only,
+tamper-evident sequence of admissions, reconciliations, Grant changes, actor key
+changes, proposal rejections, and security-relevant administrative actions.
 
-Distinct from the Prisma schema migration (§6); this is git-history **import** into Fabric.
+```ts
+interface LedgerEvent {
+  kind: "loom.ledger-event";
+  schema: 1;
+  origin: string;
+  sequence: bigint;
+  eventType:
+    "admission" | "rejection" | "grant-change" | "key-change" | "policy-change" | "administrative";
+  subject: Cid;
+  previous: Cid | null;
+}
 
-| Strategy                             | Effort                   | Gives                                                                                                       | Loses                                                                       |
-| ------------------------------------ | ------------------------ | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| snapshot-import                      | low (~1 EM / repo class) | current tree as one genesis State; fast                                                                     | no lineage DAG, no merge-base, no `reapply` history, no provenance backfill |
-| **DAG-import (recommended default)** | med (~3 EM)              | full commit DAG → Transform DAG, real LCA/merge-base, reapply-eligible history, per-commit provenance stubs | higher import cost; large-repo memory                                       |
+interface LedgerCheckpoint {
+  kind: "loom.ledger-checkpoint";
+  schema: 1;
+  origin: string;
+  treeSize: bigint;
+  rootHash: ByteString;
+  lastEvent: Cid | null;
+}
+```
 
-DAG-import is the default because P2's value (real lineage/merge-base, admission provenance)
-requires the DAG; snapshot-import is an escape hatch for pathological repos. Rollout uses the
-expand → backfill → dual-write → contract sequence (§6.3) with idempotent backfill so cutover
-is reversible until parity dashboards are green.
+`sequence` starts at zero and is gap-free. `previous` is `null` only for the
+first event and otherwise contains the preceding LedgerEvent CID. An admission
+event's subject is its AdmissionRecord; a rejection event's subject is its
+RejectionRecord. Other event types subject-pin the immutable object describing
+the change. `lastEvent` is `null` only for an empty checkpoint.
 
-**Git-losslessness matrix** (P1 round-trip kill-criterion): exec-bit ✓ (mode prop); symlink ✓
-(entry type); submodule/gitlink ✓ as typed pointer (recursive semantics reimplemented,
-partial); empty dirs — match git's limitation (not represented); CRLF — store bytes verbatim,
-disable smudge/clean; arbitrary-byte filenames — byte-preserve paths (risk on
-case-insensitive FS); rename detection — fabric→git lossless, git→fabric recovers only git's
-heuristic guess (asymmetric, documented).
+The normative Merkle construction follows RFC 6962 tree hashing with SHA-256:
+each leaf is `SHA-256(0x00 || canonicalLedgerEventBytes)` and each interior node
+is `SHA-256(0x01 || leftHash || rightHash)`. The empty-tree hash is
+`SHA-256("")`. A checkpoint authority signature covers canonical DAG-CBOR
+encoding of `["loom-checkpoint-signature-v1", checkpointCid]`. Witness
+signatures cover `["loom-witness-signature-v1", checkpointCid]` and MUST use
+keys from a separately configured trust domain. Implementations MUST provide
+inclusion and consistency proofs.
 
----
+Trust claims depend on deployment profile:
 
-## 14. Worked end-to-end scenario (spans P2 + P3)
+| Deployment                                 | Permitted claim                                                            |
+| ------------------------------------------ | -------------------------------------------------------------------------- |
+| One authority, no external witness         | Integrity-checked and internally tamper-evident                            |
+| One authority with independent witness     | Externally witnessed append-only history within the witness threat model   |
+| Multiple authorities with quorum witnesses | Fork and split-view detection within the stated quorum and partition model |
 
-An agent fleet remediates a lodash GHSA across 7 services.
+An authority MUST NOT claim host independence merely because it operates
+multiple witnesses under the same administrative control.
 
-1. **Intent:** `Intent{ title:"Remediate GHSA-xxxx lodash", criteria:[{kind:"attestation",
-statement:"security-team ratifies"},{kind:"check", statement:"migration dry-run passes",
-check:«recipe»}], author: did:loom:agent-fleet }`.
-2. **Local Line:** each service gets 2 reproducible Transforms — `T1` dep bump
-   `lodash ^4.17.20 → ^4.17.21` (recipe `engine:"dep-bump"`, `determinismClass:"pinned"`,
-   `effects=[bumps_dependency_minor]`) and `T2` `add_migration` (`effects=[adds_migration]`).
-   Recipes present ⇒ reapply-eligible. `loom propose --dry-run` reports `reproducible=true`.
-3. **Base advances:** `main` moves during review; `reapply(T1, S_new)` re-runs `dep-bump`
-   cleanly (`CleanReapply`, recomputed); a teammate's manifest edit is absorbed.
-4. **Attestations:** the agent emits `loom.agent-run/v1` (model + prompt/context digests,
-   `weightsDigest:"undisclosed"`, `platformBinding: gh-oidc`); the check runner emits
-   `loom.deterministic-check/v1` signing the `VerifiedFact[]`.
-5. **RATP propose** — `AdmissionRequest`: `{ line:"line:shared:main", headTransform:"bafy…T2",
-intent:"bafy…intent", expectedLineHead:"bafy…H0", grantChain:["bafy…G0","bafy…G1"],
-attestations:["bafy…agentRun","bafy…detCheck"], idempotencyKey:"ik_…" }`. Derived facts:
-   `dependency_bumped` (source `transform_effect`, `verified`) + `migration_added`
-   (`transform_effect`, `verified`) + `agent_signal_detected` (`fabric_metadata`, `inferred`).
-   Policy hits: `dependencies.*` → `require_review(security-team)`; `database.migrations` →
-   `block` + `requiredEvidence[rollback_plan, migration_dry_run]` +
-   `requiredReviewer(database-owner)`. **status = block** (evidence missing, reviewers
-   uncleared). Attested-not-proven: the dry-run attestation is `provided`, but human approval
-   is still required.
-6. **Ratify:** `loom.human-approval/v1` (webauthn) from security-team + database-owner, each
-   backed by a `Grant` covering the touched Cells (`authorize()` passes: rooted in the Line
-   controller, chain `⊑`, effects within bounds).
-7. **Atomic admit:** two-phase — write-ahead `T2`/CCR/`Ratification`/`LedgerLeaf`, then
-   serializable head-CAS flip. Re-homed CCR (JSON): `{ id, lineRef:"line:shared:main",
-stateCid:"bafy…S2", transformId:"bafy…T2", verifiedFindings:[dependency_bumped,
-migration_added], requiredEvidence:[rollback_plan:approved, migration_dry_run:approved],
-requiredReviewers:[security-team:approved, database-owner:approved], checkStatus:"pass",
-lifecycle:"admitted", attestationCids:[…], ledgerEntryId:"…" }`. Ledger leaf:
-   `{ event:"ratify", index:4187, parentHead:"bafy…H0", newHead:"bafy…T2",
-ratification:"bafy…", attestations:[agentRun, detCheck, humanApproval],
-grantChain:[G0,G1], prevLeafHash:… }`; checkpoint signed + k-of-n witness cosigned.
-8. **Offline verify:** a CI runner runs `verifyOffline(bundle, trustRoot)` — object integrity
-   - leaf-covers-object + log signature + k witness cosigs + inclusion proof — zero network.
-9. **Git export (P2):** byte-exact export back to git so downstream tooling is unaffected. The
-   in-toto/DSSE ratification attestation is the durable, independently-verifiable record.
+## 16. Replication and synchronization
 
----
+The Loom Replication and Sync Protocol is transport-neutral at the semantic
+layer. The first network binding SHOULD use HTTP/2 with streaming.
 
-## 15. Risk register
+Required operations are:
 
-| #   | Risk                                      | Likelihood | Impact                                   | Mitigation                                                       | Metric tie                          |
-| --- | ----------------------------------------- | ---------- | ---------------------------------------- | ---------------------------------------------------------------- | ----------------------------------- |
-| 1   | Detectors not reproducible across runners | med        | **HIGH** (kills "deterministic decides") | pin `toolchainDigest`; `factCacheKey`; dual-run shadow           | G0; §12 reproducible-facts          |
-| 2   | Semantic lane byte-divergence             | med        | high                                     | `reconstruct(facet)==bytes` enforced at `put`; projector-eq test | P3 exit projector-eq=100%           |
-| 3   | `reapply` wrongly "wins" (non-mechanical) | med        | **HIGH**                                 | recipe gate + determinism self-check + divergence-never-silent   | mechanical win-rate; §12 divergence |
-| 4   | Single-tenant fork-consistency illusion   | high       | high                                     | honest degradation (§8.3); recommend external-domain witness     | G1                                  |
-| 5   | Grant UX worse than GitHub teams          | med        | high                                     | importer seeds Grants from CODEOWNERS; advisory fallback         | G2                                  |
-| 6   | Admission latency SLO miss                | med        | med                                      | off-path observe/warn; per-Line sharding; async witness          | admission p95 < 3s                  |
-| 7   | Ledger CT-verifier non-interop            | low        | **HIGH**                                 | RFC 6962 verbatim; test vs independent verifier                  | §12 CT interop                      |
-| 8   | Federated split-brain undetected          | low        | **HIGH**                                 | 3 tripwires + `k > n/2` + gossip; kill P5 if observed            | P5 exit                             |
-| 9   | Hash migration (SHA-256→BLAKE3) churn     | low        | med                                      | `TreeHasher` abstraction; multihash agility; P4-gated            | §16 Q5                              |
-| 10  | Substrate rewrite sinks cost w/o payoff   | med        | **HIGH**                                 | P4 kill-gate; P1–P3 ship on git independently                    | G3                                  |
-| 11  | Provenance detachment / spoof             | low        | high                                     | triple binding + subject-pin + witnessed leaf                    | §12 non-detachment                  |
+```text
+HasObjects(cids) -> missing cids
+GetObjects(cids) -> verified object stream
+PutObjects(stream) -> stored or rejected objects
+GetLine(line, afterSequence?) -> head and optional event stream
+OpenChange(line, baseState, idempotencyKey) -> session
+AppendOperations(session, sequence, operations) -> acknowledged sequence
+SealChange(session, intent, recipe?) -> Transform CID
+SubmitProposal(proposal) -> admission, rejection, or RebaseRequired
+GetProof(admission or ledger position) -> verification bundle
+```
 
-**Decision tree:** G0 fail → STOP. G1 single-tenant → ship tamper-evidence-only. G2 worse →
-Grants advisory, keep GitHub authority. G3 no substrate advantage → stay P2 (git permanent).
-P2/P3 ship independently; P4/P5 are killable without invalidating the product.
+All mutating calls require an idempotency key scoped to authenticated replica
+identity. Replayed calls MUST return the original committed result. Object
+transfer is naturally idempotent by CID.
 
----
+Receivers MUST verify objects before promotion from quarantine, enforce object
+count and byte quotas, bound concurrency, and reject decompression or expansion
+bombs. A stale expected head returns `RebaseRequired` with the current head and
+deterministic LCA evidence; it MUST NOT act like an unleased force update.
 
-## 16. Open questions
+Offline clients MAY append to Local Lines. Reconnection syncs immutable objects
+before submitting a Proposal. A client MUST retain unsynchronized reachable
+objects until the authority acknowledges their durable admission or the user
+explicitly abandons them.
 
-1. Package boundary: keep `loom-diff` separate or fold into `stop`? (leaning fold; low coupling risk).
-2. Does the Local-Line journal need its own hash-link, given content addressing already makes each leaf tamper-evident? (candidate simplification).
-3. Semantic-lane grammar rollout order after TS/JS (Python/Go next?).
-4. Single-tenant witness operation: bundle a default external witness, or require the customer to run one? (sets the G1 default posture).
-5. Hash agility: freeze the exact multihash-swap procedure and dual-hash transition window before P4.
-6. Glob-inclusion decidability: enumerate the fail-closed corner cases (negation, brace-expansion) and add goldens.
-7. Federated multi-authority: confirm default OFF for v1 (single authority) so federation is a P5 concern, not a P2 correctness burden.
-8. `effectBoundsOf()` projection: fix the exact `Effect[] → EffectBounds` mapping as a tested pure function.
+## 17. Storage, durability, recovery, and garbage collection
 
-> These are the only items not fully resolved in this document. The load-bearing
-> architectural decisions (representation authority, ledger trust topology, concurrency
-> model, and the "why build the substrate at all" graduation trigger) are committed above,
-> not deferred.
+### 17.1 Object writes
 
----
+A local durable store SHOULD implement object writes as:
 
-## 17. Gap register (today → end goal)
+1. validate size and canonical form;
+2. recompute and verify CID;
+3. write to a non-reachable temporary object;
+4. flush object data;
+5. atomically install under the CID;
+6. flush containing metadata where the platform requires it; and
+7. only then publish a reference that can make the object reachable.
 
-The single dominant gap: **AgentForge has zero VCS lower-half.** It only observes GitHub
-artifacts (`headSha`, `ChangedFile.patch`, PR numbers); it computes no diff, stores no
-versioned content, models no history, resolves no merge. So the gap to a native agentic VCS
-is not a feature list — it is **~100% of version control itself**, plus its ecosystem. The
-reusable asset is the governance upper-half, and even that is git-typed at ~331 sites.
+Equivalent transactional stores are permitted if they provide the same crash
+semantics.
 
-| Domain                  | Today                                  | End goal (Loom)                                    | Gap & difficulty                                                        | Brutal truth                                                                                               |
-| ----------------------- | -------------------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Content/object store    | none; consumes GitHub blobs by SHA     | Fabric/AFOM (CAS, typed Cells, stable `NodeIdent`) | invent the entire store — **huge**                                      | git's crown jewel; reimplementing it _is_ building a git-class DB                                          |
-| Change representation   | parse GitHub textual patch             | Transform (typed op + intent + provenance)         | whole change model + dual-lane — **huge**                               | text lane stays authoritative → the semantic win is ~0 languages at v1                                     |
-| History/lineage         | none (branches are strings)            | lineage DAG + LCA + fold                           | entire history model — **huge**                                         | LCA = merge-base; you are rebuilding git's DAG with new IDs                                                |
-| Merge/concurrency       | none (GitHub merges)                   | `reapply` + text 3-way + governed reconcile        | merge engine + concurrency — **huge**                                   | general semantic merge is unsolved; fallback is text 3-way = git (see companion `reapply-merge-engine.md`) |
-| Identity/authz          | GitHub OAuth/App + CODEOWNERS          | `did:loom` + Grants                                | DID method + capability system — **large**                              | attested ≠ proven; single-tenant witnesses are theater (§8.3)                                              |
-| Provenance              | scraped metadata + regex agent-signals | in-toto predicates + triple binding                | attestation layer — **medium** (mostly borrowed)                        | the real novelty, but still does not prove which model wrote the code                                      |
-| Distribution/sync       | GitHub webhooks                        | RSP + Ledger + witnesses                           | whole sync + trust anchor — **huge**                                    | git plumbing took ~20 years; offline/scale/perf unsolved by a small team                                   |
-| Governance (reusable)   | strong: policy/evidence/CCR/audit      | re-homed onto Transforms                           | rewrite input adapters + rebuild detectors + re-key schema — **medium** | the only part with real reusable value; detectors (the differentiator) must be rebuilt                     |
-| Human + tooling surface | GitHub PR UI, IDE diff, CI             | materialized working copy + native review          | entire client/tooling surface — **huge + adoption-gated**               | humans need textual diffs; compilers/CI read a filesystem; this is where it dies                           |
-| Ecosystem/adoption      | rides GitHub's network                 | git-free                                           | everything (network effects) — **existential**                          | superior VCS tech (Pijul, Darcs, Fossil, Sapling) all lost to git                                          |
+### 17.2 Recovery
 
-**Standards that must be invented** (vs. borrowed): `AFOM`, `STOP`+`reapply`, `RATP` are the
-genuinely novel compositions; `PXP/PAL`, `Ledger+Witness`, `Identity+Grant` are ~90% borrowed
-(in-toto/SLSA/DSSE, RFC 6962/CT, DID/UCAN). Closing the full gap ≈ 64 eng-months (P1–P5),
-of which only ~38 (P1–P3, still on git) yield a shippable product; P4–P5 are kill-gated.
+On startup after an unclean shutdown, Loom MUST:
 
----
+- validate or replay the transaction journal;
+- remove or quarantine incomplete temporary objects;
+- verify every Line head and referenced AdmissionRecord;
+- detect a head/ledger mismatch;
+- complete or roll back prepared admissions deterministically;
+- preserve unsynchronized Local Lines; and
+- expose degraded read-only recovery mode if integrity cannot be restored
+  automatically.
 
-## 18. Independent stress-test & scope revision
+Repair MUST never fabricate missing content. Missing reachable objects are data
+loss and MUST be reported with their CIDs and affected roots.
 
-A fresh, independent adversarial pass (claim-audit + contrarian-architect + kill-shot +
-adjudicator, none allowed to rubber-stamp) reached the same conclusion **from the primary
-source**: the settled verdict **HOLDS at ~0.85 confidence**, with **one downward scope
-revision**. No new fatal flaw was found; the multi-pass convergence is robust, not a shared
-blind spot. Three corrections supersede the plan as written:
+### 17.3 Garbage collection
 
-- **18.1 The value quadrant is nearly empty.** The intersection of _valuable ∩ defensible ∩
-  demanded_ is close to ∅: the defensible piece (deterministic-check reproducibility) is
-  guaranteed-by-construction — a pure function + signature — hence **trivially copyable (low
-  moat)**; the valuable piece (AI-authorship provenance) is **capped by the plan's own
-  attested-not-proven constraint** (§9.4: `weightsDigest:"undisclosed"`, the model is a
-  trusted black box); the novel-hard piece (Grant attenuation) is **pre-conceded to advisory
-  at G2**. Nothing sits in all three quadrants at once. This does not overturn the plan; it
-  narrows the product.
+GC is mark-and-sweep over explicit roots. Roots include Space genesis, all Local
+and Shared Line heads, open Proposals, retained AdmissionRecords, ledger
+checkpoints, active working-copy bases, sync leases, pinned exports, and backup
+leases.
 
-- **18.2 Integrate, do not reimplement (corrects §10 module layout and §11 P1/P4/P5).** The
-  realistic build assembles the provenance/trust layer from off-the-shelf **cosign/DSSE +
-  Rekor + UCAN/Biscuit + did:web/did:key**, rather than building `packages/fabric`,
-  `packages/ledger`, `packages/witness`, `packages/identity`, `packages/grant` from spec.
-  **Git already is a content-addressed DAG**, so `Fabric`/`AFOM` (P1) and the git-free
-  substrate (P4/P5) should **not** be built for the stated single-tenant buyer. Single-tenant
-  fork-consistency is recovered by an **external, second-trust-domain witness over git commit
-  SHAs** — obtaining §8's guarantee without owning the substrate. Build the thin novel
-  binding only if customers pay for the last ~10%.
+Objects younger than the configured grace period MUST NOT be collected. GC MUST
+use a snapshot or barrier so an object cannot become reachable after mark but
+before sweep and then be deleted. Interrupted GC MUST be restartable. Deleting a
+reachable object is a critical conformance failure.
 
-- **18.3 The G0 kill-gate measures the wrong variable (corrects §11.1).** G0 as written
-  ("signed detector output reproducible across two runners") **cannot fail** — detectors are
-  pure functions over content-addressed inputs under a pinned registry, so it tests "is a
-  pure function deterministic," not "will anyone pay." The first real demand signal ("≥1
-  design partner governed") lands ~26 EM in, and _governed ≠ paying_. **Corrected G0:** before
-  any custom build, prove a design partner will **pay** for the delta over
-  CODEOWNERS + branch-protection + off-the-shelf cosign/Rekor/SLSA. If not, the 38 EM is
-  uninvestable and the program stops at a spreadsheet.
+### 17.4 Backup and restore
 
-- **18.4 Reapply can re-attach a stale approval (corrects §3.5; detailed in the merge-engine
-  companion).** A `reapply` that changes `resultState` produces a new Transform CID, which
-  breaks the provenance subject-pin (§9.5) — so a prior `human-approval` attestation must not
-  carry over. **Rule:** any `reapply` whose outcome changes `resultState` invalidates prior
-  human approvals and re-triggers reviewer requirements.
+Backups MUST include objects, Line metadata, admission/idempotency state, ledger,
+actor and Grant state, policies, and encryption metadata. Restore validation MUST
+verify hashes, Line reachability, State reproduction samples, ledger consistency,
+and key references before the restored authority accepts writes.
 
-**Revised bottom line:** build a _narrower_ thing, gated on money not math — ship
-cryptographic provenance + transparency-logged Change Control Records as a **priced
-AgentForge feature assembled from existing sigstore/cosign/DSSE/UCAN/DID primitives + an
-external witness over git SHAs**, with a willingness-to-pay gate in front of the build. Let
-the native substrate (P4/P5) die at the corrected gate unless a federated, multi-party,
-instrumented customer with a hard unbypassability requirement actually appears and pays.
+## 18. Security and privacy model
+
+Loom assumes malicious or compromised agents, untrusted imported repositories,
+malformed objects, stale clients, compromised credentials, curious operators,
+and potentially dishonest authorities or witnesses.
+
+Implementations MUST address:
+
+- path traversal, symlink traversal, device files, and materialization collisions;
+- object and decompression bombs;
+- signature replay and cross-protocol signature confusion;
+- key theft, rotation, revocation, and recovery;
+- Grant amplification and undecidable selector matching;
+- stale approval reuse;
+- proposal replay and idempotency poisoning;
+- time-of-check/time-of-use races in admission;
+- Line-head rollback and split views;
+- malicious recipes and sandbox escapes;
+- secret leakage through objects, logs, diffs, provenance, and exports; and
+- denial of service through hot Lines, deep DAGs, pathological merges, or proof
+  generation.
+
+Signing keys MUST NOT be stored as ordinary Loom objects. Recipe execution that
+claims `pinned` determinism MUST run in a hermetic sandbox with no ambient
+network, clock, filesystem, locale, or undeclared environment access.
+
+Security-sensitive failures MUST be fail-closed at shared admission. Local tools
+MAY offer explicit recovery overrides, but an override MUST create durable audit
+evidence and MUST NOT silently convert corrupt data into valid history.
+
+## 19. Git interoperability
+
+Git is a bridge, not a dependency of the native model.
+
+### 19.1 Import
+
+Two modes are defined:
+
+- **Snapshot import:** one Git tree becomes the Loom genesis State. Historical
+  lineage and provenance are not invented.
+- **DAG import:** commits become imported Transforms, parent relationships become
+  Loom ancestry, and trees become States. Historical intent, actor identity,
+  Recipes, approvals, and stable NodeIdents are marked unknown or imported,
+  never presented as native facts.
+
+Import MUST preserve file bytes, executable bits, symlink targets, and Gitlink
+targets. It MUST report unsupported filters, sparse state, missing objects,
+case-fold collisions, unsafe paths, and submodule limitations before cutover.
+
+Git does not store stable file identity. Rename detection during import is
+heuristic evidence and MUST NOT be represented as native verified identity
+without explicit confirmation. Path-derived prototype identities are not
+conformant native NodeIdents.
+
+### 19.2 Export and mirroring
+
+Export MUST materialize the exact authoritative bytes and supported modes of a
+State. Every loss, omission, normalization, or unsupported object MUST be
+reported. A mirror maps Loom admissions to Git commits, but the Git commit is a
+projection; it is not the authoritative Loom Transform.
+
+During a dual-safety pilot, every admitted State SHOULD be exportable to a
+recoverable Git mirror. Mirror divergence MUST stop automatic cutover and
+produce explicit evidence.
+
+## 20. Current implementation status
+
+The current executable packages prove important slices but do not yet satisfy a
+native conformance profile.
+
+Implemented and tested today:
+
+- deterministic canonical JSON and SHA-256 prototype addresses;
+- flat path-to-Cell States with text content;
+- stable identity carried through moves;
+- typed put/delete/move/patch operations and effect coverage checks;
+- LCA, conservative merge classification, text three-way merge, and typed conflicts;
+- two pure reapply engines, invariant checks, scope enforcement, and divergence;
+- deterministic capability Grant attenuation and authorization;
+- Git-ref import into prototype States;
+- deterministic policy evaluation over Loom-derived text diffs;
+- DSSE/in-toto deterministic-check attestations with subject pinning; and
+- a repository-local `ratify` and `verify` CLI demonstration.
+
+Not yet implemented as a native system:
+
+- DAG-CBOR/CIDv1 encoding and binary-safe chunked objects;
+- durable object storage and transactional Line persistence;
+- native working-copy materialization and change journal;
+- native Proposal/admission state machine and atomic CAS;
+- persistent actor identity, key lifecycle, and Grant revocation;
+- admission ledger, witnesses, and verification bundles;
+- native replication and synchronization;
+- garbage collection, backup, restore, and fault-injection recovery;
+- full Git import/export fidelity; and
+- native end-user and agent clients.
+
+## 21. Implementation roadmap and gates
+
+The native Loom destination is a strategic decision. User research determines
+sequencing and adoption, not whether Git remains the permanent substrate.
+
+| Phase                                 | Deliverable                                                                                                    | Required exit evidence                                                                                                   |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| **0 — Specification**                 | Stable object semantics, threat model, conformance IDs, and decision register                                  | No unresolved circular identities; normative schemas reviewed; prototype gaps enumerated                                 |
+| **1 — Native local kernel**           | Object store, States, Transforms, Local Lines, working copy, merge/reapply, Git import/export, recovery and GC | Cross-process address determinism; fuzzed round trips; crash recovery; no silent loss; byte-exact materialization        |
+| **2 — Shared authority**              | Shared Lines, identities, Grants, native policy facts, atomic admission, ledger, backup/restore                | Unauthorized admission impossible in tests; CAS correctness; acknowledged writes survive faults; complete decision trail |
+| **3 — Agent-native protocol**         | Intent and Recipe SDK, delegated agent sessions, effect capture, work graphs, native review and evidence       | Multiple agents complete real concurrent work with traceable authority and bounded conflicts                             |
+| **4 — Dual-safety pilot**             | Loom-authoritative project mirrored to Git with production-like operations                                     | At least 30 days; zero unrecoverable data loss; every admitted State exportable; restore drills pass                     |
+| **5 — Witnessed and federated trust** | Independent witnesses, consistency proofs, multi-authority reconciliation                                      | Split-view detection under partition; quorum safety; offline verification; no undetected admitted fork in fault tests    |
+
+No phase may trade away a prior phase's integrity, recovery, or authorization
+requirements. Feature breadth is secondary to durability.
+
+## 22. Performance objectives
+
+Performance targets are gates only after correctness tests pass:
+
+- local operation capture p95 under 20 ms for a warm small workspace;
+- object existence query for 1,000 CIDs p95 under 30 ms on a local authority;
+- cached working-copy status p95 under 200 ms for 100,000 paths;
+- Shared Line admission p95 under 3 seconds excluding user review and long-running checks;
+- Grant authorization depth up to 5 p95 under 5 ms;
+- offline proof verification p95 under 10 ms for a one-million-entry ledger; and
+- recovery time proportional to the incomplete journal, not total repository size.
+
+Benchmarks MUST publish dataset, hardware, storage mode, cache state, object
+sizes, concurrency, and percentile method. Unqualified benchmark claims are not
+conformant evidence.
+
+## 23. Decision register
+
+### Resolved
+
+1. **Loom is the product and native VCS is the destination.** Git is a migration
+   and interoperability bridge.
+2. **Authoritative bytes are mandatory.** Semantic facets are additive and
+   fail-closed.
+3. **Governance owns Shared Line admission.** It is not an external check.
+4. **Transforms exclude post-address signatures and provenance.** Proposal,
+   attestation, AdmissionRecord, and ledger objects bind them without a hash cycle.
+5. **NodeIdent creation uses an authoring nonce, not the creating Transform CID.**
+6. **Changed merge/reapply results require fresh approval.**
+7. **Only pinned hermetic Recipes may create verified automatic reapply results.**
+8. **DAG-CBOR/CIDv1/SHA-256 is the pre-1.0 target encoding.** Hash agility is
+   designed but not activated.
+9. **Single-authority deployments claim tamper evidence, not host independence.**
+10. **Durability and recovery gates precede ecosystem and convenience features.**
+11. **SpaceId and LineId use nonce-based domain-separated derivation.** Neither
+    depends on an object that embeds the derived identifier.
+
+### Open before `0.2`
+
+1. Select the first durable local object-store and Line-journal implementation.
+2. Freeze the canonical DAG-CBOR schemas and extension mechanism.
+3. Specify `did:loom` or formally limit `0.x` to existing DID methods.
+4. Select the hermetic Recipe sandbox and resource accounting model.
+5. Define the bounded invariant DSL and freeze extension/versioning rules for
+   the effect-fingerprint schema.
+6. Freeze the HTTP/2 wire binding, authentication, and negotiation messages.
+7. Define encryption-at-rest and optional private-object addressing without
+   weakening deduplication or verification claims.
+8. Define large monorepo sharding and cross-Line atomic proposal semantics.
+
+## 24. Conformance
+
+The required test IDs, fault matrix, pilot evidence, and claim restrictions are
+defined in [validation-plan.md](validation-plan.md). A release MUST publish:
+
+- specification version and profiles;
+- exact test results;
+- unsupported requirements;
+- storage and durability profile;
+- trust and witness topology;
+- migration limitations;
+- security review status; and
+- recovery drill evidence.
+
+Passing unit tests for prototype libraries is valuable evidence but is not a
+substitute for native durability, recovery, interoperability, and adversarial
+conformance testing.

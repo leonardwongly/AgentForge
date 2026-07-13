@@ -1,5 +1,10 @@
 # AgentForge Merge Guard — V2.0 Roadmap
 
+> **Legacy product plan.** This document is retained as historical planning for
+> the GitHub-first Merge Guard runtime. It is not the roadmap for Loom and MUST
+> NOT be used to prioritize native VCS work. The authoritative Loom roadmap is
+> in [docs/loom/loom-detailed-design.md](loom/loom-detailed-design.md#21-implementation-roadmap-and-gates).
+
 > This document covers V2+ planning. See [docs/roadmap.md](roadmap.md) for
 > historical V1 context.
 >

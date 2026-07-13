@@ -25,6 +25,24 @@ This repository is a working TypeScript monorepo for the Merge Guard V1 runtime:
 
 For product positioning and non-goals, see [docs/product-overview.md](docs/product-overview.md) and [docs/launch-positioning-and-pricing.md](docs/launch-positioning-and-pricing.md).
 
+## Loom VCS Direction
+
+This repository also contains the pre-1.0 implementation and authoritative
+specification for **Loom**, a native version-control system designed for software
+development in which humans, agents, and automation are first-class actors.
+
+Loom is the product and protocol name. Its destination is a native object,
+history, identity, capability, synchronization, and governed-admission model.
+Git and GitHub are migration and interoperability bridges, not Loom's source of
+truth. The released Merge Guard runtime remains documented below as the current
+operational system while its reusable policy, evidence, and provenance work is
+evolved into Loom.
+
+Start with the [Loom VCS specification index](docs/loom/README.md). The current
+executable Loom packages prove the core algebra, merge/reapply, capability,
+Git-bridge, provenance, ratification, and CLI slices; they do not yet constitute
+a durable native VCS conformance claim.
+
 ## Release Scope
 
 AgentForge is a self-hosted GitHub governance service. The current release is
@@ -70,6 +88,11 @@ packages/
   detectors/ Deterministic PR fact extraction
   evidence/  Evidence derivation and PR-body evidence helpers
   github/    Webhook verification, normalization, GitHub clients, check output
+  loom-core/ Native Loom object/change prototype, merge/reapply, and Grants
+  loom-cli/  Repository-local Loom ratify/verify demonstration
+  loom-git-bridge/ Git interoperability prototype
+  loom-provenance/ DSSE/in-toto provenance prototype
+  loom-ratify/ Loom-to-governance evaluation adapter
   policy/    YAML policy schema, parser, built-in policy packs, evaluator
   records/   Change Control Records, audit events, exports, compliance packages
   reviewers/ Reviewer routing and CODEOWNERS parsing
@@ -605,6 +628,7 @@ For API, worker, database, or dashboard changes, also run the relevant integrati
 
 ## More Documentation
 
+- [docs/loom/README.md](docs/loom/README.md) - authoritative Loom VCS specification index, implementation mapping, and change process.
 - [docs/product-overview.md](docs/product-overview.md) - product scope, buyer hypothesis, and non-goals.
 - [docs/github-app-setup.md](docs/github-app-setup.md) - GitHub App setup details.
 - [docs/policy-as-code.md](docs/policy-as-code.md) - policy schema and examples.
@@ -619,6 +643,6 @@ For API, worker, database, or dashboard changes, also run the relevant integrati
 - [docs/railway-deployment.md](docs/railway-deployment.md) - Railway topology, variables, deploy, validation, and rollback.
 - [docs/runbook.md](docs/runbook.md) - operational launch and rollback steps.
 - [docs/roadmap.md](docs/roadmap.md) - backlog and intentionally excluded V1 capabilities.
-- [docs/roadmap-v2.md](docs/roadmap-v2.md) - V2+ planning: intelligence layer, integration surface, platform expansion, and compliance depth.
+- [docs/roadmap-v2.md](docs/roadmap-v2.md) - retained legacy Merge Guard V2 planning; the native Loom roadmap is authoritative for future VCS work.
 - [docs/release-checklist.md](docs/release-checklist.md) - public OSS release checklist for repository metadata, secret hygiene, and auth readiness.
 - [docs/launch-readiness-evidence.md](docs/launch-readiness-evidence.md) - V1 launch-readiness evidence and re-check commands.
