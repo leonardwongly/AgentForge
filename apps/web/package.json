@@ -15,13 +15,13 @@
     "@agentforge/core": "workspace:*",
     "@agentforge/ui": "workspace:*",
     "ioredis": "5.11.1",
-    "lucide-react": "1.22.0",
-    "next": "16.2.10",
-    "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "lucide-react": "1.28.0",
+    "next": "16.2.12",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@types/react": "19.2.17",
-    "@types/react-dom": "19.2.3"
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4"
   }
 }

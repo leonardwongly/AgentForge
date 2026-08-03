@@ -21,7 +21,7 @@
     "@agentforge/policy": "workspace:*",
     "@agentforge/records": "workspace:*",
     "@agentforge/security": "workspace:*",
-    "bullmq": "5.79.2",
+    "bullmq": "6.0.0",
     "ioredis": "5.11.1"
   }
 }

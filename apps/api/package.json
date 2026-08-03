@@ -23,10 +23,10 @@
     "@agentforge/records": "workspace:*",
     "@agentforge/reviewers": "workspace:*",
     "@agentforge/security": "workspace:*",
-    "@fastify/cors": "11.2.0",
-    "@fastify/rate-limit": "11.1.0",
-    "bullmq": "5.79.2",
-    "fastify": "5.9.0",
+    "@fastify/cors": "11.3.0",
+    "@fastify/rate-limit": "11.2.0",
+    "bullmq": "6.0.0",
+    "fastify": "5.11.0",
     "ioredis": "5.11.1",
     "zod": "4.4.3"
   }
