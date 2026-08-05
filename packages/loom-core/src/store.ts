@@ -27,6 +27,7 @@ import { join } from "node:path";
 
 import { address, verifyAddress } from "./addressing.js";
 import { cidV1, decodeDagCbor, encodeDagCbor, MULTICODEC } from "./codec.js";
+import { FileLock } from "./lock.js";
 import type { Cid, LineScope } from "./types.js";
 
 // ---- Content-addressed object store ----------------------------------------
@@ -180,11 +181,13 @@ export interface LineAdvanceInput {
 }
 
 export class FileLineJournal {
+  private readonly root: string;
   private readonly linesDir: string;
   private readonly idemDir: string;
   private chain: Promise<unknown> = Promise.resolve();
 
   constructor(root: string) {
+    this.root = root;
     this.linesDir = join(root, "lines");
     this.idemDir = join(root, "idempotency");
     mkdirSync(this.linesDir, { recursive: true });
@@ -209,7 +212,17 @@ export class FileLineJournal {
    * Serialized in-process; each successful advance is committed atomically.
    */
   advance(input: LineAdvanceInput): Promise<AdvanceOutcome> {
-    const run = this.chain.then(() => this.advanceSync(input));
+    // Serialize in-process via the promise chain AND take a cross-process file
+    // lock so the CAS read-modify-write is safe across multiple processes.
+    const run = this.chain.then(async () => {
+      const lock = new FileLock(this.root, `line:${input.name}`);
+      const release = await lock.acquire();
+      try {
+        return this.advanceSync(input);
+      } finally {
+        release();
+      }
+    });
     // Keep the chain alive even if a caller never awaits the result.
     this.chain = run.catch(() => undefined);
     return run;

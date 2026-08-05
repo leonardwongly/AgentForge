@@ -14,3 +14,4 @@ export * from "./blob.js";
 export * from "./did.js";
 export * from "./invariant-dsl.js";
 export * from "./sandbox.js";
+export * from "./lock.js";
