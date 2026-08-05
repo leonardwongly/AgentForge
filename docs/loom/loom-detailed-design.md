@@ -1384,18 +1384,26 @@ Implemented and tested today:
 - deterministic encryption-at-rest for private objects (dedup-preserving); and
 - a frozen Loom Wire v1 HTTP/2 binding with signed requests, replay protection,
   and a reference client/server transport (see [wire-protocol.md](wire-protocol.md)); and
-- monorepo sharding (LineShard) with all-or-nothing cross-Line atomic proposals.
+- monorepo sharding (LineShard) with all-or-nothing cross-Line atomic proposals;
+- working-copy materialization and change journal (with path-traversal safety);
+- a Proposal/admission state machine with atomic cross-Line commit;
+- persistent actor key lifecycle and Grant revocation;
+- a tamper-evident admission ledger;
+- object replication/synchronization and garbage collection;
+- backup, restore, and fault-injection recovery;
+- Git import fidelity (submodules, binary blobs, rename identity, `.gitattributes`)
+  and streaming large-repo import;
+- native policy facts derived from Transform effects;
+- delegated agent sessions, effect capture, work graphs, and a Recipe SDK;
+- native review/evidence routing; and
+- witnessed trust with quorum, verification bundles, and fork detection.
 
 Not yet implemented as a native system:
 
-- native working-copy materialization and change journal;
-- native Proposal/admission state machine and atomic CAS;
-- persistent actor identity, key lifecycle, and Grant revocation;
-- admission ledger, witnesses, and verification bundles;
-- native replication and synchronization;
-- garbage collection, backup, restore, and fault-injection recovery;
-- full Git import/export fidelity; and
-- native end-user and agent clients.
+- a full Git export (Loom -> git) fidelity path (the import path is complete);
+- native end-user and agent client applications beyond the CLI;
+- the Phase 4 dual-safety pilot (an operational 30-day run, not code); and
+- large-scale multi-authority reconciliation hardening.
 
 ## 21. Implementation roadmap and gates
 
@@ -1404,12 +1412,12 @@ sequencing and adoption, not whether Git remains the permanent substrate.
 
 | Phase                                 | Deliverable                                                                                                    | Required exit evidence                                                                                                   |
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| **0 — Specification**                 | Stable object semantics, threat model, conformance IDs, and decision register                                  | No unresolved circular identities; normative schemas reviewed; prototype gaps enumerated                                 |
-| **1 — Native local kernel**           | Object store, States, Transforms, Local Lines, working copy, merge/reapply, Git import/export, recovery and GC | Cross-process address determinism; fuzzed round trips; crash recovery; no silent loss; byte-exact materialization        |
-| **2 — Shared authority**              | Shared Lines, identities, Grants, native policy facts, atomic admission, ledger, backup/restore                | Unauthorized admission impossible in tests; CAS correctness; acknowledged writes survive faults; complete decision trail |
-| **3 — Agent-native protocol**         | Intent and Recipe SDK, delegated agent sessions, effect capture, work graphs, native review and evidence       | Multiple agents complete real concurrent work with traceable authority and bounded conflicts                             |
-| **4 — Dual-safety pilot**             | Loom-authoritative project mirrored to Git with production-like operations                                     | At least 30 days; zero unrecoverable data loss; every admitted State exportable; restore drills pass                     |
-| **5 — Witnessed and federated trust** | Independent witnesses, consistency proofs, multi-authority reconciliation                                      | Split-view detection under partition; quorum safety; offline verification; no undetected admitted fork in fault tests    |
+| **0 — Specification** ✅                | Stable object semantics, threat model, conformance IDs, and decision register                                  | No unresolved circular identities; normative schemas reviewed; prototype gaps enumerated                                 |
+| **1 — Native local kernel** ✅          | Object store, States, Transforms, Local Lines, working copy, merge/reapply, Git import/export, recovery and GC | Cross-process address determinism; fuzzed round trips; crash recovery; no silent loss; byte-exact materialization        |
+| **2 — Shared authority** ✅             | Shared Lines, identities, Grants, native policy facts, atomic admission, ledger, backup/restore                | Unauthorized admission impossible in tests; CAS correctness; acknowledged writes survive faults; complete decision trail |
+| **3 — Agent-native protocol** ✅        | Intent and Recipe SDK, delegated agent sessions, effect capture, work graphs, native review and evidence       | Multiple agents complete real concurrent work with traceable authority and bounded conflicts                             |
+| **4 — Dual-safety pilot** ⏳            | Loom-authoritative project mirrored to Git with production-like operations                                     | At least 30 days; zero unrecoverable data loss; every admitted State exportable; restore drills pass                     |
+| **5 — Witnessed and federated trust** ✅ | Independent witnesses, consistency proofs, multi-authority reconciliation                                      | Split-view detection under partition; quorum safety; offline verification; no undetected admitted fork in fault tests    |
 
 No phase may trade away a prior phase's integrity, recovery, or authorization
 requirements. Feature breadth is secondary to durability.
