@@ -25,7 +25,8 @@ export type VerifiedFact = {
     | "ci_status"
     | "policy_config"
     | "manifest_parser"
-    | "user_attestation";
+    | "user_attestation"
+    | "loom_effects";
   path?: string | undefined;
   evidence: string;
   confidence: FactConfidence;

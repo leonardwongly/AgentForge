@@ -7,9 +7,10 @@ import type {
   VerifiedFact
 } from "@agentforge/core";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/detectors";
-import { stateAddress, type State } from "@agentforge/loom-core";
+import { stateAddress, type Effect, type State } from "@agentforge/loom-core";
 import { evaluateMergeGuard, type PolicyConfig } from "@agentforge/policy";
 import { fabricDiffView } from "./diff-view.js";
+import { factsFromEffects } from "./facts.js";
 
 /**
  * The Loom-native governance input: a base -> result Transform plus the
@@ -33,6 +34,11 @@ export interface TransformEvaluationInput {
   readonly reviews?: ReadonlyArray<PullRequestReview> | undefined;
   readonly manualEvidence?: ReadonlyArray<ManualEvidenceInput> | undefined;
   readonly labels?: ReadonlyArray<string> | undefined;
+  /**
+   * The Transform's declared effects. When provided, native policy facts are
+   * derived directly from these effects instead of re-inferred from the diff.
+   */
+  readonly effects?: ReadonlyArray<Effect> | undefined;
 }
 
 export interface TransformEvaluation {
@@ -66,7 +72,10 @@ export function evaluateTransformSet(input: TransformEvaluationInput): Transform
   };
 
   const config = detectorConfigFromPolicy(input.policy);
-  const facts = extractVerifiedFacts(pr, config);
+  const facts =
+    input.effects !== undefined
+      ? factsFromEffects({ effects: input.effects, paths: diff.map((file) => file.filename) })
+      : extractVerifiedFacts(pr, config);
   const result = evaluateMergeGuard(pr, facts, input.policy);
 
   return { diff, facts, result, synthesizedInput: pr };
