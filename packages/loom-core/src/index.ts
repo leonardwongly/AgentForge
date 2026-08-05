@@ -20,3 +20,4 @@ export * from "./wire.js";
 export * from "./wire-transport.js";
 export * from "./proposal.js";
 export * from "./materialize.js";
+export * from "./admission.js";
