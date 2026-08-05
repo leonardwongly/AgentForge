@@ -26,6 +26,7 @@
       "@agentforge/evidence": ["packages/evidence/src/index.ts"],
       "@agentforge/github": ["packages/github/src/index.ts"],
       "@agentforge/loom-core": ["packages/loom-core/src/index.ts"],
+      "@agentforge/loom-agent": ["packages/loom-agent/src/index.ts"],
       "@agentforge/loom-cli": ["packages/loom-cli/src/index.ts"],
       "@agentforge/loom-git-bridge": ["packages/loom-git-bridge/src/index.ts"],
       "@agentforge/loom-provenance": ["packages/loom-provenance/src/index.ts"],

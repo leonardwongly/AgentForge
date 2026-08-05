@@ -257,6 +257,12 @@ importers:
         specifier: 22.0.1
         version: 22.0.1
 
+  packages/loom-agent:
+    dependencies:
+      '@agentforge/loom-core':
+        specifier: workspace:*
+        version: link:../loom-core
+
   packages/loom-cli:
     dependencies:
       '@agentforge/core':
