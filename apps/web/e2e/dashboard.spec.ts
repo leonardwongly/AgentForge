@@ -390,3 +390,27 @@ test("evidence workflow resolves requirements through record actions", async ({
   await page.goto("/dashboard/policy-insights");
   await expect(page.getByText("No Change Control Records yet")).toHaveCount(0);
 });
+
+test("standalone ingestion creates a Change Control Record without GitHub", async ({ page }) => {
+  await page.goto("/records");
+  await expect(
+    page.getByRole("heading", { name: "Create Change Control Record" })
+  ).toBeVisible();
+  await expect(page.getByText("Standalone ingestion")).toBeVisible();
+
+  await page.getByLabel("Repository (owner/name)").fill("acme/standalone-e2e");
+  await page.getByLabel("PR number").fill("9001");
+  await page.getByLabel("Title").fill("Standalone billing change");
+  await page.getByLabel("Author").fill("alice");
+  await page.getByLabel("Head branch").fill("feature/billing");
+  await page.getByLabel("Head SHA").fill("sha-standalone-e2e");
+  await page.getByPlaceholder("src/billing/checkout.ts").fill("src/billing/migrate.ts");
+
+  await page.getByRole("button", { name: "Create Change Control Record" }).click();
+
+  await expect(page).toHaveURL(/\/records\/[a-f0-9-]+\?updated=standalone-record-created$/u);
+  await expect(page.getByRole("heading", { name: "Change Control Record" })).toBeVisible();
+  await expect(page.getByText("acme/standalone-e2e").first()).toBeVisible();
+  // No GitHub PR link for a standalone (non-GitHub-backed) record.
+  await expect(page.getByRole("link", { name: "GitHub PR" })).toHaveCount(0);
+});

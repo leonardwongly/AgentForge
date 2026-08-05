@@ -69,13 +69,92 @@ export async function createCompliancePackageExport(formData: FormData): Promise
   );
 }
 
+// Standalone ingestion: create a Change Control Record directly from PR
+// details without requiring a GitHub webhook. The record is persisted through
+// the policy-preview API and evaluated against the selected policy pack.
+export async function createStandaloneRecord(formData: FormData): Promise<void> {
+  const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
+  const repositoryFullName = readString(formData, "repositoryFullName");
+  const pullRequestNumber = readBoundedInteger(formData, "pullRequestNumber", 0, 1, 1_000_000);
+  const title = readString(formData, "title");
+  const authorLogin = readString(formData, "authorLogin");
+  const baseBranch = readString(formData, "baseBranch");
+  const headBranch = readString(formData, "headBranch");
+  const headSha = readString(formData, "headSha");
+  const body = readString(formData, "body");
+  const policyPackId = readString(formData, "policyPackId") ?? "fintech";
+  const changedFiles = readChangedFiles(formData);
+
+  if (
+    !repositoryFullName ||
+    !title ||
+    !authorLogin ||
+    !baseBranch ||
+    !headBranch ||
+    !headSha ||
+    changedFiles.length === 0
+  ) {
+    redirectWithError(returnTo, "Provide repository, PR details, and at least one changed file.");
+  }
+
+  let recordId: string;
+  try {
+    const actor = await resolveDashboardActor();
+    const pack = await requestJson<{ contentYaml?: string }>(
+      actor,
+      `/api/policy-packs/${encodeURIComponent(policyPackId)}`,
+      { method: "GET" }
+    );
+    if (!pack.contentYaml) {
+      throw new Error("Selected policy pack does not include policy YAML.");
+    }
+    const payload = await requestJson<{ record: { id: string; repositoryId: string } }>(
+      actor,
+      "/api/policies/preview",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          contentYaml: pack.contentYaml,
+          persist: true,
+          pr: {
+            repositoryFullName,
+            pullRequestNumber,
+            title,
+            authorLogin,
+            baseBranch,
+            headBranch,
+            headSha,
+            ...(body ? { body } : {}),
+            changedFiles
+          }
+        })
+      }
+    );
+    await requestJson(
+      actor,
+      `/api/repositories/${encodeURIComponent(payload.record.repositoryId)}/policy`,
+      { method: "PUT", body: JSON.stringify({ contentYaml: pack.contentYaml }) }
+    );
+    recordId = payload.record.id;
+  } catch (error) {
+    redirectWithError(
+      returnTo,
+      error instanceof Error ? error.message : "Change Control Record could not be created."
+    );
+  }
+  revalidatePath("/records");
+  revalidatePath("/dashboard");
+  redirect(`/records/${encodeURIComponent(recordId)}?updated=standalone-record-created`);
+}
+
 export async function submitEvidence(formData: FormData): Promise<void> {
   const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
   const recordId = readString(formData, "recordId");
   const evidenceId = readString(formData, "evidenceId");
   const kind = readString(formData, "kind");
   const content = readString(formData, "content");
-  if (!recordId || !content || (!evidenceId && !kind)) {
+  const expectedRevision = readRevision(formData);
+  if (!recordId || expectedRevision === undefined || !content || (!evidenceId && !kind)) {
     redirectWithError(returnTo, "evidence-submission-required");
   }
 
@@ -83,11 +162,13 @@ export async function submitEvidence(formData: FormData): Promise<void> {
     const actor = await resolveDashboardActor();
     await requestJson(actor, `/api/pull-requests/${encodeURIComponent(recordId)}/evidence`, {
       method: "POST",
-      body: JSON.stringify({ evidenceId, kind, content })
+      body: JSON.stringify({ evidenceId, kind, content, expectedRevision })
     });
   } catch (error) {
-    void error;
-    redirectWithError(returnTo, "evidence-submission-failed");
+    redirectWithError(
+      returnTo,
+      error instanceof Error ? error.message : "evidence-submission-failed"
+    );
   }
 
   revalidateEvidencePaths(returnTo);
@@ -98,7 +179,8 @@ export async function approveEvidence(formData: FormData): Promise<void> {
   const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
   const evidenceId = readString(formData, "evidenceId");
   const recordId = readString(formData, "recordId");
-  if (!evidenceId) {
+  const expectedRevision = readRevision(formData);
+  if (!evidenceId || !recordId || expectedRevision === undefined) {
     redirectWithError(returnTo, "evidence-approval-required");
   }
 
@@ -106,11 +188,13 @@ export async function approveEvidence(formData: FormData): Promise<void> {
     const actor = await resolveDashboardActor();
     await requestJson(actor, `/api/evidence/${encodeURIComponent(evidenceId)}/approve`, {
       method: "PATCH",
-      body: JSON.stringify({ recordId })
+      body: JSON.stringify({ recordId, expectedRevision })
     });
   } catch (error) {
-    void error;
-    redirectWithError(returnTo, "evidence-approval-failed");
+    redirectWithError(
+      returnTo,
+      error instanceof Error ? error.message : "evidence-approval-failed"
+    );
   }
 
   revalidateEvidencePaths(returnTo);
@@ -122,7 +206,8 @@ export async function rejectEvidence(formData: FormData): Promise<void> {
   const evidenceId = readString(formData, "evidenceId");
   const recordId = readString(formData, "recordId");
   const reason = readString(formData, "reason");
-  if (!evidenceId || !reason) {
+  const expectedRevision = readRevision(formData);
+  if (!evidenceId || !recordId || expectedRevision === undefined || !reason) {
     redirectWithError(returnTo, "evidence-rejection-required");
   }
 
@@ -130,11 +215,13 @@ export async function rejectEvidence(formData: FormData): Promise<void> {
     const actor = await resolveDashboardActor();
     await requestJson(actor, `/api/evidence/${encodeURIComponent(evidenceId)}/reject`, {
       method: "PATCH",
-      body: JSON.stringify({ recordId, reason })
+      body: JSON.stringify({ recordId, expectedRevision, reason })
     });
   } catch (error) {
-    void error;
-    redirectWithError(returnTo, "evidence-rejection-failed");
+    redirectWithError(
+      returnTo,
+      error instanceof Error ? error.message : "evidence-rejection-failed"
+    );
   }
 
   revalidateEvidencePaths(returnTo);
@@ -145,7 +232,8 @@ export async function approveReviewer(formData: FormData): Promise<void> {
   const returnTo = safeReturnPath(readString(formData, "returnTo") ?? "/records");
   const reviewerId = readString(formData, "reviewerId");
   const recordId = readString(formData, "recordId");
-  if (!reviewerId) {
+  const expectedRevision = readRevision(formData);
+  if (!reviewerId || !recordId || expectedRevision === undefined) {
     redirectWithError(returnTo, "reviewer-approval-required");
   }
 
@@ -153,11 +241,13 @@ export async function approveReviewer(formData: FormData): Promise<void> {
     const actor = await resolveDashboardActor();
     await requestJson(actor, `/api/reviewers/${encodeURIComponent(reviewerId)}/approve`, {
       method: "PATCH",
-      body: JSON.stringify({ recordId })
+      body: JSON.stringify({ recordId, expectedRevision })
     });
   } catch (error) {
-    void error;
-    redirectWithError(returnTo, "reviewer-approval-failed");
+    redirectWithError(
+      returnTo,
+      error instanceof Error ? error.message : "reviewer-approval-failed"
+    );
   }
 
   revalidateEvidencePaths(returnTo);
@@ -194,6 +284,11 @@ async function responseError(response: Response): Promise<string> {
   }
 }
 
+function readRevision(formData: FormData): number | undefined {
+  const value = Number(readString(formData, "expectedRevision"));
+  return Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
 function readString(formData: FormData, key: string): string | undefined {
   const value = formData.get(key);
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
@@ -225,6 +320,24 @@ function readBoundedInteger(
 function readExportFormat(formData: FormData): ExportFormat {
   const format = readString(formData, "format") ?? "json";
   return exportFormats.has(format) ? (format as ExportFormat) : "json";
+}
+
+function readChangedFiles(
+  formData: FormData
+): Array<{ filename: string; status: string; patch?: string }> {
+  const files: Array<{ filename: string; status: string; patch?: string }> = [];
+  let index = 0;
+  while (true) {
+    const filename = readString(formData, `filename_${index}`);
+    if (!filename) {
+      break;
+    }
+    const status = readString(formData, `status_${index}`) ?? "modified";
+    const patch = readString(formData, `patch_${index}`);
+    files.push({ filename, status, ...(patch ? { patch } : {}) });
+    index += 1;
+  }
+  return files;
 }
 
 function revalidateEvidencePaths(returnTo: string): void {

@@ -50,11 +50,21 @@ export type PolicyTuningData = {
     medianReviewerApprovalHours?: number | undefined;
     observeOrWarnOpenRequirementCount: number;
   };
+  governanceHealth?: { score: number; grade: string } | undefined;
+  detectorMetrics?: DetectorMetric[] | undefined;
   insights: PolicyTuningInsight[];
   proposals?: PolicyTuningProposal[] | undefined;
   pageInfo?: PageInfo | undefined;
   source: DashboardDataSource;
   message: string;
+};
+
+export type DetectorMetric = {
+  detector: string;
+  findingCount: number;
+  affectedRecordCount: number;
+  overrideCount: number;
+  precision: number;
 };
 
 export type PolicyTuningInsight = {
@@ -390,6 +400,8 @@ export async function loadPolicyTuningInsights(): Promise<PolicyTuningData> {
         pendingReviewerRate: 0,
         observeOrWarnOpenRequirementCount: 0
       },
+      governanceHealth: { score: 0, grade: "D" },
+      detectorMetrics: [],
       insights: [],
       source: "unavailable",
       message:

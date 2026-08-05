@@ -377,7 +377,10 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
           <div className="panel-header">
             <div>
               <h2>GitHub installation approvals</h2>
-              <p>Installations must be approved by an admin before they can govern repositories.</p>
+              <p>
+                Optional GitHub bridge. AgentForge runs standalone; GitHub installations are only
+                needed to ingest GitHub webhooks and re-publish results as check runs.
+              </p>
             </div>
             <GitBranch size={18} aria-hidden="true" />
           </div>

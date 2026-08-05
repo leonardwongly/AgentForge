@@ -24,6 +24,12 @@ export default async function PolicyInsightsPage() {
 
         <div className="metrics-grid">
           <MetricCard
+            label="Governance health"
+            value={`${data.governanceHealth?.score ?? 0}/100`}
+            detail={`Grade ${data.governanceHealth?.grade ?? "D"} — composite of override, evidence, and reviewer metrics.`}
+            tone={(data.governanceHealth?.score ?? 0) >= 75 ? "pass" : "warn"}
+          />
+          <MetricCard
             label="Records analyzed"
             value={String(data.recordCount)}
             detail={`Generated ${formatDate(data.generatedAt)} from the current bounded insight window.`}
@@ -48,6 +54,45 @@ export default async function PolicyInsightsPage() {
             tone={data.metrics.pendingReviewerRate >= 30 ? "warn" : "pass"}
           />
         </div>
+
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <h2>Per-detector precision</h2>
+              <p>
+                Findings and an override-based precision proxy per detector. Overrides are the
+                closest available signal for false positives; true recall needs a labeled corpus.
+              </p>
+            </div>
+            <ShieldCheck size={18} aria-hidden="true" />
+          </div>
+          {(data.detectorMetrics ?? []).length === 0 ? (
+            <p className="muted">No detector metrics are available for this record window.</p>
+          ) : (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Detector</th>
+                  <th>Findings</th>
+                  <th>Records</th>
+                  <th>Overrides</th>
+                  <th>Precision</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(data.detectorMetrics ?? []).map((metric) => (
+                  <tr key={metric.detector}>
+                    <td>{humanize(metric.detector)}</td>
+                    <td>{metric.findingCount}</td>
+                    <td>{metric.affectedRecordCount}</td>
+                    <td>{metric.overrideCount}</td>
+                    <td>{Math.round(metric.precision * 100)}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
 
         <section className="panel">
           <div className="panel-header">

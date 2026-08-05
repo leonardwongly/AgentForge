@@ -8,6 +8,7 @@ import {
   governanceDecisionLabel,
   hasAgentSignal,
   humanize,
+  loadGithubInstallations,
   loadRecord,
   missingEvidence,
   pendingRequiredReviewers,
@@ -66,6 +67,21 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
   const missing = missingEvidence(record);
   const pendingReviewers = pendingRequiredReviewers(record);
   const decisionLabel = governanceDecisionLabel(record);
+  // Evidence/reviewer/override mutations commit locally without a GitHub
+  // connection; an approved installation is only needed to additionally
+  // re-publish the result to GitHub as a check run. Surface this up front so
+  // the always-available mutation forms aren't a confusing dead end on
+  // synthetic sample records.
+  const installations = await loadGithubInstallations().catch(() => undefined);
+  const hasApprovedInstallation =
+    installations?.data?.installations.some(
+      (installation) =>
+        installation.status === "approved" &&
+        installation.organizationId === record.organizationId &&
+        !installation.archivedAt
+    ) ?? false;
+  const mutationUnavailable =
+    !hasApprovedInstallation && (missing.length > 0 || pendingReviewers.length > 0);
   const updateNotice = query?.updated ? evidenceUpdateNotice(query.updated) : undefined;
   const errorNotice = query?.error ? recordErrorNotice(query.error) : undefined;
 
@@ -80,9 +96,11 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
           </p>
         </div>
         <div className="control-row">
-          <a className="button" href={item.githubUrl} rel="noreferrer">
-            <GitBranch size={16} aria-hidden="true" /> GitHub PR
-          </a>
+          {hasApprovedInstallation ? (
+            <a className="button" href={item.githubUrl} rel="noreferrer">
+              <GitBranch size={16} aria-hidden="true" /> GitHub PR
+            </a>
+          ) : null}
           <form action={createRecordExport}>
             <input name="returnTo" type="hidden" value={`/records/${id}`} />
             <input name="format" type="hidden" value="json" />
@@ -125,6 +143,21 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
           </section>
         ) : null}
         <DataSourceNotice {...data} />
+
+        {mutationUnavailable ? (
+          <section className="notice">
+            <GitBranch size={18} aria-hidden="true" />
+            <div>
+              <h2>Evidence and reviewer actions commit locally</h2>
+              <p>
+                This record has open evidence or reviewer requirements. Submitting, approving, or
+                rejecting evidence and reviewers commits locally without a GitHub connection.
+                Approving a GitHub installation in Settings additionally re-publishes the result to
+                the pull request as a check run.
+              </p>
+            </div>
+          </section>
+        ) : null}
 
         {record.checkStatus === "pass" && (missing.length > 0 || pendingReviewers.length > 0) ? (
           <section className="notice">
@@ -322,6 +355,7 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                       <form action={submitEvidence} className="evidence-action-form">
                         <input name="returnTo" type="hidden" value={`/records/${id}`} />
                         <input name="recordId" type="hidden" value={record.id} />
+                        <input name="expectedRevision" type="hidden" value={record.revision} />
                         <input name="evidenceId" type="hidden" value={evidence.id} />
                         <input name="kind" type="hidden" value={evidence.kind} />
                         <label htmlFor={`evidence-content-${evidence.id}`}>
@@ -350,6 +384,7 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                         <form action={approveEvidence}>
                           <input name="returnTo" type="hidden" value={`/records/${id}`} />
                           <input name="recordId" type="hidden" value={record.id} />
+                          <input name="expectedRevision" type="hidden" value={record.revision} />
                           <input name="evidenceId" type="hidden" value={evidence.id} />
                           <button className="button" type="submit">
                             <CheckCircle2 size={16} aria-hidden="true" /> Approve evidence
@@ -358,6 +393,7 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                         <form action={rejectEvidence} className="evidence-reject-form">
                           <input name="returnTo" type="hidden" value={`/records/${id}`} />
                           <input name="recordId" type="hidden" value={record.id} />
+                          <input name="expectedRevision" type="hidden" value={record.revision} />
                           <input name="evidenceId" type="hidden" value={evidence.id} />
                           <label htmlFor={`evidence-reject-${evidence.id}`}>Reject reason</label>
                           <input
@@ -403,6 +439,7 @@ export default async function RecordDetailPage({ params, searchParams }: PagePro
                       <form action={approveReviewer}>
                         <input name="returnTo" type="hidden" value={`/records/${id}`} />
                         <input name="recordId" type="hidden" value={record.id} />
+                        <input name="expectedRevision" type="hidden" value={record.revision} />
                         <input name="reviewerId" type="hidden" value={reviewer.id} />
                         <button className="button" type="submit">
                           <CheckCircle2 size={16} aria-hidden="true" /> Approve reviewer
@@ -533,6 +570,11 @@ function recordErrorNotice(error: string): { title: string; detail: string } | u
         detail: "The reviewer approval request failed. Refresh the record and try again."
       };
     default:
-      return undefined;
+      // Unknown error values carry the API's own message (e.g. a mutation that
+      // could not be committed because no approved GitHub installation and
+      // replayable delivery exist). Surface it instead of hiding the reason.
+      return error && error.trim().length > 0
+        ? { title: "Action failed", detail: error }
+        : undefined;
   }
 }

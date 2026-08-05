@@ -1,8 +1,6 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import { GitBranch, ShieldCheck } from "lucide-react";
-import { apiActorHeaders } from "../../../settings/api-actor-headers";
-import { resolveDashboardActor } from "../../../settings/actor";
+import { recordGithubInstallation } from "../../../settings/actions";
 
 type GitHubInstallationCallbackProps = {
   searchParams?: Promise<{
@@ -11,23 +9,26 @@ type GitHubInstallationCallbackProps = {
   }>;
 };
 
-const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:4000";
+const githubInstallationIdPattern = /^\d{1,20}$/u;
 
 export default async function GitHubInstallationCallback({
   searchParams
 }: GitHubInstallationCallbackProps) {
   const params = await searchParams;
   const installationId = params?.installation_id;
-  let verificationFailure =
-    "Sign in as a platform admin, then record and approve the installation.";
-  if (!installationId) {
+
+  if (!installationId || !githubInstallationIdPattern.test(installationId)) {
     return (
       <section className="page">
         <section className="notice notice--unavailable">
           <GitBranch size={18} aria-hidden="true" />
           <div>
             <h1>GitHub installation was not recorded</h1>
-            <p>GitHub did not return an installation ID. Start the install flow again.</p>
+            <p>
+              {installationId
+                ? "GitHub returned an invalid installation ID. Start the install flow again."
+                : "GitHub did not return an installation ID. Start the install flow again."}
+            </p>
             <Link className="button" href="/settings">
               Return to settings
             </Link>
@@ -37,53 +38,35 @@ export default async function GitHubInstallationCallback({
     );
   }
 
-  try {
-    const actor = await resolveDashboardActor();
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10_000);
-    const response = await fetch(`${apiBaseUrl}/api/github/installations/verify`, {
-      method: "POST",
-      cache: "no-store",
-      signal: controller.signal,
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-        ...apiActorHeaders(actor)
-      },
-      body: JSON.stringify({
-        githubInstallationId: installationId,
-        accountType: "Organization"
-      })
-    }).finally(() => clearTimeout(timeout));
-    if (!response.ok) {
-      throw new Error("GitHub installation verification failed");
-    }
-  } catch (error) {
-    if (isAbortError(error)) {
-      verificationFailure =
-        "Installation verification timed out. Open Settings and record the installation manually.";
-    }
-    return (
-      <section className="page">
-        <section className="notice notice--unavailable">
-          <ShieldCheck size={18} aria-hidden="true" />
-          <div>
-            <h1>Admin approval is required</h1>
-            <p>
-              {verificationFailure} Installation ID: {installationId}.
-            </p>
-            <Link className="button button--primary" href="/settings">
-              Open settings
-            </Link>
-          </div>
-        </section>
+  return (
+    <section className="page">
+      <section className="notice">
+        <ShieldCheck size={18} aria-hidden="true" />
+        <div>
+          <h1>Confirm GitHub installation</h1>
+          <p>
+            GitHub returned installation ID <strong>{installationId}</strong>. No installation has
+            been recorded yet.
+          </p>
+          <p>
+            A signed-in platform admin must explicitly record it. The API will verify both the
+            installation and your authorization before changing governance state.
+          </p>
+          <form action={recordGithubInstallation}>
+            <input type="hidden" name="githubInstallationId" value={installationId} />
+            <input type="hidden" name="accountType" value="Organization" />
+            <input type="hidden" name="returnTo" value="/settings" />
+            <div className="control-row">
+              <button className="button button--primary" type="submit">
+                Record installation
+              </button>
+              <Link className="button" href="/settings">
+                Cancel and return to settings
+              </Link>
+            </div>
+          </form>
+        </div>
       </section>
-    );
-  }
-
-  redirect("/settings?updated=github-installation-recorded");
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
+    </section>
+  );
 }

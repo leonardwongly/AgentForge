@@ -52,6 +52,7 @@ export async function resolveDashboardActorContext(
   input: ActorContextInput = {}
 ): Promise<DashboardActorContext | undefined> {
   const env = input.env ?? process.env;
+  const nodeEnv = input.nodeEnv ?? env.NODE_ENV ?? process.env.NODE_ENV;
   if (env.AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS === "true" && input.headers) {
     const fromHeaders = await dashboardActorFromTrustedHeaders(
       input.headers,
@@ -69,7 +70,7 @@ export async function resolveDashboardActorContext(
     return fromSession;
   }
 
-  if (env.AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR === "true") {
+  if (nodeEnv !== "production" && env.AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR === "true") {
     return dashboardActorFromLocalEnvironment(env);
   }
 

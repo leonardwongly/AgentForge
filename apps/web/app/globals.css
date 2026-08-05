@@ -652,6 +652,28 @@ button {
   margin-top: 12px;
 }
 
+.standalone-form {
+  display: grid;
+  gap: 16px;
+}
+
+.standalone-form .field--wide {
+  grid-column: 1 / -1;
+}
+
+.standalone-file-row {
+  display: grid;
+  grid-template-columns: 1fr 140px 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.standalone-file-row:last-child {
+  border-bottom: 0;
+}
+
 .toggle-row {
   display: flex;
   align-items: center;

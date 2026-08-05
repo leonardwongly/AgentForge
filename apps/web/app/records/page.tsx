@@ -2,8 +2,9 @@ import Link from "next/link";
 import { Download, FileArchive, FileCheck } from "lucide-react";
 import { StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../data-source-notice";
-import { formatDate, loadDashboardData, summarizeFindings } from "../data";
+import { formatDate, loadDashboardData, loadPolicyPacks, summarizeFindings } from "../data";
 import { createCompliancePackageExport, createRecordExport } from "./actions";
+import { StandaloneRecordForm } from "./standalone-record-form";
 
 const ALLOWED_STATUSES = ["pass", "warn", "block"] as const;
 type RecordStatusFilter = (typeof ALLOWED_STATUSES)[number];
@@ -25,12 +26,15 @@ export default async function RecordsPage({ searchParams }: RecordsPageProps) {
   const limit = boundedNumber(params?.limit, 50, 1, 100);
   const offset = boundedNumber(params?.offset, 0, 0, Number.MAX_SAFE_INTEGER);
   const status = statusFilter(params?.status);
-  const data = await loadDashboardData({
-    limit,
-    offset,
-    status,
-    sort: "updated_desc"
-  });
+  const [data, policyPacks] = await Promise.all([
+    loadDashboardData({
+      limit,
+      offset,
+      status,
+      sort: "updated_desc"
+    }),
+    loadPolicyPacks()
+  ]);
   const pageStart = data.pageInfo?.total === 0 ? 0 : (data.pageInfo?.offset ?? 0) + 1;
   const pageEnd = data.pageInfo
     ? Math.min(data.pageInfo.offset + data.records.length, data.pageInfo.total)
@@ -73,6 +77,18 @@ export default async function RecordsPage({ searchParams }: RecordsPageProps) {
               <p>
                 Job {params.exportId ?? "created"} contains {params.recordCount ?? "0"} redacted
                 Change Control Records with control mappings and audit timeline.
+              </p>
+            </div>
+          </section>
+        ) : null}
+        {params?.updated === "standalone-record-created" ? (
+          <section className="notice">
+            <FileCheck size={18} aria-hidden="true" />
+            <div>
+              <h2>Change Control Record created</h2>
+              <p>
+                The record was created and evaluated against the selected policy pack without a
+                GitHub connection. Open it to review findings, evidence, and reviewers.
               </p>
             </div>
           </section>
@@ -160,6 +176,22 @@ export default async function RecordsPage({ searchParams }: RecordsPageProps) {
               <span className="muted">JSON only, capped at 500 records per package.</span>
             </div>
           </form>
+        </section>
+
+        <section className="panel">
+          <div className="panel-header">
+            <div>
+              <h2>Create Change Control Record</h2>
+              <p>
+                Standalone ingestion: evaluate a pull request directly from its details, without a
+                GitHub webhook or connection.
+              </p>
+            </div>
+            <FileCheck size={18} aria-hidden="true" />
+          </div>
+          <div className="panel-body">
+            <StandaloneRecordForm policyPacks={policyPacks.policyPacks} />
+          </div>
         </section>
 
         <section className="panel">

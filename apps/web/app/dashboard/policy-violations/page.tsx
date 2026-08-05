@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlertTriangle, Filter, ListChecks } from "lucide-react";
+import { AlertTriangle, ListChecks } from "lucide-react";
 import { MetricCard, ProgressBar, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../data-source-notice";
 import {
@@ -32,9 +32,6 @@ export default async function PolicyViolationsPage() {
           <h1>Policy Violations</h1>
           <p>Grouped policy findings from deterministic PR facts and explicit policy rules.</p>
         </div>
-        <button className="button" type="button">
-          <Filter size={16} aria-hidden="true" /> Repository, pack, severity
-        </button>
       </header>
 
       <section className="page">

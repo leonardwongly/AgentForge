@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CheckCircle2, FileWarning, Filter, XCircle } from "lucide-react";
+import { CheckCircle2, FileWarning, XCircle } from "lucide-react";
 import { MetricCard, ProgressBar, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../data-source-notice";
 import {
@@ -39,9 +39,6 @@ export default async function EvidenceCompletionPage({
           <h1>Evidence Completion</h1>
           <p>Required evidence missing, provided, and approved across governed pull requests.</p>
         </div>
-        <button className="button" type="button">
-          <Filter size={16} aria-hidden="true" /> Kind, repository, policy
-        </button>
       </header>
 
       <section className="page">
@@ -215,6 +212,11 @@ export default async function EvidenceCompletionPage({
                               value="/dashboard/evidence-completion"
                             />
                             <input name="recordId" type="hidden" value={item.record.id} />
+                            <input
+                              name="expectedRevision"
+                              type="hidden"
+                              value={item.record.revision}
+                            />
                             <input name="evidenceId" type="hidden" value={evidence.id} />
                             <button className="button" type="submit">
                               <CheckCircle2 size={16} aria-hidden="true" /> Approve
@@ -227,6 +229,11 @@ export default async function EvidenceCompletionPage({
                               value="/dashboard/evidence-completion"
                             />
                             <input name="recordId" type="hidden" value={item.record.id} />
+                            <input
+                              name="expectedRevision"
+                              type="hidden"
+                              value={item.record.revision}
+                            />
                             <input name="evidenceId" type="hidden" value={evidence.id} />
                             <label htmlFor={`queue-reject-${evidence.id}`}>Reject reason</label>
                             <input

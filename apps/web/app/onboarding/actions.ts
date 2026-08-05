@@ -61,13 +61,13 @@ export async function runSamplePolicyPreview(): Promise<void> {
 }
 
 function samplePreviewEnabled(): boolean {
+  // Available in a deployed instance when explicitly enabled with the flag.
+  // AGENTFORGE_SAMPLE_FIXTURE_ROOT is optional: the action falls back to
+  // locating the bundled fixtures/ directory automatically.
   if (process.env.NODE_ENV !== "production") {
     return true;
   }
-  return (
-    process.env.AGENTFORGE_ENABLE_SAMPLE_PREVIEW === "true" &&
-    Boolean(process.env.AGENTFORGE_SAMPLE_FIXTURE_ROOT?.trim())
-  );
+  return process.env.AGENTFORGE_ENABLE_SAMPLE_PREVIEW === "true";
 }
 
 async function requestJson<T>(

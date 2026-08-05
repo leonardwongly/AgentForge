@@ -347,22 +347,23 @@ describe("dashboard actor context", () => {
     });
   });
 
-  it("allows an explicit admin local actor override", async () => {
-    expect(
-      await resolveDashboardActorContext({
-        env: {
-          AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: "true",
-          AGENTFORGE_DASHBOARD_ACTOR: "dashboard-local",
-          AGENTFORGE_DASHBOARD_ROLE: "platform_admin"
-        },
-        nodeEnv: "production"
-      })
-    ).toEqual({
+  it("allows an explicit local actor override only outside production", async () => {
+    const env = {
+      AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: "true",
+      AGENTFORGE_DASHBOARD_ACTOR: "dashboard-local",
+      AGENTFORGE_DASHBOARD_ROLE: "platform_admin"
+    };
+
+    expect(await resolveDashboardActorContext({ env, nodeEnv: "development" })).toEqual({
       login: "dashboard-local",
       role: "platform_admin",
       organizationId: "org_local",
       source: "local_environment"
     });
+    expect(await resolveDashboardActorContext({ env, nodeEnv: "production" })).toBeUndefined();
+    expect(
+      await resolveDashboardActorContext({ env: { ...env, NODE_ENV: "production" } })
+    ).toBeUndefined();
   });
 
   it("rejects invalid actor and role values", async () => {
@@ -373,7 +374,7 @@ describe("dashboard actor context", () => {
           AGENTFORGE_DASHBOARD_ACTOR: "bad\r\nactor",
           AGENTFORGE_DASHBOARD_ROLE: "owner"
         },
-        nodeEnv: "production"
+        nodeEnv: "development"
       })
     ).toBeUndefined();
   });

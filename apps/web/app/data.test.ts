@@ -282,6 +282,7 @@ function recordWithOpenRequirements({
 } = {}): ChangeControlRecord {
   return {
     id: "record-1",
+    revision: 0,
     organizationId: "org-1",
     repositoryId: "repo-1",
     repositoryFullName: "acme/payments",

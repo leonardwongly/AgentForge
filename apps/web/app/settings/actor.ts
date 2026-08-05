@@ -1,11 +1,14 @@
 import { headers } from "next/headers";
+import { cache } from "react";
 import {
   dashboardActorErrorMessage,
   resolveDashboardActorContext,
   type DashboardActorContext
 } from "./actor-context";
 
-export async function resolveDashboardActor(): Promise<DashboardActorContext> {
+// React cache is scoped to each Next server request: parallel loaders share one
+// signature claim, while later requests still pass through replay protection.
+export const resolveDashboardActor = cache(async (): Promise<DashboardActorContext> => {
   let requestHeaders: Awaited<ReturnType<typeof headers>> | undefined;
   try {
     requestHeaders = await headers();
@@ -21,4 +24,4 @@ export async function resolveDashboardActor(): Promise<DashboardActorContext> {
     throw new Error(dashboardActorErrorMessage());
   }
   return actor;
-}
+});
