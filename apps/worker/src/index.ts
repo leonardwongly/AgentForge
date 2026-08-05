@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { Queue, Worker } from "bullmq";
+import { createHash, randomUUID } from "node:crypto";
+import { Queue, UnrecoverableError, Worker } from "bullmq";
 import { Redis } from "ioredis";
 import { loadConfig } from "@agentforge/config";
 import {
@@ -12,6 +12,7 @@ import {
   RedisCacheManager,
   type ChangeControlRecord,
   type PolicyResult,
+  type PriorRequirementState,
   type PullRequestInput,
   type VerifiedFact
 } from "@agentforge/core";
@@ -31,6 +32,7 @@ import {
   fetchPullRequestInputFromGithub,
   githubRetryAfterMs,
   publishMergeGuardCheckWithClient,
+  reconcileMergeGuardCheckWithClient,
   type CheckRunPayload,
   type GithubAdapterClient,
   type GithubCheckPublisherClient,
@@ -40,8 +42,13 @@ import {
   evaluateMergeGuard,
   getPolicyPack,
   parsePolicyYaml,
+  policyContentHashFromVersion,
   type PolicyConfig
 } from "@agentforge/policy";
+import {
+  buildNotificationPayload,
+  deliverWebhook
+} from "@agentforge/notifications";
 import {
   createAuditEvent,
   createChangeControlRecord,
@@ -62,19 +69,44 @@ import {
   generateAiDraftForEvidence
 } from "@agentforge/security";
 
+type CheckPublicationPullRequest = Pick<PullRequestInput, "headSha">;
+
 type CheckPublisher = (input: {
   owner: string;
   repo: string;
-  pr: Pick<PullRequestInput, "headSha">;
+  pr: CheckPublicationPullRequest;
   result: ReturnType<typeof evaluateMergeGuard>;
   detailsUrl?: string | undefined;
+  conclusion?: CheckRunPayload["conclusion"] | undefined;
+  externalId?: string | undefined;
 }) => Promise<{ id?: number | undefined; conclusion: CheckRunPayload["conclusion"] }>;
+
+type CheckReconciler = (input: {
+  owner: string;
+  repo: string;
+  pr: CheckPublicationPullRequest;
+  result: ReturnType<typeof evaluateMergeGuard>;
+  detailsUrl?: string | undefined;
+  conclusion?: CheckRunPayload["conclusion"] | undefined;
+  externalId: string;
+}) => Promise<{ id: number; conclusion: CheckRunPayload["conclusion"] } | undefined>;
+
+export function assertWorkerRuntimeConfiguration(
+  config: Pick<ReturnType<typeof loadConfig>, "nodeEnv" | "redisUrl" | "databaseUrl">
+): void {
+  if (config.nodeEnv === "production" && config.redisUrl && !config.databaseUrl) {
+    throw new Error(
+      "Production Redis-backed Merge Guard workers require DATABASE_URL so installation approval and tenant policy state are durable."
+    );
+  }
+}
 
 type PersistedWorkerRecordRefs = {
   organizationId: string;
   repositoryId: string;
   pullRequestId: string;
   recordId: string;
+  revision: number;
 };
 
 type CheckPublicationResult = {
@@ -88,6 +120,7 @@ let workerPrisma: PrismaClient | undefined;
 
 const WORKER_FAILURE_MESSAGE_LIMIT = 500;
 const CHECK_PUBLICATION_CLAIM_TTL_MS = 5 * 60 * 1000;
+const CHECK_PUBLICATION_RECHECK_DELAY_MS = 50;
 type PrismaTransactionClient = Omit<
   PrismaClient,
   "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends"
@@ -130,6 +163,88 @@ export class SupersededHeadShaError extends Error {
   }
 }
 
+export class GithubInstallationNotAuthorizedError extends Error {
+  constructor(installationId?: number | undefined) {
+    super(
+      installationId
+        ? `GitHub installation ${installationId} must be approved, active, and assigned to an organization before Merge Guard can evaluate this job.`
+        : "Merge Guard evaluation jobs with a persisted webhook envelope require a valid GitHub installation id."
+    );
+    this.name = "GithubInstallationNotAuthorizedError";
+  }
+}
+
+export class EnvelopeRepositoryIdentityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EnvelopeRepositoryIdentityError";
+  }
+}
+
+export class CheckPublicationAmbiguousError extends Error {
+  constructor(deliveryId: string) {
+    super(
+      `Check-run publication for webhook delivery ${deliveryId} is externally ambiguous; reconcile the stored external id before creating another check run.`
+    );
+    this.name = "CheckPublicationAmbiguousError";
+  }
+}
+
+export class ChangeControlRecordConcurrencyError extends Error {
+  constructor(recordId: string) {
+    super(`Change Control Record ${recordId} changed during worker evaluation; retry with fresh state.`);
+    this.name = "ChangeControlRecordConcurrencyError";
+  }
+}
+
+export class UnsafeRepositoryStorageSettingsError extends Error {
+  constructor(repositoryFullName: string, violations: string[]) {
+    super(
+      `Repository ${repositoryFullName} has unsafe persisted RepositorySetting values in production: ${violations.join(
+        " "
+      )} Merge Guard refuses to evaluate or persist this job until the settings are remediated.`
+    );
+    this.name = "UnsafeRepositoryStorageSettingsError";
+  }
+}
+
+export class CheckPublicationClaimPendingError extends Error {
+  constructor(
+    deliveryId: string,
+    readonly retryAfterMs?: number | undefined
+  ) {
+    super(
+      `Check-run publication for webhook delivery ${deliveryId} is still owned by another worker; retry after the publication lease settles or expires.`
+    );
+    this.name = "CheckPublicationClaimPendingError";
+  }
+}
+
+type RuntimeRepository = {
+  id: string;
+  organizationId: string;
+  fullName: string;
+  enabled: boolean;
+  mode: ChangeControlRecord["mode"] | null;
+  currentPolicyVersion: { contentYaml: string } | null;
+  settings: {
+    sourceCodeStorage: boolean;
+    fullDiffRetention: string;
+    redactSecrets: boolean;
+    llmFeatures: boolean;
+  } | null;
+  ownerMappings: Array<{ ownerKey: string; reviewer: string }>;
+};
+
+type ApprovedEnvelopeInstallation = {
+  installationId: number;
+  organizationId: string;
+};
+
+type EnvelopeEvaluationContext = ApprovedEnvelopeInstallation & {
+  repository: RuntimeRepository | null;
+};
+
 export type MergeGuardEvaluationJobData = {
   deliveryId: string;
   envelope?: GithubWebhookEnvelope | undefined;
@@ -137,6 +252,7 @@ export type MergeGuardEvaluationJobData = {
   policyYaml?: string | undefined;
   githubClient?: GithubAdapterClient | undefined;
   githubCheckPublisher?: CheckPublisher | undefined;
+  githubCheckReconciler?: CheckReconciler | undefined;
 };
 
 export type MergeGuardEvaluationJobResult = {
@@ -167,10 +283,20 @@ export async function processMergeGuardEvaluationJob(
 ): Promise<MergeGuardEvaluationJobResult> {
   const config = loadConfig();
   const prisma = getWorkerPrisma(config);
+  if (config.nodeEnv === "production" && data.envelope && !prisma) {
+    throw new GithubInstallationNotAuthorizedError(data.envelope.installationId);
+  }
+  const envelopeContext =
+    prisma && data.envelope
+      ? await resolveEnvelopeEvaluationContext({ prisma, envelope: data.envelope })
+      : undefined;
 
   let githubContext: Awaited<ReturnType<typeof resolvePullRequestForJob>>;
   try {
-    githubContext = await resolvePullRequestForJob(data, config);
+    githubContext = await resolvePullRequestForJob(data, config, {
+      prisma,
+      approvedInstallation: envelopeContext
+    });
   } catch (error) {
     if (error instanceof StaleCheckRunError) {
       return staleCheckRunResult(data, error);
@@ -178,13 +304,30 @@ export async function processMergeGuardEvaluationJob(
     throw error;
   }
   let pr = githubContext.pr;
+
+  try {
+    await rejectSupersededHeadSha({
+      envelope: data.envelope,
+      pr,
+      owner: githubContext.owner,
+      repo: githubContext.repo,
+      client: githubContext.githubClient
+    });
+  } catch (error) {
+    if (error instanceof SupersededHeadShaError) {
+      return supersededHeadShaResult(error, `superseded_head:${data.deliveryId}`);
+    }
+    throw error;
+  }
+
   let runtime: Awaited<ReturnType<typeof resolveRuntimeEvaluationContext>>;
   try {
     runtime = await resolveRuntimeEvaluationContext({
       prisma,
       pr,
       config,
-      policyYaml: data.policyYaml
+      policyYaml: data.policyYaml,
+      envelopeContext
     });
   } catch (error) {
     if (error instanceof RepositoryNotConfiguredError) {
@@ -215,18 +358,57 @@ export async function processMergeGuardEvaluationJob(
     policy
   });
   const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(policy));
-  const result = evaluateMergeGuard(pr, facts, policy);
+  const existingRecord = prisma
+    ? await runWithOrgContext(runtime.organizationId, () =>
+        findExistingWorkerRecord({
+          prisma,
+          repositoryId: runtime.repositoryId,
+          pullRequestNumber: pr.pullRequestNumber
+        })
+      )
+    : undefined;
+  const policyIdentity = { sourceContentHash: parsed.contentHash };
+  const baselineResult = evaluateMergeGuard(pr, facts, policy, undefined, policyIdentity);
+  const priorRequirementState = matchingPriorRequirementState({
+    existingRecord,
+    headSha: pr.headSha,
+    policyVersion: baselineResult.policyVersion
+  });
+  const evaluatedResult = priorRequirementState
+    ? evaluateMergeGuard(pr, facts, policy, priorRequirementState, policyIdentity)
+    : baselineResult;
+  const overrideDecision = priorRequirementState
+    ? activeOverrideDecision(existingRecord)
+    : undefined;
+  const result: PolicyResult = overrideDecision
+    ? {
+        ...evaluatedResult,
+        status: "pass",
+        explanation: [
+          ...evaluatedResult.explanation,
+          "An authorized override remains active for this head and policy version."
+        ]
+      }
+    : evaluatedResult;
+  const evaluatedRecord = sanitizeForMetadataStorage(
+    createChangeControlRecord({
+      organizationId: runtime.organizationId,
+      repositoryId: runtime.repositoryId,
+      pr,
+      policyResult: result,
+      storagePolicy: runtime.storagePolicy
+    }),
+    runtime.storagePolicy
+  );
   const record = applyEnvelopeLifecycle(
-    sanitizeForMetadataStorage(
-      createChangeControlRecord({
-        organizationId: runtime.organizationId,
-        repositoryId: runtime.repositoryId,
-        pr,
-        policyResult: result,
-        storagePolicy: runtime.storagePolicy
-      }),
-      runtime.storagePolicy
-    ),
+    overrideDecision
+      ? {
+          ...evaluatedRecord,
+          checkStatus: "pass",
+          lifecycle: "overridden",
+          decision: overrideDecision
+        }
+      : evaluatedRecord,
     data.envelope
   );
 
@@ -252,18 +434,10 @@ export async function processMergeGuardEvaluationJob(
     }
   }
 
-  const persistedRecord = prisma
-    ? await runWithOrgContext(runtime.organizationId, () =>
-        ensureWorkerRecord({
-          prisma,
-          record,
-          pr,
-          envelope: data.envelope
-        })
-      )
-    : undefined;
-  const checkRun = buildCheckRunPayload(pr, result);
-
+  // Evaluation and enrichment can take long enough for a synchronize event to
+  // become stale after the initial freshness check. Recheck immediately before
+  // the first current-snapshot write so an older job can never roll the durable
+  // PR/CCR state back after a newer head has been persisted.
   try {
     await rejectSupersededHeadSha({
       envelope: data.envelope,
@@ -274,24 +448,54 @@ export async function processMergeGuardEvaluationJob(
     });
   } catch (error) {
     if (error instanceof SupersededHeadShaError) {
-      return supersededHeadShaResult(error, persistedRecord?.recordId ?? record.id);
+      return supersededHeadShaResult(error, `superseded_head:${data.deliveryId}`);
     }
     throw error;
   }
 
+  const persistedRecord = prisma
+    ? await runWithOrgContext(runtime.organizationId, () =>
+        ensureWorkerRecord({
+          prisma,
+          record,
+          pr,
+          envelope: data.envelope,
+          repositoryBinding: runtime.repositoryBinding,
+          existingRecord
+        })
+      )
+    : undefined;
+  const checkRun = buildCheckRunPayload(pr, result);
+  if (overrideDecision) {
+    checkRun.conclusion = "success";
+  }
+
+  const detailsUrl = persistedRecord
+    ? recordDetailsUrl(config.appBaseUrl, persistedRecord.recordId)
+    : undefined;
   const published = await publishCheckOnce({
     prisma,
     deliveryId: data.deliveryId,
     checkConclusion: checkRun.conclusion,
-    publish: () =>
+    publish: (externalId) =>
       publishCheckIfConfigured({
         data,
         githubContext,
         result,
         pr,
-        detailsUrl: persistedRecord
-          ? recordDetailsUrl(config.appBaseUrl, persistedRecord.recordId)
-          : undefined
+        externalId,
+        conclusionOverride: overrideDecision ? "success" : undefined,
+        detailsUrl
+      }),
+    reconcile: (externalId) =>
+      reconcileCheckIfConfigured({
+        data,
+        githubContext,
+        result,
+        pr,
+        externalId,
+        conclusionOverride: overrideDecision ? "success" : undefined,
+        detailsUrl
       })
   });
 
@@ -304,9 +508,19 @@ export async function processMergeGuardEvaluationJob(
         checkConclusion: checkRun.conclusion,
         publishedCheckRunId: published.id,
         envelope: data.envelope,
-        persistedRecord
+        persistedRecord,
+        repositoryBinding: runtime.repositoryBinding
       })
     );
+  }
+
+  // Best-effort outbound notification for blocked PRs (G6). Gated by config;
+  // never blocks the evaluation and failures are ignored.
+  if (config.notificationWebhookUrl && record.checkStatus === "block") {
+    await deliverWebhook(
+      config.notificationWebhookUrl,
+      buildNotificationPayload({ event: "pr_blocked", record, detailsUrl })
+    ).catch(() => undefined);
   }
 
   return {
@@ -339,12 +553,21 @@ async function publishNotConfiguredEvaluation(input: {
     prisma: input.prisma,
     deliveryId: input.data.deliveryId,
     checkConclusion: checkRun.conclusion,
-    publish: () =>
+    publish: (externalId) =>
       publishCheckIfConfigured({
         data: input.data,
         githubContext: input.githubContext,
         pr: input.pr,
-        result
+        result,
+        externalId
+      }),
+    reconcile: (externalId) =>
+      reconcileCheckIfConfigured({
+        data: input.data,
+        githubContext: input.githubContext,
+        pr: input.pr,
+        result,
+        externalId
       })
   });
 
@@ -423,37 +646,63 @@ export async function publishTerminalFailureCheckRun(input: {
   };
   config: ReturnType<typeof loadConfig>;
   summary: MergeGuardEvaluationFailureSummary;
+  prisma?: PrismaClient | undefined;
 }): Promise<void> {
   try {
-    const pr = input.job.data.pr;
-    if (!pr) {
-      // No pull request payload survives onto a directly-queued job with only
-      // an `envelope` until `resolvePullRequestForJob` fetches it from GitHub --
-      // exactly the call that may be what failed. There is nothing to publish a
-      // check-run against without at least a headSha/repositoryFullName, so this
-      // fails open on publication (the terminal-failure webhookDelivery record
-      // and console.error above still capture the failure either way).
+    const publicationContext = terminalFailurePublicationContext(input.job.data);
+    if (!publicationContext) {
       console.error(
-        "Skipping Merge Guard terminal-failure check-run publication: no pull request payload available on the failed job.",
+        "Skipping Merge Guard terminal-failure check-run publication: no pull request payload or complete envelope identity is available on the failed job.",
         { deliveryId: input.job.data.deliveryId }
       );
       return;
     }
-    const [owner = "unknown", repo = pr.repositoryFullName] = pr.repositoryFullName.split("/");
+    const publicationPrisma = input.prisma ?? getWorkerPrisma(input.config);
+    let checkPublisherClient: GithubCheckPublisherClient | undefined;
+    if (!input.job.data.githubCheckPublisher && input.job.data.envelope) {
+      const configuredClient = await githubClientForEnvelope(
+        input.job.data,
+        input.config,
+        input.job.data.envelope,
+        { prisma: publicationPrisma }
+      );
+      checkPublisherClient = configuredClient?.checkPublisherClient;
+    }
     const result = terminalFailurePolicyResult({
       attemptsMade: input.summary.attemptsMade,
       maxAttempts: input.summary.maxAttempts
     });
-    const published = await publishCheckIfConfigured({
-      data: input.job.data,
-      githubContext: { owner, repo },
-      pr,
-      result
+    const githubContext = {
+      owner: publicationContext.owner,
+      repo: publicationContext.repo,
+      checkPublisherClient
+    };
+    const checkRun = buildCheckRunPayload(publicationContext.pr, result);
+    const published = await publishCheckOnce({
+      prisma: publicationPrisma,
+      deliveryId: input.job.data.deliveryId,
+      checkConclusion: checkRun.conclusion,
+      publish: (externalId) =>
+        publishCheckIfConfigured({
+          data: input.job.data,
+          githubContext,
+          pr: publicationContext.pr,
+          result,
+          externalId
+        }),
+      reconcile: (externalId) =>
+        reconcileCheckIfConfigured({
+          data: input.job.data,
+          githubContext,
+          pr: publicationContext.pr,
+          result,
+          externalId
+        })
     });
     console.log("Published Merge Guard terminal-failure check-run", {
       deliveryId: input.job.data.deliveryId,
-      repositoryFullName: pr.repositoryFullName,
-      pullRequestNumber: pr.pullRequestNumber,
+      repositoryFullName: publicationContext.repositoryFullName,
+      pullRequestNumber: publicationContext.pullRequestNumber,
       published: published.published
     });
   } catch (publishError) {
@@ -463,6 +712,44 @@ export async function publishTerminalFailureCheckRun(input: {
       message: publishError instanceof Error ? publishError.message : String(publishError)
     });
   }
+}
+
+function terminalFailurePublicationContext(data: MergeGuardEvaluationJobData):
+  | {
+      owner: string;
+      repo: string;
+      repositoryFullName: string;
+      pullRequestNumber: number;
+      pr: CheckPublicationPullRequest;
+    }
+  | undefined {
+  const envelope = data.envelope;
+  const repositoryFullName = data.pr?.repositoryFullName ?? envelope?.repository?.fullName;
+  const owner = envelope?.repository?.owner ?? repositoryFullName?.split("/")[0];
+  const repo = envelope?.repository?.name ?? repositoryFullName?.split("/")[1];
+  const pullRequestNumber =
+    data.pr?.pullRequestNumber ??
+    envelope?.pullRequest?.number ??
+    envelope?.checkRun?.pullRequests[0]?.number;
+  const headSha = data.pr?.headSha ?? envelope?.pullRequest?.headSha ?? envelope?.checkRun?.headSha;
+  if (
+    !repositoryFullName ||
+    !owner ||
+    !repo ||
+    !pullRequestNumber ||
+    !headSha ||
+    !Number.isSafeInteger(pullRequestNumber) ||
+    pullRequestNumber <= 0
+  ) {
+    return undefined;
+  }
+  return {
+    owner,
+    repo,
+    repositoryFullName,
+    pullRequestNumber,
+    pr: { headSha }
+  };
 }
 
 /**
@@ -858,6 +1145,10 @@ export function computeBackoffDelay(
   err: unknown,
   job: { opts: { backoff?: { delay?: number } } }
 ): number {
+  if (err instanceof CheckPublicationClaimPendingError && err.retryAfterMs !== undefined) {
+    return Math.min(MAX_BACKOFF_DELAY_MS, Math.max(1000, Math.ceil(err.retryAfterMs)));
+  }
+
   const retryAfterMs = githubRetryAfterMs(err);
   if (retryAfterMs !== undefined) {
     const jittered = retryAfterMs + Math.random() * RATE_LIMIT_JITTER_MS;
@@ -881,6 +1172,7 @@ let workerCache: RedisCacheManager | undefined;
 
 async function startWorker(): Promise<void> {
   const config = loadConfig();
+  assertWorkerRuntimeConfiguration(config);
 
   if (!config.redisUrl) {
     console.log("AgentForge worker started without REDIS_URL; queue processing is disabled.");
@@ -913,7 +1205,7 @@ async function startWorker(): Promise<void> {
         name: job.name,
         deliveryId: job.data.deliveryId
       });
-      return processMergeGuardEvaluationJob(job.data);
+      return processMergeGuardEvaluationQueueJob(job.data);
     },
     {
       connection,
@@ -1006,7 +1298,7 @@ async function startWorker(): Promise<void> {
     // maxAttempts, retryable) does not get a premature failure check-run or
     // alert while it may yet succeed on a later attempt.
     if (job && summary.terminalFailure) {
-      void publishTerminalFailureCheckRun({ job, config, summary });
+      void publishTerminalFailureCheckRun({ job, config, summary, prisma: workerPrisma });
       void postWorkerFailureAlert({ job, summary });
     }
   });
@@ -1165,7 +1457,9 @@ export function classifyMergeGuardEvaluationFailure(input: {
   const message = input.error instanceof Error ? input.error.message : String(input.error);
   const attemptsMade = Math.max(0, input.attemptsMade ?? 0);
   const maxAttempts = Math.max(1, input.maxAttempts ?? MERGE_GUARD_EVALUATION_ATTEMPTS);
-  const retryable = isRetryableEvaluationFailure(errorClass, message);
+  const retryable =
+    !(input.error instanceof UnrecoverableError) &&
+    isRetryableEvaluationFailure(errorClass, message);
   return {
     errorClass: safeErrorClass(errorClass),
     message: safeErrorMessage(message),
@@ -1178,13 +1472,41 @@ export function classifyMergeGuardEvaluationFailure(input: {
   };
 }
 
+export async function processMergeGuardEvaluationQueueJob(
+  data: MergeGuardEvaluationJobData
+): Promise<MergeGuardEvaluationJobResult> {
+  try {
+    return await processMergeGuardEvaluationJob(data);
+  } catch (error) {
+    if (error instanceof UnrecoverableError) {
+      throw error;
+    }
+    const summary = classifyMergeGuardEvaluationFailure({
+      error,
+      deliveryId: data.deliveryId
+    });
+    if (summary.retryable) {
+      throw error;
+    }
+    const unrecoverable = new UnrecoverableError(summary.message) as UnrecoverableError & {
+      cause?: unknown;
+    };
+    unrecoverable.cause = error;
+    throw unrecoverable;
+  }
+}
+
 export async function recordMergeGuardEvaluationFailure(input: {
   prisma: PrismaClient;
   deliveryId: string;
   summary: MergeGuardEvaluationFailureSummary;
 }): Promise<void> {
   await input.prisma.webhookDelivery.updateMany({
-    where: { deliveryId: input.deliveryId },
+    where: {
+      deliveryId: input.deliveryId,
+      completedAt: null,
+      deliveryStatus: { not: "completed" }
+    },
     data: {
       deliveryStatus: input.summary.terminalFailure ? "failed" : "processing",
       evaluationAttemptsMade: input.summary.attemptsMade,
@@ -1197,12 +1519,16 @@ export async function recordMergeGuardEvaluationFailure(input: {
   });
 }
 
-async function markWebhookDeliveryProcessing(
+export async function markWebhookDeliveryProcessing(
   prisma: PrismaClient,
   deliveryId: string
 ): Promise<void> {
   await prisma.webhookDelivery.updateMany({
-    where: { deliveryId },
+    where: {
+      deliveryId,
+      completedAt: null,
+      deliveryStatus: { not: "completed" }
+    },
     data: {
       deliveryStatus: "processing",
       processingStartedAt: new Date()
@@ -1210,7 +1536,7 @@ async function markWebhookDeliveryProcessing(
   });
 }
 
-async function markWebhookDeliveryCompleted(
+export async function markWebhookDeliveryCompleted(
   prisma: PrismaClient,
   deliveryId: string
 ): Promise<void> {
@@ -1218,7 +1544,12 @@ async function markWebhookDeliveryCompleted(
     where: { deliveryId },
     data: {
       deliveryStatus: "completed",
-      completedAt: new Date()
+      completedAt: new Date(),
+      evaluationTerminalFailure: false,
+      lastFailureClass: null,
+      lastFailureMessage: null,
+      lastFailureCorrelationId: null,
+      lastFailedAt: null
     }
   });
 }
@@ -1230,7 +1561,15 @@ function isRetryableEvaluationFailure(errorClass: string, message: string): bool
     combined.includes("requires a pull request payload") ||
     combined.includes("requires a pull request number") ||
     combined.includes("repositorynotconfigurederror") ||
+    combined.includes("unrecoverableerror") ||
+    combined.includes("checkpublicationambiguouserror") ||
+    combined.includes("externally ambiguous") ||
+    combined.includes("githubinstallationnotauthorizederror") ||
+    combined.includes("enveloperepositoryidentityerror") ||
+    combined.includes("unsaferepositorystoragesettingserror") ||
     combined.includes("not configured for merge guard") ||
+    combined.includes("disabled for merge guard") ||
+    combined.includes("must be approved, active, and assigned to an organization") ||
     combined.includes("credentials") ||
     combined.includes("installation credentials") ||
     combined.includes("authorization")
@@ -1251,7 +1590,11 @@ function safeErrorMessage(value: string): string {
 
 async function resolvePullRequestForJob(
   data: MergeGuardEvaluationJobData,
-  config: ReturnType<typeof loadConfig>
+  config: ReturnType<typeof loadConfig>,
+  authorization: {
+    prisma: PrismaClient | undefined;
+    approvedInstallation?: ApprovedEnvelopeInstallation | undefined;
+  }
 ): Promise<{
   pr: PullRequestInput;
   owner: string;
@@ -1275,7 +1618,7 @@ async function resolvePullRequestForJob(
     throw new Error("Merge Guard evaluation job requires a pull request number.");
   }
 
-  const configuredClient = await githubClientForEnvelope(data, config, envelope);
+  const configuredClient = await githubClientForEnvelope(data, config, envelope, authorization);
   if (!configuredClient) {
     throw new Error(
       "GitHub App credentials or an injected GitHub client are required to inspect pull request files."
@@ -1383,7 +1726,11 @@ async function fetchCurrentPullRequestHeadSha(input: {
 async function githubClientForEnvelope(
   data: MergeGuardEvaluationJobData,
   config: ReturnType<typeof loadConfig>,
-  envelope: GithubWebhookEnvelope
+  envelope: GithubWebhookEnvelope,
+  authorization: {
+    prisma?: PrismaClient | undefined;
+    approvedInstallation?: ApprovedEnvelopeInstallation | undefined;
+  } = {}
 ): Promise<
   | {
       client: GithubAdapterClient;
@@ -1391,16 +1738,27 @@ async function githubClientForEnvelope(
     }
   | undefined
 > {
+  const approvedInstallation = authorization.prisma
+    ? (authorization.approvedInstallation ??
+      (await resolveApprovedEnvelopeInstallation({
+        prisma: authorization.prisma,
+        envelope
+      })))
+    : authorization.approvedInstallation;
   if (data.githubClient) {
     return { client: data.githubClient };
   }
   if (!config.github.appId || !config.github.privateKey || !envelope.installationId) {
     return undefined;
   }
+  if (config.nodeEnv === "production" && !approvedInstallation) {
+    throw new GithubInstallationNotAuthorizedError(envelope.installationId);
+  }
+  const installationId = approvedInstallation?.installationId ?? envelope.installationId;
   const token = await createGithubInstallationToken({
     appId: config.github.appId,
     privateKey: config.github.privateKey,
-    installationId: envelope.installationId
+    installationId
   });
   const client = createGithubClient(token);
   return {
@@ -1409,11 +1767,70 @@ async function githubClientForEnvelope(
   };
 }
 
+async function resolveApprovedEnvelopeInstallation(input: {
+  prisma: PrismaClient;
+  envelope: GithubWebhookEnvelope;
+}): Promise<ApprovedEnvelopeInstallation> {
+  const installationId = input.envelope.installationId;
+  if (!installationId || !Number.isSafeInteger(installationId) || installationId <= 0) {
+    throw new GithubInstallationNotAuthorizedError();
+  }
+  const installation = await input.prisma.gitHubInstallation.findUnique({
+    where: { githubInstallationId: BigInt(installationId) },
+    select: {
+      organizationId: true,
+      status: true,
+      archivedAt: true
+    }
+  });
+  if (
+    !installation ||
+    installation.status !== "approved" ||
+    installation.archivedAt !== null ||
+    !installation.organizationId
+  ) {
+    throw new GithubInstallationNotAuthorizedError(installationId);
+  }
+  return { installationId, organizationId: installation.organizationId };
+}
+
+export async function resolveEnvelopeEvaluationContext(input: {
+  prisma: PrismaClient;
+  envelope: GithubWebhookEnvelope;
+}): Promise<EnvelopeEvaluationContext> {
+  const approvedInstallation = await resolveApprovedEnvelopeInstallation(input);
+  const repositoryId = input.envelope.repository?.id;
+  if (!repositoryId || !Number.isSafeInteger(repositoryId) || repositoryId <= 0) {
+    throw new EnvelopeRepositoryIdentityError(
+      "Merge Guard evaluation jobs with a persisted webhook envelope require a valid immutable GitHub repository id."
+    );
+  }
+  const repository = await runWithOrgContext(approvedInstallation.organizationId, () =>
+    input.prisma.repository.findFirst({
+      where: {
+        organizationId: approvedInstallation.organizationId,
+        githubRepositoryId: BigInt(repositoryId),
+        archivedAt: null
+      },
+      include: {
+        currentPolicyVersion: true,
+        settings: true,
+        ownerMappings: true
+      }
+    })
+  );
+  return {
+    ...approvedInstallation,
+    repository
+  };
+}
+
 export async function resolveRuntimeEvaluationContext(input: {
   prisma: PrismaClient | undefined;
   pr: PullRequestInput;
   config: ReturnType<typeof loadConfig>;
   policyYaml?: string | undefined;
+  envelopeContext?: EnvelopeEvaluationContext | undefined;
 }): Promise<{
   organizationId: string;
   repositoryId: string;
@@ -1422,6 +1839,7 @@ export async function resolveRuntimeEvaluationContext(input: {
   storagePolicy: MetadataStoragePolicy;
   llmFeatures: boolean;
   ownerMappings: OwnerMappingRuntime[];
+  repositoryBinding?: { id: string; organizationId: string } | undefined;
 }> {
   if (!input.prisma) {
     const defaultPolicyYaml = getPolicyPack("fintech")?.contentYaml;
@@ -1440,14 +1858,22 @@ export async function resolveRuntimeEvaluationContext(input: {
     };
   }
 
-  const repository = await input.prisma.repository.findFirst({
-    where: { fullName: input.pr.repositoryFullName },
-    include: {
-      currentPolicyVersion: true,
-      settings: true,
-      ownerMappings: true
-    }
-  });
+  const repository =
+    input.envelopeContext?.repository ??
+    (input.envelopeContext
+      ? null
+      : await input.prisma.repository.findFirst({
+          where: { fullName: input.pr.repositoryFullName },
+          include: {
+            currentPolicyVersion: true,
+            settings: true,
+            ownerMappings: true
+          }
+        }));
+  if (input.envelopeContext && !repository) {
+    throw new RepositoryNotConfiguredError(input.pr.repositoryFullName);
+  }
+  assertProductionRepositoryStorageSettings(input.config, repository);
   if (repository && !repository.enabled) {
     throw new Error(`Repository ${repository.fullName} is disabled for Merge Guard evaluation.`);
   }
@@ -1472,8 +1898,30 @@ export async function resolveRuntimeEvaluationContext(input: {
       repository?.ownerMappings.map((mapping: { ownerKey: string; reviewer: string }) => ({
         ownerKey: mapping.ownerKey,
         reviewer: mapping.reviewer
-      })) ?? []
+      })) ?? [],
+    repositoryBinding: repository
+      ? { id: repository.id, organizationId: repository.organizationId }
+      : undefined
   };
+}
+
+function assertProductionRepositoryStorageSettings(
+  config: ReturnType<typeof loadConfig>,
+  repository: RuntimeRepository | null
+): void {
+  if (config.nodeEnv !== "production" || !repository?.settings) {
+    return;
+  }
+  const violations: string[] = [];
+  if (repository.settings.sourceCodeStorage) {
+    violations.push("Source code storage cannot be enabled in production.");
+  }
+  if (!repository.settings.redactSecrets) {
+    violations.push("Secret redaction cannot be disabled in production.");
+  }
+  if (violations.length > 0) {
+    throw new UnsafeRepositoryStorageSettingsError(repository.fullName, violations);
+  }
 }
 
 type OwnerMappingRuntime = {
@@ -1632,9 +2080,11 @@ async function publishCheckIfConfigured(input: {
     repo: string;
     checkPublisherClient?: GithubCheckPublisherClient | undefined;
   };
-  pr: PullRequestInput;
+  pr: CheckPublicationPullRequest;
   result: PolicyResult;
+  externalId: string;
   detailsUrl?: string | undefined;
+  conclusionOverride?: CheckRunPayload["conclusion"] | undefined;
 }): Promise<CheckPublicationResult> {
   if (input.data.githubCheckPublisher) {
     const published = await input.data.githubCheckPublisher({
@@ -1642,9 +2092,15 @@ async function publishCheckIfConfigured(input: {
       repo: input.githubContext.repo,
       pr: input.pr,
       result: input.result,
-      detailsUrl: input.detailsUrl
+      detailsUrl: input.detailsUrl,
+      conclusion: input.conclusionOverride,
+      externalId: input.externalId
     });
-    return { published: true, id: published.id, conclusion: published.conclusion };
+    return {
+      published: true,
+      id: published.id,
+      conclusion: input.conclusionOverride ?? published.conclusion
+    };
   }
   if (input.githubContext.checkPublisherClient) {
     const published = await publishMergeGuardCheckWithClient({
@@ -1653,30 +2109,107 @@ async function publishCheckIfConfigured(input: {
       repo: input.githubContext.repo,
       pr: input.pr,
       result: input.result,
-      detailsUrl: input.detailsUrl
+      detailsUrl: input.detailsUrl,
+      externalId: input.externalId,
+      conclusionOverride: input.conclusionOverride
     });
-    return { published: true, id: published.id, conclusion: published.conclusion };
+    return {
+      published: true,
+      id: published.id,
+      conclusion: published.conclusion,
+      reused: published.reused
+    };
   }
   return { published: false };
 }
 
-async function publishCheckOnce(input: {
-  prisma: PrismaClient | undefined;
-  deliveryId: string;
-  checkConclusion: CheckRunPayload["conclusion"];
-  publish: () => Promise<CheckPublicationResult>;
-}): Promise<CheckPublicationResult> {
-  const previous = input.prisma
-    ? await input.prisma.webhookDelivery.findUnique({
-        where: { deliveryId: input.deliveryId },
-        select: {
-          publishedCheckRunId: true,
-          checkConclusion: true,
-          checkPublishedAt: true
-        }
-      })
-    : undefined;
-  if (previous?.checkPublishedAt && previous.publishedCheckRunId) {
+async function reconcileCheckIfConfigured(input: {
+  data: MergeGuardEvaluationJobData;
+  githubContext: {
+    owner: string;
+    repo: string;
+    checkPublisherClient?: GithubCheckPublisherClient | undefined;
+  };
+  pr: CheckPublicationPullRequest;
+  result: PolicyResult;
+  externalId: string;
+  detailsUrl?: string | undefined;
+  conclusionOverride?: CheckRunPayload["conclusion"] | undefined;
+}): Promise<CheckPublicationResult | undefined> {
+  if (input.data.githubCheckReconciler) {
+    const reconciled = await input.data.githubCheckReconciler({
+      owner: input.githubContext.owner,
+      repo: input.githubContext.repo,
+      pr: input.pr,
+      result: input.result,
+      detailsUrl: input.detailsUrl,
+      conclusion: input.conclusionOverride,
+      externalId: input.externalId
+    });
+    return reconciled
+      ? { published: true, ...reconciled, reused: true }
+      : undefined;
+  }
+  if (!input.githubContext.checkPublisherClient) {
+    return undefined;
+  }
+  const reconciled = await reconcileMergeGuardCheckWithClient({
+    client: input.githubContext.checkPublisherClient,
+    owner: input.githubContext.owner,
+    repo: input.githubContext.repo,
+    pr: input.pr,
+    result: input.result,
+    detailsUrl: input.detailsUrl,
+    externalId: input.externalId,
+    conclusionOverride: input.conclusionOverride
+  });
+  return reconciled ? { published: true, ...reconciled } : undefined;
+}
+
+export function checkExternalIdForDelivery(deliveryId: string): string {
+  return `agentforge:${createHash("sha256").update(deliveryId).digest("hex")}`;
+}
+
+async function publishCheckOnce(
+  input: {
+    prisma: PrismaClient | undefined;
+    deliveryId: string;
+    checkConclusion: CheckRunPayload["conclusion"];
+    publish: (externalId: string) => Promise<CheckPublicationResult>;
+    reconcile: (externalId: string) => Promise<CheckPublicationResult | undefined>;
+  },
+  rechecksRemaining = 1,
+  claimRetriesRemaining = 1
+): Promise<CheckPublicationResult> {
+  const deterministicExternalId = checkExternalIdForDelivery(input.deliveryId);
+  if (!input.prisma) {
+    const published = await input.publish(deterministicExternalId);
+    return {
+      ...published,
+      conclusion: published.conclusion ?? input.checkConclusion,
+      reused: published.reused ?? false
+    };
+  }
+
+  const select = {
+    publishedCheckRunId: true,
+    checkConclusion: true,
+    checkPublishedAt: true,
+    checkPublicationState: true,
+    checkPublicationClaimId: true,
+    checkPublicationClaimedAt: true,
+    checkExternalId: true
+  } as const;
+  const previous = await input.prisma.webhookDelivery.findUnique({
+    where: { deliveryId: input.deliveryId },
+    select
+  });
+  if (!previous) {
+    throw new Error(
+      `Webhook delivery ${input.deliveryId} is missing durable check publication state.`
+    );
+  }
+  if (previous.publishedCheckRunId !== null) {
     return {
       published: true,
       id: Number(previous.publishedCheckRunId),
@@ -1684,105 +2217,258 @@ async function publishCheckOnce(input: {
       reused: true
     };
   }
+
+  const publicationState =
+    previous.checkPublicationState ||
+    (previous.checkPublishedAt ? "ambiguous" : "pending");
+  const externalId = previous.checkExternalId ?? deterministicExternalId;
   if (
-    previous?.checkPublishedAt &&
-    Date.now() - previous.checkPublishedAt.getTime() < CHECK_PUBLICATION_CLAIM_TTL_MS
+    publicationState === "creating" &&
+    previous.checkPublicationClaimedAt &&
+    Date.now() - previous.checkPublicationClaimedAt.getTime() < CHECK_PUBLICATION_CLAIM_TTL_MS
   ) {
-    return {
-      published: false,
-      conclusion: checkConclusionFromStoredValue(previous.checkConclusion) ?? input.checkConclusion,
-      reused: true
-    };
-  }
-
-  if (!input.prisma) {
-    const published = await input.publish();
-    return {
-      ...published,
-      conclusion: published.conclusion ?? input.checkConclusion,
-      reused: false
-    };
-  }
-
-  const claimTime = new Date();
-  const claimWhere = previous?.checkPublishedAt
-    ? {
-        deliveryId: input.deliveryId,
-        checkPublishedAt: previous.checkPublishedAt,
-        publishedCheckRunId: null
-      }
-    : { deliveryId: input.deliveryId, checkPublishedAt: null };
-  const claim = await input.prisma.webhookDelivery.updateMany({
-    where: claimWhere,
-    data: {
-      checkConclusion: input.checkConclusion,
-      checkPublishedAt: claimTime
+    if (rechecksRemaining > 0) {
+      await waitForCheckPublicationRecheck();
+      return publishCheckOnce(input, rechecksRemaining - 1, claimRetriesRemaining);
     }
-  });
-  if (claim.count === 0) {
-    const stored = await input.prisma.webhookDelivery.findUnique({
-      where: { deliveryId: input.deliveryId },
-      select: {
-        publishedCheckRunId: true,
-        checkConclusion: true,
-        checkPublishedAt: true
-      }
-    });
-    if (!stored) {
-      const published = await input.publish();
-      return {
-        ...published,
-        conclusion: published.conclusion ?? input.checkConclusion,
-        reused: false
-      };
-    }
-    return {
-      published: Boolean(stored?.publishedCheckRunId),
-      id: stored?.publishedCheckRunId ? Number(stored.publishedCheckRunId) : undefined,
-      conclusion: checkConclusionFromStoredValue(stored?.checkConclusion) ?? input.checkConclusion,
-      reused: true
-    };
+    throw new CheckPublicationClaimPendingError(
+      input.deliveryId,
+      checkPublicationClaimRetryAfterMs(previous.checkPublicationClaimedAt)
+    );
   }
-
-  try {
-    const published = await input.publish();
-    if (!published.published) {
+  if (publicationState === "creating" || publicationState === "ambiguous") {
+    if (!previous.checkExternalId) {
+      throw new CheckPublicationAmbiguousError(input.deliveryId);
+    }
+    const reconciled = await input.reconcile(previous.checkExternalId);
+    if (!reconciled?.published || reconciled.id === undefined) {
       await input.prisma.webhookDelivery.updateMany({
-        where: { deliveryId: input.deliveryId, checkPublishedAt: claimTime },
+        where: {
+          deliveryId: input.deliveryId,
+          publishedCheckRunId: null,
+          checkPublicationState: { in: ["creating", "ambiguous"] },
+          checkExternalId: previous.checkExternalId
+        },
         data: {
-          checkPublishedAt: null,
-          checkConclusion: published.conclusion ?? input.checkConclusion
+          checkPublicationState: "ambiguous",
+          checkConclusion: input.checkConclusion
         }
       });
-      return {
-        ...published,
-        conclusion: published.conclusion ?? input.checkConclusion,
-        reused: false
-      };
+      throw new CheckPublicationAmbiguousError(input.deliveryId);
     }
-    await input.prisma.webhookDelivery.updateMany({
-      where: { deliveryId: input.deliveryId, checkPublishedAt: claimTime },
+    const finalized = await input.prisma.webhookDelivery.updateMany({
+      where: {
+        deliveryId: input.deliveryId,
+        publishedCheckRunId: null,
+        checkPublicationState: { in: ["creating", "ambiguous"] },
+        checkExternalId: previous.checkExternalId
+      },
       data: {
-        publishedCheckRunId: published.id ? BigInt(published.id) : null,
-        checkConclusion: published.conclusion ?? input.checkConclusion,
+        checkPublicationState: "published",
+        checkPublicationClaimId: null,
+        checkPublicationClaimedAt: null,
+        publishedCheckRunId: BigInt(reconciled.id),
+        checkConclusion: reconciled.conclusion ?? input.checkConclusion,
         checkPublishedAt: new Date()
       }
     });
+    if (finalized.count === 0) {
+      const stored = await input.prisma.webhookDelivery.findUnique({
+        where: { deliveryId: input.deliveryId },
+        select
+      });
+      if (stored?.publishedCheckRunId !== null && stored?.publishedCheckRunId !== undefined) {
+        return {
+          published: true,
+          id: Number(stored.publishedCheckRunId),
+          conclusion:
+            checkConclusionFromStoredValue(stored.checkConclusion) ?? input.checkConclusion,
+          reused: true
+        };
+      }
+      throw new CheckPublicationClaimPendingError(input.deliveryId);
+    }
     return {
-      ...published,
-      conclusion: published.conclusion ?? input.checkConclusion,
-      reused: false
+      ...reconciled,
+      conclusion: reconciled.conclusion ?? input.checkConclusion,
+      reused: true
     };
+  }
+
+  if (publicationState === "claimed" && previous.checkPublicationClaimedAt) {
+    const leaseAge = Date.now() - previous.checkPublicationClaimedAt.getTime();
+    if (leaseAge < CHECK_PUBLICATION_CLAIM_TTL_MS) {
+      if (rechecksRemaining > 0) {
+        await waitForCheckPublicationRecheck();
+        return publishCheckOnce(input, rechecksRemaining - 1, claimRetriesRemaining);
+      }
+      throw new CheckPublicationClaimPendingError(
+        input.deliveryId,
+        checkPublicationClaimRetryAfterMs(previous.checkPublicationClaimedAt)
+      );
+    }
+  } else if (publicationState !== "pending") {
+    throw new CheckPublicationAmbiguousError(input.deliveryId);
+  }
+
+  const claimId = randomUUID();
+  const claimTime = new Date();
+  const claim = await input.prisma.webhookDelivery.updateMany({
+    where:
+      publicationState === "claimed"
+        ? {
+            deliveryId: input.deliveryId,
+            publishedCheckRunId: null,
+            checkPublicationState: "claimed",
+            checkPublicationClaimId: previous.checkPublicationClaimId,
+            checkPublicationClaimedAt: previous.checkPublicationClaimedAt
+          }
+        : {
+            deliveryId: input.deliveryId,
+            publishedCheckRunId: null,
+            checkPublicationState: "pending"
+          },
+    data: {
+      checkPublicationState: "claimed",
+      checkPublicationClaimId: claimId,
+      checkPublicationClaimedAt: claimTime,
+      checkExternalId: externalId,
+      checkConclusion: input.checkConclusion,
+      checkPublishedAt: null
+    }
+  });
+  if (claim.count === 0) {
+    if (claimRetriesRemaining > 0) {
+      return publishCheckOnce(input, rechecksRemaining, claimRetriesRemaining - 1);
+    }
+    throw new CheckPublicationClaimPendingError(input.deliveryId);
+  }
+
+  const armed = await input.prisma.webhookDelivery.updateMany({
+    where: {
+      deliveryId: input.deliveryId,
+      publishedCheckRunId: null,
+      checkPublicationState: "claimed",
+      checkPublicationClaimId: claimId,
+      checkPublicationClaimedAt: claimTime,
+      checkExternalId: externalId
+    },
+    data: { checkPublicationState: "creating" }
+  });
+  if (armed.count === 0) {
+    throw new CheckPublicationClaimPendingError(input.deliveryId);
+  }
+
+  let published: CheckPublicationResult;
+  try {
+    published = await input.publish(externalId);
   } catch (error) {
     await input.prisma.webhookDelivery.updateMany({
-      where: { deliveryId: input.deliveryId, checkPublishedAt: claimTime },
+      where: {
+        deliveryId: input.deliveryId,
+        publishedCheckRunId: null,
+        checkPublicationState: "creating",
+        checkPublicationClaimId: claimId,
+        checkExternalId: externalId
+      },
       data: {
-        checkPublishedAt: null,
+        checkPublicationState: "ambiguous",
         checkConclusion: input.checkConclusion
       }
     });
     throw error;
   }
+
+  if (!published.published) {
+    await input.prisma.webhookDelivery.updateMany({
+      where: {
+        deliveryId: input.deliveryId,
+        publishedCheckRunId: null,
+        checkPublicationState: "creating",
+        checkPublicationClaimId: claimId,
+        checkExternalId: externalId
+      },
+      data: {
+        checkPublicationState: "pending",
+        checkPublicationClaimId: null,
+        checkPublicationClaimedAt: null,
+        checkConclusion: published.conclusion ?? input.checkConclusion
+      }
+    });
+    return {
+      ...published,
+      conclusion: published.conclusion ?? input.checkConclusion,
+      reused: false
+    };
+  }
+  if (published.id === undefined) {
+    await input.prisma.webhookDelivery.updateMany({
+      where: {
+        deliveryId: input.deliveryId,
+        publishedCheckRunId: null,
+        checkPublicationState: "creating",
+        checkPublicationClaimId: claimId,
+        checkExternalId: externalId
+      },
+      data: { checkPublicationState: "ambiguous" }
+    });
+    throw missingPublishedCheckRunIdError(input.deliveryId);
+  }
+
+  const finalized = await input.prisma.webhookDelivery.updateMany({
+    where: {
+      deliveryId: input.deliveryId,
+      publishedCheckRunId: null,
+      checkPublicationState: "creating",
+      checkPublicationClaimId: claimId,
+      checkExternalId: externalId
+    },
+    data: {
+      checkPublicationState: "published",
+      checkPublicationClaimId: null,
+      checkPublicationClaimedAt: null,
+      publishedCheckRunId: BigInt(published.id),
+      checkConclusion: published.conclusion ?? input.checkConclusion,
+      checkPublishedAt: new Date()
+    }
+  });
+  if (finalized.count === 0) {
+    const stored = await input.prisma.webhookDelivery.findUnique({
+      where: { deliveryId: input.deliveryId },
+      select
+    });
+    if (stored?.publishedCheckRunId !== null && stored?.publishedCheckRunId !== undefined) {
+      return {
+        published: true,
+        id: Number(stored.publishedCheckRunId),
+        conclusion: checkConclusionFromStoredValue(stored.checkConclusion) ?? input.checkConclusion,
+        reused: true
+      };
+    }
+    throw new CheckPublicationAmbiguousError(input.deliveryId);
+  }
+  return {
+    ...published,
+    conclusion: published.conclusion ?? input.checkConclusion,
+    reused: published.reused ?? false
+  };
+}
+
+function checkPublicationClaimRetryAfterMs(claimedAt: Date): number {
+  const leaseAgeMs = Math.max(0, Date.now() - claimedAt.getTime());
+  return Math.max(1000, CHECK_PUBLICATION_CLAIM_TTL_MS - leaseAgeMs + 1000);
+}
+
+function missingPublishedCheckRunIdError(deliveryId: string): Error {
+  return new Error(
+    `GitHub reported a published check-run for webhook delivery ${deliveryId} without a check-run id.`
+  );
+}
+
+async function waitForCheckPublicationRecheck(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    setTimeout(resolve, CHECK_PUBLICATION_RECHECK_DELAY_MS);
+  });
 }
 
 function checkConclusionFromStoredValue(
@@ -1793,6 +2479,81 @@ function checkConclusionFromStoredValue(
 
 function recordDetailsUrl(appBaseUrl: string, recordId: string): string {
   return new URL(`/records/${encodeURIComponent(recordId)}`, appBaseUrl).toString();
+}
+
+type ExistingWorkerRecord = {
+  id: string;
+  revision: number;
+  headSha: string;
+  policyVersion: string;
+  requiredEvidenceJson: unknown;
+  requiredReviewersJson: unknown;
+  lifecycle: ChangeControlRecord["lifecycle"];
+  decisionJson: unknown;
+};
+
+async function findExistingWorkerRecord(input: {
+  prisma: PrismaClient;
+  repositoryId: string;
+  pullRequestNumber: number;
+}): Promise<ExistingWorkerRecord | null> {
+  return input.prisma.changeControlRecord.findFirst({
+    where: {
+      pullRequest: {
+        repositoryId: input.repositoryId,
+        number: input.pullRequestNumber
+      }
+    },
+    select: {
+      id: true,
+      revision: true,
+      headSha: true,
+      policyVersion: true,
+      requiredEvidenceJson: true,
+      requiredReviewersJson: true,
+      lifecycle: true,
+      decisionJson: true
+    }
+  });
+}
+
+function matchingPriorRequirementState(input: {
+  existingRecord: ExistingWorkerRecord | null | undefined;
+  headSha: string;
+  policyVersion: string;
+}): PriorRequirementState | undefined {
+  const existing = input.existingRecord;
+  if (
+    !existing ||
+    existing.headSha !== input.headSha ||
+    existing.policyVersion !== input.policyVersion
+  ) {
+    return undefined;
+  }
+  return {
+    headSha: existing.headSha,
+    policyVersion: existing.policyVersion,
+    requiredEvidence: Array.isArray(existing.requiredEvidenceJson)
+      ? (existing.requiredEvidenceJson as ChangeControlRecord["requiredEvidence"])
+      : [],
+    requiredReviewers: Array.isArray(existing.requiredReviewersJson)
+      ? (existing.requiredReviewersJson as ChangeControlRecord["requiredReviewers"])
+      : []
+  };
+}
+
+function activeOverrideDecision(
+  existingRecord: ExistingWorkerRecord | null | undefined
+): NonNullable<ChangeControlRecord["decision"]> | undefined {
+  const decision = existingRecord?.decisionJson as { status?: unknown } | null | undefined;
+  if (
+    existingRecord?.lifecycle !== "overridden" ||
+    !decision ||
+    decision.status !== "override_approved"
+  ) {
+    return undefined;
+  }
+  return decision as NonNullable<ChangeControlRecord["decision"]>;
 }
 
 function applyEnvelopeLifecycle(
@@ -1837,6 +2598,7 @@ async function persistWorkerRecord(input: {
   publishedCheckRunId?: number | undefined;
   envelope?: GithubWebhookEnvelope | undefined;
   persistedRecord?: PersistedWorkerRecordRefs | undefined;
+  repositoryBinding?: { id: string; organizationId: string } | undefined;
 }): Promise<void> {
   const { prisma, record, pr, checkConclusion, publishedCheckRunId, envelope } = input;
   const persistedRecord =
@@ -1845,13 +2607,16 @@ async function persistWorkerRecord(input: {
       prisma,
       record,
       pr,
-      envelope
+      envelope,
+      repositoryBinding: input.repositoryBinding
     }));
   await persistWorkerEvaluationSnapshot({
     prisma,
     organizationId: persistedRecord.organizationId,
     repositoryId: persistedRecord.repositoryId,
     pullRequestId: persistedRecord.pullRequestId,
+    recordId: persistedRecord.recordId,
+    revision: persistedRecord.revision,
     record,
     checkConclusion,
     publishedCheckRunId
@@ -1921,41 +2686,56 @@ async function ensureWorkerRecord(input: {
   record: ChangeControlRecord;
   pr: PullRequestInput;
   envelope?: GithubWebhookEnvelope | undefined;
+  repositoryBinding?: { id: string; organizationId: string } | undefined;
+  existingRecord?: ExistingWorkerRecord | null | undefined;
 }): Promise<PersistedWorkerRecordRefs> {
   const { prisma, record, pr, envelope } = input;
-  const organization = await prisma.organization.upsert({
-    where: { id: record.organizationId },
-    update: {},
-    create: {
-      id: record.organizationId,
-      name: "Local Development",
-      slug: record.organizationId
-    }
-  });
-  const [owner = "unknown", name = pr.repositoryFullName] = pr.repositoryFullName.split("/");
-  const repository = await prisma.repository.upsert({
-    where: {
-      organizationId_fullName: {
-        organizationId: organization.id,
-        fullName: pr.repositoryFullName
-      }
-    },
-    update: {
-      defaultBranch: pr.baseBranch,
-      enabled: true
-    },
-    create: {
-      id: record.repositoryId,
-      organizationId: organization.id,
-      githubRepositoryId: stableBigInt(pr.repositoryFullName),
-      fullName: pr.repositoryFullName,
-      owner,
-      name,
-      defaultBranch: pr.baseBranch,
-      protected: false,
-      enabled: true
-    }
-  });
+  if (
+    input.repositoryBinding &&
+    (input.repositoryBinding.id !== record.repositoryId ||
+      input.repositoryBinding.organizationId !== record.organizationId)
+  ) {
+    throw new EnvelopeRepositoryIdentityError(
+      "The resolved repository binding does not match the evaluation record tenant identity."
+    );
+  }
+  const repository = input.repositoryBinding
+    ? { id: input.repositoryBinding.id }
+    : await (async () => {
+        const organization = await prisma.organization.upsert({
+          where: { id: record.organizationId },
+          update: {},
+          create: {
+            id: record.organizationId,
+            name: "Local Development",
+            slug: record.organizationId
+          }
+        });
+        const [owner = "unknown", name = pr.repositoryFullName] = pr.repositoryFullName.split("/");
+        return prisma.repository.upsert({
+          where: {
+            organizationId_fullName: {
+              organizationId: organization.id,
+              fullName: pr.repositoryFullName
+            }
+          },
+          update: {
+            defaultBranch: pr.baseBranch,
+            enabled: true
+          },
+          create: {
+            id: record.repositoryId,
+            organizationId: organization.id,
+            githubRepositoryId: stableBigInt(pr.repositoryFullName),
+            fullName: pr.repositoryFullName,
+            owner,
+            name,
+            defaultBranch: pr.baseBranch,
+            protected: false,
+            enabled: true
+          }
+        });
+      })();
   const pullRequest = await prisma.pullRequest.upsert({
     where: {
       repositoryId_number: {
@@ -1976,7 +2756,10 @@ async function ensureWorkerRecord(input: {
     create: {
       id: `pr_${record.id}`,
       repositoryId: repository.id,
-      githubPullRequestId: stableBigInt(`${pr.repositoryFullName}#${pr.pullRequestNumber}`),
+      githubPullRequestId:
+        envelope?.pullRequest?.id && Number.isSafeInteger(envelope.pullRequest.id)
+          ? BigInt(envelope.pullRequest.id)
+          : stableBigInt(`${pr.repositoryFullName}#${pr.pullRequestNumber}`),
       number: pr.pullRequestNumber,
       title: pr.title,
       authorLogin: pr.authorLogin,
@@ -1989,52 +2772,76 @@ async function ensureWorkerRecord(input: {
     }
   });
 
-  const persistedRecord = await prisma.changeControlRecord.upsert({
-    where: { pullRequestId: pullRequest.id },
-    update: {
-      repositoryFullName: record.repositoryFullName,
-      pullRequestNumber: record.pullRequestNumber,
-      headSha: record.headSha,
-      baseBranch: record.baseBranch,
-      mode: record.mode,
-      policyVersion: record.policyVersion,
-      policyPackId: record.policyPackId ?? null,
-      policyPackVersion: record.policyPackVersion ?? null,
-      checkStatus: record.checkStatus,
-      lifecycle: record.lifecycle,
-      verifiedFindingsJson: record.verifiedFindings as never,
-      requiredEvidenceJson: record.requiredEvidence as never,
-      requiredReviewersJson: record.requiredReviewers as never,
-      decisionJson: (record.decision ?? null) as never,
-      createdAt: new Date(record.createdAt),
-      updatedAt: new Date(record.updatedAt)
-    },
-    create: {
-      id: record.id,
-      pullRequestId: pullRequest.id,
-      repositoryFullName: record.repositoryFullName,
-      pullRequestNumber: record.pullRequestNumber,
-      headSha: record.headSha,
-      baseBranch: record.baseBranch,
-      mode: record.mode,
-      policyVersion: record.policyVersion,
-      policyPackId: record.policyPackId ?? null,
-      policyPackVersion: record.policyPackVersion ?? null,
-      checkStatus: record.checkStatus,
-      lifecycle: record.lifecycle,
-      verifiedFindingsJson: record.verifiedFindings as never,
-      requiredEvidenceJson: record.requiredEvidence as never,
-      requiredReviewersJson: record.requiredReviewers as never,
-      decisionJson: (record.decision ?? null) as never,
-      createdAt: new Date(record.createdAt),
-      updatedAt: new Date(record.updatedAt)
+  const recordData = {
+    repositoryFullName: record.repositoryFullName,
+    pullRequestNumber: record.pullRequestNumber,
+    headSha: record.headSha,
+    baseBranch: record.baseBranch,
+    mode: record.mode,
+    policyVersion: record.policyVersion,
+    policyPackId: record.policyPackId ?? null,
+    policyPackVersion: record.policyPackVersion ?? null,
+    checkStatus: record.checkStatus,
+    lifecycle: record.lifecycle,
+    verifiedFindingsJson: record.verifiedFindings as never,
+    requiredEvidenceJson: record.requiredEvidence as never,
+    requiredReviewersJson: record.requiredReviewers as never,
+    decisionJson: (record.decision ?? null) as never,
+    updatedAt: new Date(record.updatedAt)
+  };
+  let persistedRecord: { id: string; revision: number };
+  if (input.existingRecord) {
+    const updated = await prisma.changeControlRecord.updateMany({
+      where: {
+        id: input.existingRecord.id,
+        pullRequestId: pullRequest.id,
+        revision: input.existingRecord.revision
+      },
+      data: {
+        ...recordData,
+        revision: { increment: 1 }
+      }
+    });
+    if (updated.count !== 1) {
+      throw new ChangeControlRecordConcurrencyError(input.existingRecord.id);
     }
-  });
+    const refreshed = await prisma.changeControlRecord.findUnique({
+      where: { id: input.existingRecord.id },
+      select: { id: true, revision: true }
+    });
+    if (!refreshed || refreshed.revision !== input.existingRecord.revision + 1) {
+      throw new ChangeControlRecordConcurrencyError(input.existingRecord.id);
+    }
+    persistedRecord = refreshed;
+  } else {
+    try {
+      persistedRecord = await prisma.changeControlRecord.create({
+        data: {
+          id: record.id,
+          revision: 0,
+          pullRequestId: pullRequest.id,
+          ...recordData,
+          createdAt: new Date(record.createdAt)
+        },
+        select: { id: true, revision: true }
+      });
+    } catch (error) {
+      const raced = await prisma.changeControlRecord.findUnique({
+        where: { pullRequestId: pullRequest.id },
+        select: { id: true }
+      });
+      if (raced) {
+        throw new ChangeControlRecordConcurrencyError(raced.id);
+      }
+      throw error;
+    }
+  }
   return {
-    organizationId: organization.id,
+    organizationId: record.organizationId,
     repositoryId: repository.id,
     pullRequestId: pullRequest.id,
-    recordId: persistedRecord.id
+    recordId: persistedRecord.id,
+    revision: persistedRecord.revision
   };
 }
 
@@ -2043,6 +2850,8 @@ async function persistWorkerEvaluationSnapshot(input: {
   organizationId: string;
   repositoryId: string;
   pullRequestId: string;
+  recordId: string;
+  revision: number;
   record: ChangeControlRecord;
   checkConclusion: string;
   publishedCheckRunId?: number | undefined;
@@ -2071,6 +2880,13 @@ async function persistWorkerEvaluationSnapshot(input: {
   await withUnmanagedOrgBinding(() =>
     input.prisma.$transaction(async (tx: PrismaTransactionClient) => {
       await tx.$executeRaw`SELECT set_config('agentforge.current_org', ${input.organizationId}, true)`;
+      const revisionGuard = await tx.changeControlRecord.updateMany({
+        where: { id: input.recordId, revision: input.revision },
+        data: { revision: { increment: 0 } }
+      });
+      if (revisionGuard.count !== 1) {
+        throw new ChangeControlRecordConcurrencyError(input.recordId);
+      }
       await tx.evaluation.upsert({
         where: { id: evaluationId },
         update: evaluationData,
@@ -2221,9 +3037,11 @@ async function ensureWorkerPolicyVersionSnapshot(input: {
       version: input.record.policyVersion,
       mode: input.record.mode,
       contentYaml: `# Runtime policy snapshot for ${input.record.repositoryFullName}#${input.record.pullRequestNumber}\n# Full policy content was not attached to this evaluation snapshot.`,
-      contentHash: createHash("sha256")
-        .update(`${input.record.policyVersion}:${input.record.policyPackId ?? ""}`)
-        .digest("hex"),
+      contentHash:
+        policyContentHashFromVersion(input.record.policyVersion) ??
+        createHash("sha256")
+          .update(`${input.record.policyVersion}:${input.record.policyPackId ?? ""}`)
+          .digest("hex"),
       createdBy: "system"
     }
   });
