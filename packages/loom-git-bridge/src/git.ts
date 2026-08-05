@@ -13,6 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { TextDecoder } from "node:util";
 import { sha256Hex, type Cell, type NodeIdent, type State } from "@agentforge/loom-core";
+import { facetFromAttributes, parseGitAttributes, type GitAttributes } from "./gitattributes.js";
 import type { GitReader, GitTreeEntry, TransformStates } from "./types.js";
 
 /** Upper bound for captured git stdout (bytes); large enough for big blobs/trees. */
@@ -93,6 +94,7 @@ export function nodeIdentForPath(path: string): NodeIdent {
  */
 export async function stateFromGitRef(reader: GitReader, ref: string): Promise<State> {
   const entries = await reader.lsTree(ref);
+  const attributes = await readGitAttributes(reader, ref);
   const cells = Object.create(null) as Record<string, Cell>;
   for (const entry of entries) {
     if (entry.type === "tree") {
@@ -107,18 +109,19 @@ export async function stateFromGitRef(reader: GitReader, ref: string): Promise<S
       };
       continue;
     }
+    const forcedFacet = attributes === undefined ? undefined : facetFromAttributes(attributes, entry.path);
     // blob
     if (entry.objectId !== undefined && reader.readBlobBytes !== undefined) {
       const bytes = await reader.readBlobBytes(entry.objectId);
       const text = tryUtf8(bytes);
-      if (text !== undefined) {
-        cells[entry.path] = { facet: "text", ident: nodeIdentForPath(entry.path), text };
-      } else {
+      if (forcedFacet === "bytes" || (forcedFacet === undefined && text === undefined)) {
         cells[entry.path] = {
           facet: "bytes",
           ident: nodeIdentForPath(entry.path),
           text: Buffer.from(bytes).toString("base64")
         };
+      } else {
+        cells[entry.path] = { facet: "text", ident: nodeIdentForPath(entry.path), text: text ?? "" };
       }
       continue;
     }
@@ -127,12 +130,34 @@ export async function stateFromGitRef(reader: GitReader, ref: string): Promise<S
         ? await reader.readBlob(entry.objectId)
         : await reader.readFile(ref, entry.path);
     cells[entry.path] = {
-      facet: "text",
+      facet: forcedFacet === "bytes" ? "bytes" : "text",
       ident: nodeIdentForPath(entry.path),
-      text
+      text: forcedFacet === "bytes" ? Buffer.from(text, "utf8").toString("base64") : text
     };
   }
   return { kind: "state", cells };
+}
+
+/** Read and parse `.gitattributes` from a ref, or undefined if absent. */
+async function readGitAttributes(reader: GitReader, ref: string): Promise<GitAttributes | undefined> {
+  try {
+    const content =
+      reader.readBlob !== undefined
+        ? await reader.readBlob(await objectIdForPath(reader, ref, ".gitattributes"))
+        : await reader.readFile(ref, ".gitattributes");
+    return parseGitAttributes(content);
+  } catch {
+    return undefined;
+  }
+}
+
+async function objectIdForPath(reader: GitReader, ref: string, path: string): Promise<string> {
+  const entries = await reader.lsTree(ref);
+  const entry = entries.find((item) => item.path === path);
+  if (entry?.objectId === undefined) {
+    throw new Error(`loom-git-bridge: no object id for ${path}`);
+  }
+  return entry.objectId;
 }
 
 /** Decode bytes as strict UTF-8; returns undefined for non-UTF-8 (binary) content. */
