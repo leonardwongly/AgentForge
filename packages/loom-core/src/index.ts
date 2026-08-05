@@ -31,3 +31,4 @@ export * from "./effects.js";
 export * from "./workgraph.js";
 export * from "./witness.js";
 export * from "./recipe.js";
+export * from "./bundle.js";
