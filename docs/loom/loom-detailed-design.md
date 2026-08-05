@@ -1383,7 +1383,8 @@ Implemented and tested today:
 - a hermetic Recipe sandbox with bounded resource accounting;
 - deterministic encryption-at-rest for private objects (dedup-preserving); and
 - a frozen Loom Wire v1 HTTP/2 binding with signed requests, replay protection,
-  and a reference client/server transport (see [wire-protocol.md](wire-protocol.md)).
+  and a reference client/server transport (see [wire-protocol.md](wire-protocol.md)); and
+- monorepo sharding (LineShard) with all-or-nothing cross-Line atomic proposals.
 
 Not yet implemented as a native system:
 
@@ -1494,7 +1495,9 @@ conformant evidence.
 7. ~~Define encryption-at-rest and optional private-object addressing without
    weakening deduplication or verification claims.~~ Implemented: `private.ts`
    (deterministic AES-256-GCM, dedup-preserving).
-8. Define large monorepo sharding and cross-Line atomic proposal semantics.
+8. ~~Define large monorepo sharding and cross-Line atomic proposal semantics.~~
+   Implemented: `proposal.ts` (LineShard model + all-or-nothing cross-Line
+   prepare/commit under a global lock).
 
 ## 24. Conformance
 
