@@ -8,3 +8,4 @@ export * from "./merge.js";
 export * from "./reapply.js";
 export * from "./grant.js";
 export * from "./determinism.js";
+export * from "./store.js";
