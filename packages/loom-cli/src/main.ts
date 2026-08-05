@@ -6,6 +6,7 @@ import type { GitReader } from "@agentforge/loom-git-bridge";
 import { generateKeyPair, type DsseEnvelope } from "@agentforge/loom-provenance";
 import { ratify, verifyAttestation, type RatifyRequest, type SignOptions } from "./engine.js";
 import { formatRatify, formatVerify } from "./format.js";
+import { initRepo, logRepo, proposeRepo, statusRepo } from "./native.js";
 
 export interface AtomicFileWrite {
   readonly path: string;
@@ -213,11 +214,15 @@ function optionalString(flags: Flags, key: string, fallback: string): string {
 }
 
 const USAGE = [
-  "usage: loom <ratify|verify> [flags]",
+  "usage: loom <ratify|verify|init|status|propose|log> [flags]",
   "  ratify --repo <dir> --base <ref> --head <ref> --policy <file>",
   "         [--sign [--out <file>] [--pubkey-out <file>] [--did <did>] [--policy-version <v>]]",
   "         [--space <id>] [--line <ref>] [--proposal <id>] [--title <t>] [--author <login>]",
-  "  verify --repo <dir> --base <ref> --head <ref> --env <file> --pubkey <file>"
+  "  verify --repo <dir> --base <ref> --head <ref> --env <file> --pubkey <file>",
+  "  init --repo <dir>",
+  "  status --repo <dir>",
+  "  propose --repo <dir> --title <t>",
+  "  log --repo <dir>"
 ].join("\n");
 
 export async function main(argv: readonly string[], io: CliIo): Promise<number> {
@@ -229,6 +234,23 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     }
     if (command === "verify") {
       return await runVerify(flags, io);
+    }
+    if (command === "init") {
+      io.log(initRepo(requireString(flags, "repo")));
+      return 0;
+    }
+    if (command === "status") {
+      io.log(statusRepo(requireString(flags, "repo")));
+      return 0;
+    }
+    if (command === "propose") {
+      const title = typeof flags.title === "string" ? flags.title : "untitled";
+      io.log(await proposeRepo(requireString(flags, "repo"), title));
+      return 0;
+    }
+    if (command === "log") {
+      io.log(logRepo(requireString(flags, "repo")));
+      return 0;
     }
     io.error(USAGE);
     return command === undefined || command === "--help" || command === "help" ? 0 : 2;
