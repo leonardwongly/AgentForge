@@ -357,7 +357,9 @@ async function main(): Promise<void> {
 
   const fullInput = input as PullRequestInput;
   const facts = extractVerifiedFacts(fullInput, detectorConfigFromPolicy(parsed.config));
-  const result = evaluateMergeGuard(fullInput, facts, parsed.config);
+  const result = evaluateMergeGuard(fullInput, facts, parsed.config, undefined, {
+    sourceContentHash: parsed.contentHash
+  });
 
   const summary = buildSummary(fullInput, result);
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;

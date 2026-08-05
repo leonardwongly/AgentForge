@@ -20,7 +20,9 @@ async function main(): Promise<void> {
   }
 
   const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(parsed.config));
-  const result = evaluateMergeGuard(pr, facts, parsed.config);
+  const result = evaluateMergeGuard(pr, facts, parsed.config, undefined, {
+    sourceContentHash: parsed.contentHash
+  });
   console.log(JSON.stringify(result, null, 2));
 }
 

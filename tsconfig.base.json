@@ -30,11 +30,11 @@
       "@agentforge/loom-git-bridge": ["packages/loom-git-bridge/src/index.ts"],
       "@agentforge/loom-provenance": ["packages/loom-provenance/src/index.ts"],
       "@agentforge/loom-ratify": ["packages/loom-ratify/src/index.ts"],
+      "@agentforge/notifications": ["packages/notifications/src/index.ts"],
       "@agentforge/policy": ["packages/policy/src/index.ts"],
       "@agentforge/records": ["packages/records/src/index.ts"],
       "@agentforge/reviewers": ["packages/reviewers/src/index.ts"],
       "@agentforge/security": ["packages/security/src/index.ts"],
-      "@agentforge/testing": ["packages/testing/src/index.ts"],
       "@agentforge/ui": ["packages/ui/src/index.ts"]
     }
   }

@@ -65,7 +65,9 @@ async function main(): Promise<void> {
   }
 
   const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(parsed.config));
-  const result = evaluateMergeGuard(pr, facts, parsed.config);
+  const result = evaluateMergeGuard(pr, facts, parsed.config, undefined, {
+    sourceContentHash: parsed.contentHash
+  });
   const published = options.publishCheck
     ? await publishMergeGuardCheckWithClient({
         client,

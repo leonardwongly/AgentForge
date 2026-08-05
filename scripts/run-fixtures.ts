@@ -26,7 +26,9 @@ async function main(): Promise<void> {
   for (const file of files) {
     const pr = JSON.parse(await readFile(path.join(fixtureDir, file), "utf8")) as PullRequestInput;
     const facts = extractVerifiedFacts(pr, detectorConfigFromPolicy(parsed.config));
-    const result = evaluateMergeGuard(pr, facts, parsed.config);
+    const result = evaluateMergeGuard(pr, facts, parsed.config, undefined, {
+      sourceContentHash: parsed.contentHash
+    });
     summary.push({
       fixture: file,
       status: result.status,

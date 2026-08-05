@@ -11,6 +11,10 @@
   "scripts": {
     "dev": "tsx scripts/dev-preflight.ts && turbo run dev",
     "dev:preflight": "tsx scripts/dev-preflight.ts",
+    "doctor": "tsx scripts/doctor.ts",
+    "setup": "tsx scripts/setup.ts",
+    "design-partner:report": "tsx scripts/design-partner-report.ts",
+    "benchmark": "tsx scripts/benchmark.ts",
     "dev:api": "pnpm --filter @agentforge/api dev",
     "dev:web": "pnpm --filter @agentforge/web dev",
     "dev:worker": "pnpm --filter @agentforge/worker dev",
