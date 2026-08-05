@@ -1409,9 +1409,14 @@ Implemented and tested today:
 - a full Git export (Loom -> git) fidelity path with loss reporting and mirror
   commits.
 
+Pilot support tooling is implemented (see [pilot-runbook.md](pilot-runbook.md)):
+`loom pilot mirror|verify|restore` export the head State to a git mirror with
+byte-exact equivalence verification and a tamper-evident digest ledger, and run
+clean-room restore drills.
+
 Not yet implemented as a native system:
 
-- the Phase 4 dual-safety pilot (an operational 30-day run, not code).
+- the Phase 4 dual-safety pilot itself (an operational 30-day run, not code).
 
 ## 21. Implementation roadmap and gates
 

@@ -7,6 +7,7 @@ import { generateKeyPair, type DsseEnvelope } from "@agentforge/loom-provenance"
 import { ratify, verifyAttestation, type RatifyRequest, type SignOptions } from "./engine.js";
 import { formatRatify, formatVerify } from "./format.js";
 import { initRepo, logRepo, proposeRepo, statusRepo } from "./native.js";
+import { mirrorHeadState, restoreDrill, verifyMirrorEquivalence } from "./pilot.js";
 
 export interface AtomicFileWrite {
   readonly path: string;
@@ -214,7 +215,7 @@ function optionalString(flags: Flags, key: string, fallback: string): string {
 }
 
 const USAGE = [
-  "usage: loom <ratify|verify|init|status|propose|log> [flags]",
+  "usage: loom <ratify|verify|init|status|propose|log|pilot> [flags]",
   "  ratify --repo <dir> --base <ref> --head <ref> --policy <file>",
   "         [--sign [--out <file>] [--pubkey-out <file>] [--did <did>] [--policy-version <v>]]",
   "         [--space <id>] [--line <ref>] [--proposal <id>] [--title <t>] [--author <login>]",
@@ -222,7 +223,10 @@ const USAGE = [
   "  init --repo <dir>",
   "  status --repo <dir>",
   "  propose --repo <dir> --title <t>",
-  "  log --repo <dir>"
+  "  log --repo <dir>",
+  "  pilot mirror --repo <dir> --git <gitRepoDir> --message <msg>",
+  "  pilot verify --repo <dir> --git <gitRepoDir>",
+  "  pilot restore --repo <dir> --backup <backupDir>"
 ].join("\n");
 
 export async function main(argv: readonly string[], io: CliIo): Promise<number> {
@@ -251,6 +255,9 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
     if (command === "log") {
       io.log(logRepo(requireString(flags, "repo")));
       return 0;
+    }
+    if (command === "pilot") {
+      return await runPilot(rest, io);
     }
     io.error(USAGE);
     return command === undefined || command === "--help" || command === "help" ? 0 : 2;
@@ -326,6 +333,46 @@ async function runVerify(flags: Flags, io: CliIo): Promise<number> {
   });
   io.log(formatVerify(res));
   return res.verdict.ok ? 0 : 1;
+}
+
+async function runPilot(sub: readonly string[], io: CliIo): Promise<number> {
+  const [subcommand, ...subRest] = sub;
+  const flags = parseFlags(subRest);
+  const repo = requireString(flags, "repo");
+  if (subcommand === "mirror") {
+    const gitRepo = requireString(flags, "git");
+    const message = typeof flags.message === "string" ? flags.message : "loom mirror";
+    const result = await mirrorHeadState(repo, gitRepo, message);
+    if (!result.equivalent) {
+      io.error(`mirror diverged: ${result.divergences.map((d) => `${d.path}: ${d.reason}`).join("; ")}`);
+      io.error(`loom digest ${result.loomDigest} != git digest ${result.gitDigest}`);
+      return 1;
+    }
+    io.log(`mirrored ${result.commitOid} (equivalent, digest ${result.loomDigest})`);
+    return 0;
+  }
+  if (subcommand === "verify") {
+    const gitRepo = requireString(flags, "git");
+    const result = await verifyMirrorEquivalence(repo, gitRepo);
+    if (!result.equivalent) {
+      io.error(`mirror diverged: ${result.divergences.map((d) => `${d.path}: ${d.reason}`).join("; ")}`);
+      return 1;
+    }
+    io.log(`mirror equivalent (digest ${result.loomDigest})`);
+    return 0;
+  }
+  if (subcommand === "restore") {
+    const backup = requireString(flags, "backup");
+    const result = restoreDrill(repo, backup);
+    if (!result.ok) {
+      io.error(result.detail);
+      return 1;
+    }
+    io.log(`${result.detail} (${result.linesVerified} Line heads)`);
+    return 0;
+  }
+  io.error(USAGE);
+  return 2;
 }
 
 interface SigningPlan {
