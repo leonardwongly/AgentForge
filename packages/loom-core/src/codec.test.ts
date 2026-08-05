@@ -181,3 +181,50 @@ describe("DAG-CBOR strict decoding", () => {
     expect(() => decodeDagCbor(bytes)).toThrow(/not in canonical order/);
   });
 });
+
+describe("fuzzed round-trip (Phase 1 exit evidence)", () => {
+  // A deterministic PRNG so the fuzz corpus is reproducible.
+  let state = 0x12345678;
+  const rand = (): number => {
+    state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+    return state / 0xffffffff;
+  };
+  const randInt = (): number => Math.floor(rand() * 1000) - 500;
+  const randString = (): string => {
+    const chars = "abcXYZ0123_-/";
+    let out = "";
+    const len = Math.floor(rand() * 20);
+    for (let i = 0; i < len; i++) {
+      out += chars[Math.floor(rand() * chars.length)];
+    }
+    return out;
+  };
+  const randValue = (depth = 0): unknown => {
+    const kind = Math.floor(rand() * 6);
+    if (kind === 0) return randInt();
+    if (kind === 1) return randString();
+    if (kind === 2) return rand() < 0.5;
+    if (kind === 3) return null;
+    if (kind === 4) {
+      const len = Math.floor(rand() * 5);
+      return Array.from({ length: len }, () => randValue(depth + 1));
+    }
+    const obj: Record<string, unknown> = {};
+    const len = Math.floor(rand() * 5);
+    for (let i = 0; i < len; i++) {
+      obj[randString()] = randValue(depth + 1);
+    }
+    return obj;
+  };
+
+  it("round-trips and stays deterministic across many random values", () => {
+    for (let i = 0; i < 500; i++) {
+      const value = randValue();
+      const encoded = encodeDagCbor(value);
+      // Determinism: encoding twice yields identical bytes.
+      expect(encodeDagCbor(value)).toEqual(encoded);
+      // Round-trip: decode(encode(v)) equals v (undefined fields dropped).
+      expect(decodeDagCbor(encoded)).toEqual(value);
+    }
+  });
+});
