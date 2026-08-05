@@ -19,3 +19,4 @@ export * from "./private.js";
 export * from "./wire.js";
 export * from "./wire-transport.js";
 export * from "./proposal.js";
+export * from "./materialize.js";
