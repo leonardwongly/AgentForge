@@ -1380,8 +1380,10 @@ Implemented and tested today:
   (fixed and content-defined chunking, total-size commitment);
 - `did:loom` actor identity and domain-separated NodeIdent derivation;
 - a bounded invariant DSL and frozen, versioned effect-fingerprint schema;
-- a hermetic Recipe sandbox with bounded resource accounting; and
-- deterministic encryption-at-rest for private objects (dedup-preserving).
+- a hermetic Recipe sandbox with bounded resource accounting;
+- deterministic encryption-at-rest for private objects (dedup-preserving); and
+- a frozen Loom Wire v1 HTTP/2 binding with signed requests, replay protection,
+  and a reference client/server transport (see [wire-protocol.md](wire-protocol.md)).
 
 Not yet implemented as a native system:
 
@@ -1486,7 +1488,9 @@ conformant evidence.
    Implemented: `sandbox.ts` (bounded recipe validation + engine budget).
 5. ~~Define the bounded invariant DSL and freeze extension/versioning rules for
    the effect-fingerprint schema.~~ Implemented: `invariant-dsl.ts`.
-6. Freeze the HTTP/2 wire binding, authentication, and negotiation messages.
+6. ~~Freeze the HTTP/2 wire binding, authentication, and negotiation messages.~~
+   Implemented: `wire.ts` + `wire-transport.ts` (see
+   [wire-protocol.md](wire-protocol.md)).
 7. ~~Define encryption-at-rest and optional private-object addressing without
    weakening deduplication or verification claims.~~ Implemented: `private.ts`
    (deterministic AES-256-GCM, dedup-preserving).
