@@ -12,3 +12,4 @@ export * from "./store.js";
 export * from "./codec.js";
 export * from "./blob.js";
 export * from "./did.js";
+export * from "./invariant-dsl.js";
