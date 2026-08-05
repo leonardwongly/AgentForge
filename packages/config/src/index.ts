@@ -60,7 +60,9 @@ const envSchema = z.object({
   AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: booleanFromEnv.default(false),
   AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR: booleanFromEnv.default(false),
   AGENTFORGE_DASHBOARD_ORGANIZATION: optionalStringFromEnv,
-  AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS: booleanFromEnv.default(false)
+  AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS: booleanFromEnv.default(false),
+  NOTIFICATION_WEBHOOK_URL: optionalStringFromEnv,
+  AUDIT_STREAM_WEBHOOK_URL: optionalStringFromEnv
 });
 
 export type AgentForgeConfig = {
@@ -90,6 +92,8 @@ export type AgentForgeConfig = {
   exportStorageBucket: string | undefined;
   exportStorageRegion: string | undefined;
   sessionSecret: string | undefined;
+  notificationWebhookUrl: string | undefined;
+  auditStreamWebhookUrl: string | undefined;
   auth: {
     apiTrustProxyHeaders: boolean;
     apiAllowLocalActorHeaders: boolean;
@@ -134,6 +138,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AgentForgeConf
     exportStorageBucket: parsed.EXPORT_STORAGE_BUCKET,
     exportStorageRegion: parsed.EXPORT_STORAGE_REGION,
     sessionSecret: parsed.SESSION_SECRET,
+    notificationWebhookUrl: parsed.NOTIFICATION_WEBHOOK_URL,
+    auditStreamWebhookUrl: parsed.AUDIT_STREAM_WEBHOOK_URL,
     auth: {
       apiTrustProxyHeaders: parsed.AGENTFORGE_API_TRUST_PROXY_HEADERS ?? false,
       apiAllowLocalActorHeaders: parsed.AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS ?? false,
