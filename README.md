@@ -1,12 +1,14 @@
-# AgentForge Merge Guard
+# AgentForge
 
-AgentForge Merge Guard is a GitHub-first pull request governance service for high-risk and agent-assisted changes. It evaluates configured pull requests with deterministic detectors, policy-as-code rules, required evidence, reviewer routing, GitHub check runs, and durable Change Control Records.
+AgentForge is a deterministic, evidence-based change-control and governance platform for high-risk and agent-assisted changes. It evaluates changes against policy-as-code rules, requires evidence and reviewer approval, and records a durable, tamper-evident decision trail. The platform is designed to be **standalone**: GitHub is an optional integration bridge, not a dependency.
 
 The operating principle is simple:
 
 > Deterministic checks decide. AI explains and assists. Humans approve risk.
 
-Merge Guard is not an AI code review replacement and does not certify that a pull request is secure, correct, compliant, or vulnerability-free. The current V1 implementation reports whether configured policy requirements are satisfied, records the decision trail, and keeps LLM features disabled by default and advisory only when enabled.
+AgentForge is not an AI code review replacement and does not certify that a change is secure, correct, compliant, or vulnerability-free. It reports whether configured policy requirements are satisfied, records the decision trail, and keeps LLM features disabled by default and advisory only when enabled.
+
+The shipped **Merge Guard** runtime is the GitHub-first pull request governance service that implements this model today. Its reusable policy, evidence, and provenance work is being evolved into **Loom**, a native agent-first version-control system in which Git and GitHub are optional bridges rather than the source of truth. Merge Guard is the current source of value (the wedge); Loom is the long-term destination (the moat).
 
 ## Current State
 
@@ -51,8 +53,8 @@ a durable native VCS conformance claim.
 
 ## Release Scope
 
-AgentForge is a self-hosted GitHub governance service. The current release is
-`v1.1.0` (see [CHANGELOG.md](CHANGELOG.md) and [RELEASE_NOTES.md](RELEASE_NOTES.md)).
+The current release is the self-hosted **Merge Guard** governance service, `v1.1.0`
+(see [CHANGELOG.md](CHANGELOG.md) and [RELEASE_NOTES.md](RELEASE_NOTES.md)).
 The repository can be published publicly on GitHub, but the workspace packages
 intentionally remain `private: true` and are not published to npm.
 
