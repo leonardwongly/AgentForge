@@ -1396,14 +1396,22 @@ Implemented and tested today:
 - native policy facts derived from Transform effects;
 - delegated agent sessions, effect capture, work graphs, and a Recipe SDK;
 - native review/evidence routing; and
-- witnessed trust with quorum, verification bundles, and fork detection.
+- witnessed trust with quorum, verification bundles, and fork detection;
+- a native end-user/agent client SDK (`@agentforge/loom-agent`) that ties
+  sessions, effects, recipes, work graphs, and proposals into one workflow;
+- multi-authority reconciliation with per-authority quorum configuration and
+  partition fault-injection;
+- formal Phase exit-evidence suites (no-silent-loss fault matrix, byte-exact
+  materialization, unauthorized admission, concurrent-agent integration, and
+  no-undetected-fork under partition);
+- `.gitattributes` filter/clean-smudge support with unsupported-filter
+  reporting; and
+- a full Git export (Loom -> git) fidelity path with loss reporting and mirror
+  commits.
 
 Not yet implemented as a native system:
 
-- a full Git export (Loom -> git) fidelity path (the import path is complete);
-- native end-user and agent client applications beyond the CLI;
-- the Phase 4 dual-safety pilot (an operational 30-day run, not code); and
-- large-scale multi-authority reconciliation hardening.
+- the Phase 4 dual-safety pilot (an operational 30-day run, not code).
 
 ## 21. Implementation roadmap and gates
 
