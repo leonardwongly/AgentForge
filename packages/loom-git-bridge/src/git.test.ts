@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stateAddress, type Cell, type State } from "@agentforge/loom-core";
 import { describe, expect, it } from "vitest";
-import { execGitReader, nodeIdentForPath, stateFromGitRef, streamStateFromGitRef, transformSetFromGit } from "./git.js";
+import {
+  execGitReader,
+  nodeIdentForPath,
+  reportUnsupportedFilters,
+  stateFromGitRef,
+  streamStateFromGitRef,
+  transformSetFromGit
+} from "./git.js";
 import type { GitReader, GitTreeEntry } from "./types.js";
 
 const BASE_REF = "base";
@@ -151,6 +158,29 @@ describe("stateFromGitRef", () => {
 
     const state = await stateFromGitRef(reader, "HEAD");
     expect(cellAt(state, "data.bin").facet).toBe("bytes");
+  });
+
+  it("reports unsupported filter attributes (item #5)", async () => {
+    const gitattributesOid = "c".repeat(40);
+    const reader: GitReader = {
+      lsTree: async () => [
+        { path: ".gitattributes", mode: "100644", type: "blob", objectId: gitattributesOid },
+        { path: "config/secret.env", mode: "100644", type: "blob", objectId: "d".repeat(40) },
+        { path: "src/app.ts", mode: "100644", type: "blob", objectId: "e".repeat(40) }
+      ],
+      readBlob: async (objectId: string) =>
+        objectId === gitattributesOid ? "*.env filter=loom\n" : "x\n",
+      readFile: async () => {
+        throw new Error("path-based read must not be used");
+      }
+    };
+    const filters = await reportUnsupportedFilters(reader, "HEAD");
+    expect(filters).toEqual([{ path: "config/secret.env", filter: "loom" }]);
+  });
+
+  it("reports no filters when .gitattributes is absent", async () => {
+    const filters = await reportUnsupportedFilters(fakeReader(), BASE_REF);
+    expect(filters).toEqual([]);
   });
 
   it("preserves submodules (commit entries) as bytes cells with their pinned OID", async () => {

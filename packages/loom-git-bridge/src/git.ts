@@ -13,7 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { TextDecoder } from "node:util";
 import { sha256Hex, type Cell, type NodeIdent, type State } from "@agentforge/loom-core";
-import { facetFromAttributes, parseGitAttributes, type GitAttributes } from "./gitattributes.js";
+import { facetFromAttributes, filterForPath, parseGitAttributes, type GitAttributes } from "./gitattributes.js";
 import type { GitReader, GitTreeEntry, TransformStates } from "./types.js";
 
 /** Upper bound for captured git stdout (bytes); large enough for big blobs/trees. */
@@ -136,6 +136,33 @@ export async function stateFromGitRef(reader: GitReader, ref: string): Promise<S
     };
   }
   return { kind: "state", cells };
+}
+
+/**
+ * Report paths that a ref marks with a `filter` attribute. Loom cannot run
+ * arbitrary git clean/smudge commands, so these are reported as unsupported
+ * before cutover (design §19.1); the importer preserves their raw bytes.
+ */
+export async function reportUnsupportedFilters(
+  reader: GitReader,
+  ref: string
+): Promise<ReadonlyArray<{ readonly path: string; readonly filter: string }>> {
+  const attributes = await readGitAttributes(reader, ref);
+  if (attributes === undefined) {
+    return [];
+  }
+  const entries = await reader.lsTree(ref);
+  const result: Array<{ path: string; filter: string }> = [];
+  for (const entry of entries) {
+    if (entry.type === "tree") {
+      continue;
+    }
+    const filter = filterForPath(attributes, entry.path);
+    if (filter !== undefined) {
+      result.push({ path: entry.path, filter });
+    }
+  }
+  return result;
 }
 
 /** Read and parse `.gitattributes` from a ref, or undefined if absent. */
