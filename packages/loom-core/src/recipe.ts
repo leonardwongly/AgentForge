@@ -9,7 +9,14 @@
 
 import { validateRecipeBudget, type SandboxLimits } from "./sandbox.js";
 import { validateInvariant } from "./invariant-dsl.js";
-import type { DeterminismClass, EngineId, NodeSelector, Recipe, ToolchainLock } from "./types.js";
+import type {
+  DeterminismClass,
+  EngineId,
+  Invariant,
+  NodeSelector,
+  Recipe,
+  ToolchainLock
+} from "./types.js";
 
 export interface CreateRecipeInput {
   readonly engine: EngineId;
@@ -18,7 +25,7 @@ export interface CreateRecipeInput {
   readonly rule: Readonly<Record<string, unknown>>;
   readonly inputSelector: ReadonlyArray<NodeSelector>;
   readonly writeScope: ReadonlyArray<NodeSelector>;
-  readonly invariants?: ReadonlyArray<Recipe["invariants"][number]> | undefined;
+  readonly invariants?: ReadonlyArray<Invariant> | undefined;
   readonly expectedResultDigest?: string | undefined;
 }
 
