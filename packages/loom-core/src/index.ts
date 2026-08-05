@@ -9,3 +9,4 @@ export * from "./reapply.js";
 export * from "./grant.js";
 export * from "./determinism.js";
 export * from "./store.js";
+export * from "./codec.js";
