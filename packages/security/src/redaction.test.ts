@@ -4,6 +4,7 @@ import {
   detectSecrets,
   redactObject,
   redactSecrets,
+  sanitizeExternalMetadataText,
   sanitizeForMetadataStorage
 } from "./index.js";
 
@@ -19,6 +20,13 @@ describe("redaction", () => {
     expect(redacted).toContain("token=[REDACTED]");
     expect(redacted).not.toContain("ghp_123456");
     expect(redacted).not.toContain(rawAwsKey);
+  });
+
+  it("preserves content-bound policy versions as non-secret digest references", () => {
+    const policyVersion = `fintech@1.0.0+${"a1".repeat(32)}`;
+
+    expect(redactSecrets(policyVersion)).toBe(policyVersion);
+    expect(redactObject({ policyVersion })).toEqual({ policyVersion });
   });
 
   describe("expanded credential patterns", () => {
@@ -352,5 +360,87 @@ describe("redaction", () => {
       expect(prompt.prompt).toContain("advisory only");
       expect(prompt.prompt).not.toContain("ghp_");
     }
+  });
+
+  describe("adversarial redaction edge cases", () => {
+    it("does not hang or blow up on many unterminated private-key markers (ReDoS guard)", () => {
+      // Attacker-controlled input with thousands of BEGIN markers that never
+      // close. The private_key pattern is bounded ({0,16384}? inner gap), so
+      // scanning must stay linear-time and complete quickly instead of
+      // degrading to O(n^2) backtracking.
+      const marker = "-----BEGIN RSA PRIVATE KEY-----\n";
+      const input = marker.repeat(5000) + "-----END RSA PRIVATE KEY-----";
+
+      const started = performance.now();
+      const redacted = redactSecrets(input);
+      const elapsed = performance.now() - started;
+
+      // The single terminated marker is redacted; the unterminated markers are
+      // left as ordinary text (correct behavior).
+      expect(redacted).toContain("[REDACTED]");
+      // Generous bound: a linear-time scan of ~150KB must finish well under
+      // a second. If the pattern regressed to quadratic backtracking this
+      // would blow far past it.
+      expect(elapsed).toBeLessThan(2000);
+    });
+
+    it("truncates detectSecrets scanning to the max scan length", () => {
+      // A secret placed past the 65,536-char scan cutoff must not be detected
+      // (detection is bounded to avoid a DoS amplifier on huge blobs), while
+      // redactSecrets still redacts the whole input.
+      const secret = `ghp_${'1'.repeat(36)}`;
+      const padding = "a".repeat(70_000);
+      const input = `${padding} token=${secret}`;
+
+      expect(detectSecrets(input).some((m) => m.kind === "github_token")).toBe(false);
+      expect(redactSecrets(input)).not.toContain(secret);
+    });
+
+    it("detects secrets within the scan window near the truncation boundary", () => {
+      const secret = `ghp_${'1'.repeat(36)}`;
+      const input = `${'a'.repeat(60_000)} token=${secret}`;
+      expect(detectSecrets(input).some((m) => m.kind === "github_token")).toBe(true);
+    });
+
+    it("returns an empty string for non-positive or non-finite metadata maxLength", () => {
+      expect(sanitizeExternalMetadataText("hello", 0)).toBe("");
+      expect(sanitizeExternalMetadataText("hello", -5)).toBe("");
+      expect(sanitizeExternalMetadataText("hello", Number.NaN)).toBe("");
+      expect(sanitizeExternalMetadataText("hello", Number.POSITIVE_INFINITY)).toBe("");
+    });
+
+    it("truncates metadata by code point without splitting surrogate pairs", () => {
+      // An astral-plane emoji is a single code point but two UTF-16 units.
+      // Truncation must not split it into a lone surrogate.
+      const emoji = "\u{1F600}"; // 😀
+      const value = `ab${emoji}cd`;
+      const truncated = sanitizeExternalMetadataText(value, 3);
+      expect(truncated).toBe("ab" + emoji);
+      expect([...truncated]).toHaveLength(3);
+    });
+
+    it("folds control characters and whitespace in metadata text", () => {
+      const value = "a\u0000b\u0007c\t\nd   e";
+      expect(sanitizeExternalMetadataText(value, 100)).toBe("a b c d e");
+    });
+
+    it("redacts secrets before folding whitespace in metadata text", () => {
+      const value = `token=${rawGithubToken}   next`;
+      const out = sanitizeExternalMetadataText(value, 100);
+      expect(out).not.toContain("ghp_");
+      expect(out).toContain("[REDACTED]");
+    });
+
+    it("redactObject leaves non-object primitives untouched", () => {
+      expect(redactObject(null)).toBeNull();
+      expect(redactObject(undefined)).toBeUndefined();
+      expect(redactObject(42)).toBe(42);
+      expect(redactObject(true)).toBe(true);
+    });
+
+    it("redactObject does not recurse into Date instances", () => {
+      const date = new Date("2026-01-01T00:00:00.000Z");
+      expect(redactObject(date)).toBe(date);
+    });
   });
 });

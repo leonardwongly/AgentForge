@@ -132,8 +132,10 @@ const patterns: Array<{ kind: RedactionMatch["kind"]; regex: RegExp }> = [
 
 export function redactSecrets(input: string): string {
   let output = input;
-  for (const { regex } of patterns) {
-    output = output.replace(regex, (match) => preservePrefix(match));
+  for (const { kind, regex } of patterns) {
+    output = output.replace(regex, (match) =>
+      isNonSecretReference(match, kind) ? match : preservePrefix(match)
+    );
   }
   return output;
 }
@@ -158,6 +160,12 @@ export function redactObject<T>(value: T): T {
   }
   if (Array.isArray(value)) {
     return value.map((item) => redactObject(item)) as T;
+  }
+  // Preserve non-plain objects (e.g. Date) as-is: they carry no secret-bearing
+  // string fields of their own and recursing through their (empty) enumerable
+  // surface would silently collapse them to {} (data loss).
+  if (value instanceof Date) {
+    return value;
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
@@ -275,10 +283,15 @@ function isNonSecretReference(value: string, kind: RedactionMatch["kind"]): bool
     return true;
   }
   // Bare high-entropy hex runs are almost always content hashes or pinned commit
-  // SHAs (e.g. pinned GitHub Actions), not credentials.
+  // SHAs (e.g. pinned GitHub Actions), not credentials. A policy version may
+  // expose the same digest after a `+` suffix; the high-entropy matcher starts
+  // after the final semver dot (for example `0+<sha256>`), so recognize that
+  // bounded digest form as a non-secret reference as well.
   if (
     kind === "high_entropy" &&
-    (/^[0-9a-f]{40}$/iu.test(trimmed) || /^[0-9a-f]{64}$/iu.test(trimmed))
+    (/^[0-9a-f]{40}$/iu.test(trimmed) ||
+      /^[0-9a-f]{64}$/iu.test(trimmed) ||
+      /^[A-Za-z0-9_-]*\+[0-9a-f]{64}$/iu.test(trimmed))
   ) {
     return true;
   }
@@ -325,4 +338,22 @@ function hasPlaceholderDatabaseCredentials(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Sanitizes attacker-controlled labels and titles before they cross durable or
+ * queue boundaries. Secret redaction runs before control/whitespace folding so
+ * the redaction marker itself is retained, and code-point truncation avoids
+ * splitting surrogate pairs.
+ */
+export function sanitizeExternalMetadataText(value: string, maxLength: number): string {
+  const boundedLength = Number.isSafeInteger(maxLength) ? Math.max(0, maxLength) : 0;
+  if (boundedLength === 0) {
+    return "";
+  }
+  const normalized = redactSecrets(value)
+    .replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return [...normalized].slice(0, boundedLength).join("");
 }

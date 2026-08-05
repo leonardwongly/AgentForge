@@ -95,7 +95,7 @@ describe("generateAiDraftForEvidence", () => {
     };
 
     const draft = generateAiDraftForEvidence({
-      kind: "rollback_plan",
+      kind: "manual_attestation",
       finding,
       pr: {
         ...mockPr,
@@ -106,5 +106,151 @@ describe("generateAiDraftForEvidence", () => {
     // Ensure the AWS access key in title is redacted
     expect(draft).not.toContain(rawAwsKey);
     expect(draft).toContain("[REDACTED]");
+  });
+
+  it("generates a CI/CD workflow change rationale", () => {
+    const finding: VerifiedFact = {
+      id: "finding_ci",
+      type: "ci_workflow_changed",
+      source: "github_diff",
+      path: ".github/workflows/deploy.yml",
+      evidence: "workflow changed",
+      confidence: "verified",
+      severity: "high"
+    };
+
+    const draft = generateAiDraftForEvidence({
+      kind: "ci_change_reason",
+      finding,
+      pr: mockPr
+    });
+
+    expect(draft).toContain("### CI/CD Workflow Change Rationale");
+    expect(draft).toContain(".github/workflows/deploy.yml");
+    expect(draft).toContain("Syntax Validation");
+  });
+
+  it("generates a deleted test justification", () => {
+    const finding: VerifiedFact = {
+      id: "finding_test",
+      type: "test_deleted",
+      source: "github_diff",
+      path: "src/legacy.test.ts",
+      evidence: "test removed",
+      confidence: "verified",
+      severity: "high"
+    };
+
+    const draft = generateAiDraftForEvidence({
+      kind: "deleted_test_explanation",
+      finding,
+      pr: mockPr
+    });
+
+    expect(draft).toContain("### Deleted or Skipped Test Justification");
+    expect(draft).toContain("src/legacy.test.ts");
+    expect(draft).toContain("Superseded Coverage");
+  });
+
+  it("generates a security note that redacts secrets embedded in the finding type", () => {
+    const finding: VerifiedFact = {
+      id: "finding_sec",
+      type: "secret_like_value_detected",
+      source: "github_diff",
+      path: "config/secrets.env",
+      evidence: `detected ${rawGithubToken}`,
+      confidence: "verified",
+      severity: "critical"
+    };
+
+    const draft = generateAiDraftForEvidence({
+      kind: "security_note",
+      finding,
+      pr: mockPr
+    });
+
+    expect(draft).toContain("### Compliance Advisory Security Note");
+    expect(draft).toContain("secret_like_value_detected");
+    expect(draft).toContain("config/secrets.env");
+    // The finding type is interpolated into the draft; a secret embedded there
+    // must still be redacted before the draft is returned.
+    expect(draft).not.toContain(rawGithubToken);
+  });
+
+  it("falls back to safe defaults when PR metadata is missing", () => {
+    const finding: VerifiedFact = {
+      id: "finding_mig",
+      type: "migration_added",
+      source: "manifest_parser",
+      path: "db/migration.sql",
+      evidence: "new migration init",
+      confidence: "verified",
+      severity: "high"
+    };
+
+    const draft = generateAiDraftForEvidence({
+      kind: "rollback_plan",
+      // Deliberately omit path/evidence to exercise the fallback defaults.
+      finding: { ...finding, path: undefined, evidence: undefined } as unknown as VerifiedFact,
+      pr: {
+        repositoryFullName: "acme/service",
+        pullRequestNumber: 42,
+        title: "",
+        authorLogin: "alice",
+        baseBranch: "",
+        headBranch: "",
+        headSha: "",
+        changedFiles: []
+      }
+    });
+
+    // Defaults are used instead of raw undefined leaking into the template.
+    expect(draft).toContain("configured files");
+    expect(draft).toContain("latest commit");
+    expect(draft).toContain("main");
+    expect(draft).not.toContain("undefined");
+  });
+
+  it("falls back to a safe default for missing finding evidence", () => {
+    const finding = {
+      id: "finding_dep",
+      type: "dependency_added",
+      source: "manifest_parser",
+      path: "package.json",
+      confidence: "verified",
+      severity: "medium"
+    } as unknown as VerifiedFact;
+
+    const draft = generateAiDraftForEvidence({
+      kind: "dependency_justification",
+      finding,
+      pr: mockPr
+    });
+
+    expect(draft).toContain("associated findings");
+    expect(draft).not.toContain("undefined");
+  });
+
+  it("uses the manual attestation default branch for unknown kinds", () => {
+    const finding = {
+      id: "finding_unknown",
+      type: "custom_finding_type",
+      source: "custom",
+      path: "src/custom.ts",
+      evidence: "custom evidence",
+      confidence: "verified",
+      severity: "medium"
+    } as unknown as VerifiedFact;
+
+    const draft = generateAiDraftForEvidence({
+      // @ts-expect-error - deliberately pass an unsupported kind to exercise the default branch
+      kind: "unsupported_kind",
+      finding,
+      pr: mockPr
+    });
+
+    expect(draft).toContain("### Manual Attestation for custom_finding_type");
+    expect(draft).toContain("custom evidence");
+    expect(draft).toContain("PR #42");
   });
 });
