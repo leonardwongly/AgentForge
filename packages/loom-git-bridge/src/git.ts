@@ -150,10 +150,26 @@ export async function transformSetFromGit(
   baseRef: string,
   headRef: string
 ): Promise<TransformStates> {
-  return {
-    base: await stateFromGitRef(reader, baseRef),
-    result: await stateFromGitRef(reader, headRef)
-  };
+  const [base, result, renames] = await Promise.all([
+    stateFromGitRef(reader, baseRef),
+    stateFromGitRef(reader, headRef),
+    reader.detectRenames !== undefined ? reader.detectRenames(baseRef, headRef) : Promise.resolve([])
+  ]);
+
+  // Preserve identity across renames: a renamed cell keeps its base NodeIdent,
+  // so a downstream diff reads it as a move rather than delete+add.
+  if (renames.length > 0) {
+    const cells = { ...result.cells };
+    for (const { from, to } of renames) {
+      const baseCell = base.cells[from];
+      const resultCell = cells[to];
+      if (baseCell !== undefined && resultCell !== undefined) {
+        cells[to] = { ...resultCell, ident: baseCell.ident };
+      }
+    }
+    return { base, result: { kind: "state", cells } };
+  }
+  return { base, result };
 }
 
 /**
@@ -187,12 +203,51 @@ export function execGitReader(repoDir: string): GitReader {
     return Promise.resolve(runGit(["cat-file", "blob", objectId]));
   }
 
+  function detectRenames(baseRef: string, headRef: string): Promise<ReadonlyArray<{ from: string; to: string }>> {
+    // `--name-status -z` emits NUL-delimited records; a rename is `R<score>\0<old>\0<new>\0`.
+    const out = runGit(["diff", "--find-renames", "--name-status", "-z", baseRef, headRef]);
+    const renames: Array<{ from: string; to: string }> = [];
+    let offset = 0;
+    while (offset < out.length) {
+      const nulIndex = out.indexOf(0, offset);
+      if (nulIndex === -1) {
+        break;
+      }
+      const status = decodeUtf8(out.subarray(offset, nulIndex), "diff status");
+      offset = nulIndex + 1;
+      if (status.startsWith("R")) {
+        const oldEnd = out.indexOf(0, offset);
+        if (oldEnd === -1) {
+          break;
+        }
+        const from = decodeUtf8(out.subarray(offset, oldEnd), "rename old path");
+        offset = oldEnd + 1;
+        const newEnd = out.indexOf(0, offset);
+        if (newEnd === -1) {
+          break;
+        }
+        const to = decodeUtf8(out.subarray(offset, newEnd), "rename new path");
+        offset = newEnd + 1;
+        renames.push({ from, to });
+      } else {
+        // Non-rename statuses carry a single path; skip it.
+        const pathEnd = out.indexOf(0, offset);
+        if (pathEnd === -1) {
+          break;
+        }
+        offset = pathEnd + 1;
+      }
+    }
+    return Promise.resolve(renames);
+  }
+
   return {
     lsTree(ref: string): Promise<ReadonlyArray<GitTreeEntry>> {
       return Promise.resolve(parseLsTree(runGit(["ls-tree", "-r", "-z", "--full-tree", ref])));
     },
     readBlob,
     readBlobBytes,
+    detectRenames,
     readFile(ref: string, path: string): Promise<string> {
       const subject = `blob ${ref}:${path}`;
       return Promise.resolve(decodeUtf8(runGit(["show", `${ref}:${path}`]), subject));

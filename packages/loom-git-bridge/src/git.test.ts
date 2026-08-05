@@ -196,6 +196,24 @@ describe("path identity across refs", () => {
     expect(base.cells["src/added.ts"]).toBeUndefined();
     expect(head.cells["src/removed.ts"]).toBeUndefined();
   });
+
+  it("preserves identity across a detected rename (move, not delete+add)", async () => {
+    const reader: GitReader = {
+      lsTree: async (ref: string) =>
+        ref === BASE_REF
+          ? [{ path: "src/old.ts", mode: "100644", type: "blob" }]
+          : [{ path: "src/new.ts", mode: "100644", type: "blob" }],
+      readFile: async () => "export const moved = true;\n",
+      detectRenames: async () => [{ from: "src/old.ts", to: "src/new.ts" }]
+    };
+
+    const set = await transformSetFromGit(reader, BASE_REF, HEAD_REF);
+    const baseCell = cellAt(set.base, "src/old.ts");
+    const resultCell = cellAt(set.result, "src/new.ts");
+    // Identity is carried across the rename.
+    expect(resultCell.ident).toBe(baseCell.ident);
+    expect(set.result.cells["src/old.ts"]).toBeUndefined();
+  });
 });
 
 describe("transformSetFromGit", () => {
