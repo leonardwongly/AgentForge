@@ -16,11 +16,19 @@ export interface GitTreeEntry {
   readonly path: string;
   readonly mode: string;
   readonly type: "blob" | "tree";
+  /** Immutable object name. Optional only for compatibility with legacy readers. */
+  readonly objectId?: string;
 }
 
 /** Port over git read operations (implemented by execGitReader, faked in tests). */
 export interface GitReader {
   lsTree(ref: string): Promise<ReadonlyArray<GitTreeEntry>>;
+  /** Read a blob by the immutable object ID returned by lsTree. */
+  readBlob?(objectId: string): Promise<string>;
+  /**
+   * Legacy path-based read. stateFromGitRef uses this only when object-ID reads
+   * are unavailable, preserving compatibility with existing in-memory readers.
+   */
   readFile(ref: string, path: string): Promise<string>;
 }
 

@@ -206,9 +206,10 @@ export function classify(
 /**
  * Combine two lineages into one candidate State plus a list of typed conflicts
  * (§3.4, CONFLICT branch). Independent and commuting changes compose
- * automatically; conflicting content is reconciled with {@link textThreeWay} and
- * surfaced as a {@link Conflict} only when diff3 itself reports a textual clash.
- * A delete racing an edit is a `delete/edit` conflict.
+ * automatically. Structural collisions and non-text disagreements are surfaced
+ * directly; conflicting text is reconciled with {@link textThreeWay} and becomes
+ * a {@link Conflict} when diff3 reports a textual clash. A delete racing an edit
+ * is a `delete/edit` conflict.
  */
 export function mergeStates(base: State, ours: State, theirs: State): MergeResult {
   const classes = classify(base, ours, theirs);
@@ -235,12 +236,41 @@ export function mergeStates(base: State, ours: State, theirs: State): MergeResul
     }
   }
 
-  const cells: Record<string, Cell> = {};
+  const cells = Object.create(null) as Record<string, Cell>;
+  const pathOwners = new Map<string, { readonly nid: NodeIdent; readonly cell: Cell }>();
   for (const nid of sortedNids) {
     const resolved = resolutions.get(nid);
-    if (resolved !== undefined) {
-      cells[resolved.path] = resolved.cell;
+    if (resolved === undefined) {
+      continue;
     }
+
+    const existing = pathOwners.get(resolved.path);
+    if (existing !== undefined) {
+      const baseCell = cellAtOwnPath(base, resolved.path);
+      const oursCell = cellAtOwnPath(ours, resolved.path);
+      const theirsCell = cellAtOwnPath(theirs, resolved.path);
+      conflicts.push(
+        makeConflict(existing.nid, resolved.path, "path-collision", {
+          otherNid: nid,
+          base: baseCell?.text,
+          ours: oursCell?.text,
+          theirs: theirsCell?.text,
+          basePath: baseCell === undefined ? undefined : resolved.path,
+          oursPath: oursCell === undefined ? undefined : resolved.path,
+          theirsPath: theirsCell === undefined ? undefined : resolved.path,
+          baseFacet: baseCell?.facet,
+          oursFacet: oursCell?.facet,
+          theirsFacet: theirsCell?.facet,
+          baseMode: baseCell?.mode,
+          oursMode: oursCell?.mode,
+          theirsMode: theirsCell?.mode
+        })
+      );
+      continue;
+    }
+
+    pathOwners.set(resolved.path, { nid, cell: resolved.cell });
+    cells[resolved.path] = resolved.cell;
   }
 
   return { candidate: { kind: "state", cells }, conflicts };
@@ -273,11 +303,11 @@ function nidView(
   theirsIndex: ReadonlyMap<NodeIdent, string>
 ): NidView {
   const basePath = baseIndex.get(nid);
-  const baseCell = basePath !== undefined ? base.cells[basePath] : undefined;
+  const baseCell = basePath === undefined ? undefined : cellAtOwnPath(base, basePath);
   const oursPath = oursIndex.get(nid);
-  const oursCell = oursPath !== undefined ? ours.cells[oursPath] : undefined;
+  const oursCell = oursPath === undefined ? undefined : cellAtOwnPath(ours, oursPath);
   const theirsPath = theirsIndex.get(nid);
-  const theirsCell = theirsPath !== undefined ? theirs.cells[theirsPath] : undefined;
+  const theirsCell = theirsPath === undefined ? undefined : cellAtOwnPath(theirs, theirsPath);
 
   const oursContentChanged = contentChanged(baseCell, oursCell);
   const theirsContentChanged = contentChanged(baseCell, theirsCell);
@@ -355,7 +385,7 @@ function classifyNid(view: NidView): ConflictClass | undefined {
     return view.oursPath === view.theirsPath ? "commuting" : "conflict";
   }
 
-  // Fail-safe: anything the classifier cannot prove commutes falls to text 3-way.
+  // Fail-safe: anything the classifier cannot prove commutes falls to 3-way resolution.
   return "conflict";
 }
 
@@ -410,13 +440,7 @@ function resolveNid(
     const survivorCell = oursDeleted ? view.theirsCell : view.oursCell;
     const survivorPath = oursDeleted ? view.theirsPath : view.oursPath;
     const conflictPath = survivorPath ?? view.basePath ?? "";
-    conflicts.push(
-      makeConflict(nid, conflictPath, "delete/edit", {
-        base: view.baseCell?.text,
-        ours: view.oursCell?.text,
-        theirs: view.theirsCell?.text
-      })
-    );
+    conflicts.push(makeConflict(nid, conflictPath, "delete/edit", conflictParts(view)));
     if (survivorCell !== undefined && survivorPath !== undefined) {
       return { path: survivorPath, cell: survivorCell };
     }
@@ -424,16 +448,44 @@ function resolveNid(
   }
 
   if (view.oursCell !== undefined && view.theirsCell !== undefined) {
+    const finalPath = view.oursPath ?? view.theirsPath ?? view.basePath ?? "";
+    if (view.oursPath !== view.theirsPath) {
+      if (view.oursMoved && view.theirsMoved) {
+        conflicts.push(makeConflict(nid, finalPath, "move/move", conflictParts(view)));
+      } else if (view.baseCell === undefined) {
+        // The same freshly-minted identity cannot be admitted at two paths.
+        conflicts.push(makeConflict(nid, finalPath, "path-collision", conflictParts(view)));
+      }
+    }
+
+    const metadata = mergeMetadata(view.baseCell, view.oursCell, view.theirsCell);
+    const opaque =
+      view.baseCell?.facet === "bytes" ||
+      view.oursCell.facet === "bytes" ||
+      view.theirsCell.facet === "bytes";
+    const opaqueText = opaque
+      ? mergeOpaqueText(view.baseCell?.text, view.oursCell.text, view.theirsCell.text)
+      : undefined;
+    const binaryConflict = metadata.conflict || opaqueText?.conflict === true;
+
+    if (binaryConflict) {
+      conflicts.push(makeConflict(nid, finalPath, "binary", conflictParts(view)));
+    }
+
+    if (opaqueText !== undefined) {
+      return {
+        path: finalPath,
+        cell: withText(metadata.template, nid, opaqueText.text)
+      };
+    }
+
     const baseText = view.baseCell?.text ?? "";
     const merged = textThreeWay(baseText, view.oursCell.text, view.theirsCell.text);
-    const finalPath = view.oursPath ?? view.theirsPath ?? view.basePath ?? "";
-    const mergedCell = withText(view.oursCell, nid, merged.text);
+    const mergedCell = withText(metadata.template, nid, merged.text);
     if (merged.conflict) {
       conflicts.push(
         makeConflict(nid, finalPath, "content", {
-          base: baseText,
-          ours: view.oursCell.text,
-          theirs: view.theirsCell.text,
+          ...conflictParts(view),
           textConflict: merged.text
         })
       );
@@ -452,6 +504,10 @@ function present(
     return { path, cell };
   }
   return undefined;
+}
+
+function cellAtOwnPath(state: State, path: string): Cell | undefined {
+  return Object.hasOwn(state.cells, path) ? state.cells[path] : undefined;
 }
 
 function contentChanged(baseCell: Cell | undefined, sideCell: Cell | undefined): boolean {
@@ -473,6 +529,46 @@ function sameCellAndPath(
   return a !== undefined && b !== undefined && cellAddress(a) === cellAddress(b) && aPath === bPath;
 }
 
+interface MetadataResolution {
+  readonly template: Cell;
+  readonly conflict: boolean;
+}
+
+function mergeMetadata(base: Cell | undefined, ours: Cell, theirs: Cell): MetadataResolution {
+  if (sameMetadata(ours, theirs)) {
+    return { template: ours, conflict: false };
+  }
+  if (base !== undefined && sameMetadata(ours, base)) {
+    return { template: theirs, conflict: false };
+  }
+  if (base !== undefined && sameMetadata(theirs, base)) {
+    return { template: ours, conflict: false };
+  }
+  // The candidate stays deterministic, but admission is blocked by the conflict.
+  return { template: ours, conflict: true };
+}
+
+function sameMetadata(a: Cell, b: Cell): boolean {
+  return a.facet === b.facet && a.mode === b.mode;
+}
+
+function mergeOpaqueText(
+  base: string | undefined,
+  ours: string,
+  theirs: string
+): { readonly text: string; readonly conflict: boolean } {
+  if (ours === theirs) {
+    return { text: ours, conflict: false };
+  }
+  if (base !== undefined && ours === base) {
+    return { text: theirs, conflict: false };
+  }
+  if (base !== undefined && theirs === base) {
+    return { text: ours, conflict: false };
+  }
+  return { text: ours, conflict: true };
+}
+
 /** Rebuild a Cell at the same identity with new text, preserving facet and mode. */
 function withText(template: Cell, ident: NodeIdent, text: string): Cell {
   return template.mode === undefined
@@ -480,25 +576,64 @@ function withText(template: Cell, ident: NodeIdent, text: string): Cell {
     : { facet: template.facet, ident, text, mode: template.mode };
 }
 
+interface ConflictParts {
+  readonly otherNid?: NodeIdent | undefined;
+  readonly base?: string | undefined;
+  readonly ours?: string | undefined;
+  readonly theirs?: string | undefined;
+  readonly basePath?: string | undefined;
+  readonly oursPath?: string | undefined;
+  readonly theirsPath?: string | undefined;
+  readonly baseFacet?: Cell["facet"] | undefined;
+  readonly oursFacet?: Cell["facet"] | undefined;
+  readonly theirsFacet?: Cell["facet"] | undefined;
+  readonly baseMode?: number | undefined;
+  readonly oursMode?: number | undefined;
+  readonly theirsMode?: number | undefined;
+  readonly textConflict?: string | undefined;
+  readonly suggestedResolution?: string | undefined;
+}
+
+function conflictParts(view: NidView): ConflictParts {
+  return {
+    base: view.baseCell?.text,
+    ours: view.oursCell?.text,
+    theirs: view.theirsCell?.text,
+    basePath: view.basePath,
+    oursPath: view.oursPath,
+    theirsPath: view.theirsPath,
+    baseFacet: view.baseCell?.facet,
+    oursFacet: view.oursCell?.facet,
+    theirsFacet: view.theirsCell?.facet,
+    baseMode: view.baseCell?.mode,
+    oursMode: view.oursCell?.mode,
+    theirsMode: view.theirsCell?.mode
+  };
+}
+
 function makeConflict(
   nid: NodeIdent,
   path: string,
   kind: Conflict["kind"],
-  parts: {
-    readonly base?: string | undefined;
-    readonly ours?: string | undefined;
-    readonly theirs?: string | undefined;
-    readonly textConflict?: string | undefined;
-    readonly suggestedResolution?: string | undefined;
-  }
+  parts: ConflictParts
 ): Conflict {
   return {
     nid,
     path,
     kind,
+    ...(parts.otherNid !== undefined ? { otherNid: parts.otherNid } : {}),
     ...(parts.base !== undefined ? { base: parts.base } : {}),
     ...(parts.ours !== undefined ? { ours: parts.ours } : {}),
     ...(parts.theirs !== undefined ? { theirs: parts.theirs } : {}),
+    ...(parts.basePath !== undefined ? { basePath: parts.basePath } : {}),
+    ...(parts.oursPath !== undefined ? { oursPath: parts.oursPath } : {}),
+    ...(parts.theirsPath !== undefined ? { theirsPath: parts.theirsPath } : {}),
+    ...(parts.baseFacet !== undefined ? { baseFacet: parts.baseFacet } : {}),
+    ...(parts.oursFacet !== undefined ? { oursFacet: parts.oursFacet } : {}),
+    ...(parts.theirsFacet !== undefined ? { theirsFacet: parts.theirsFacet } : {}),
+    ...(parts.baseMode !== undefined ? { baseMode: parts.baseMode } : {}),
+    ...(parts.oursMode !== undefined ? { oursMode: parts.oursMode } : {}),
+    ...(parts.theirsMode !== undefined ? { theirsMode: parts.theirsMode } : {}),
     ...(parts.textConflict !== undefined ? { textConflict: parts.textConflict } : {}),
     ...(parts.suggestedResolution !== undefined
       ? { suggestedResolution: parts.suggestedResolution }

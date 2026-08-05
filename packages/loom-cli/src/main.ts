@@ -7,12 +7,175 @@ import { generateKeyPair, type DsseEnvelope } from "@agentforge/loom-provenance"
 import { ratify, verifyAttestation, type RatifyRequest, type SignOptions } from "./engine.js";
 import { formatRatify, formatVerify } from "./format.js";
 
+export interface AtomicFileWrite {
+  readonly path: string;
+  readonly content: string;
+}
+
 export interface CliIo {
   readonly readFile: (path: string) => string;
-  readonly writeFile: (path: string, content: string) => void;
+  readonly writeFilesAtomically: (writes: readonly AtomicFileWrite[]) => void;
   readonly makeReader: (repoDir: string) => GitReader;
   readonly log: (message: string) => void;
   readonly error: (message: string) => void;
+}
+
+export type AtomicTargetKind = "missing" | "file" | "unsupported";
+
+/** Low-level operations used to make the real filesystem adapter independently testable. */
+export interface AtomicWriteOperations {
+  readonly canonicalPath: (path: string) => string;
+  readonly inspectTarget: (path: string) => AtomicTargetKind;
+  readonly temporaryPath: (targetPath: string, purpose: "staged" | "backup") => string;
+  readonly writeExclusive: (path: string, content: string) => void;
+  /** Atomically installs source at an absent target and must fail if target exists. */
+  readonly installExclusive: (sourcePath: string, targetPath: string) => void;
+  readonly rename: (sourcePath: string, targetPath: string) => void;
+  readonly remove: (path: string) => void;
+}
+
+interface PendingFileWrite {
+  readonly targetPath: string;
+  readonly content: string;
+  readonly stagedPath: string;
+  readonly backupPath: string;
+  readonly hadOriginal: boolean;
+  staged: boolean;
+  backedUp: boolean;
+  installed: boolean;
+}
+
+/**
+ * Build an all-or-nothing multi-file writer from exclusive-install filesystem operations.
+ * Every payload is staged before an existing target is moved or a new target is installed.
+ */
+export function createAtomicFileWriter(
+  operations: AtomicWriteOperations
+): CliIo["writeFilesAtomically"] {
+  return (writes) => {
+    const canonicalTargets = new Set<string>();
+    const pending: PendingFileWrite[] = writes.map((write) => {
+      const canonicalTarget = operations.canonicalPath(write.path);
+      if (canonicalTargets.has(canonicalTarget)) {
+        throw new Error(`atomic write has duplicate target: ${write.path}`);
+      }
+      canonicalTargets.add(canonicalTarget);
+
+      const targetKind = operations.inspectTarget(write.path);
+      if (targetKind === "unsupported") {
+        throw new Error(`atomic write target is not a regular file: ${write.path}`);
+      }
+      return {
+        targetPath: write.path,
+        content: write.content,
+        stagedPath: operations.temporaryPath(write.path, "staged"),
+        backupPath: operations.temporaryPath(write.path, "backup"),
+        hadOriginal: targetKind === "file",
+        staged: false,
+        backedUp: false,
+        installed: false
+      };
+    });
+
+    try {
+      for (const file of pending) {
+        operations.writeExclusive(file.stagedPath, file.content);
+        file.staged = true;
+      }
+    } catch (error) {
+      throwWithRecoveryErrors(error, removeStagedFiles(pending, operations));
+    }
+
+    try {
+      for (const file of pending) {
+        if (file.hadOriginal) {
+          operations.rename(file.targetPath, file.backupPath);
+          file.backedUp = true;
+        }
+      }
+      for (const file of pending) {
+        operations.installExclusive(file.stagedPath, file.targetPath);
+        file.installed = true;
+        operations.remove(file.stagedPath);
+        file.staged = false;
+      }
+    } catch (error) {
+      throwWithRecoveryErrors(error, rollBackFiles(pending, operations));
+    }
+
+    const cleanupErrors: unknown[] = [];
+    for (const file of pending) {
+      if (!file.backedUp) {
+        continue;
+      }
+      try {
+        operations.remove(file.backupPath);
+        file.backedUp = false;
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, "atomic file write committed but cleanup failed");
+    }
+  };
+}
+
+function removeStagedFiles(
+  pending: readonly PendingFileWrite[],
+  operations: AtomicWriteOperations
+): unknown[] {
+  const errors: unknown[] = [];
+  for (const file of pending) {
+    if (!file.staged) {
+      continue;
+    }
+    try {
+      operations.remove(file.stagedPath);
+      file.staged = false;
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  return errors;
+}
+
+function rollBackFiles(
+  pending: readonly PendingFileWrite[],
+  operations: AtomicWriteOperations
+): unknown[] {
+  const errors: unknown[] = [];
+  for (const file of [...pending].reverse()) {
+    if (file.installed) {
+      try {
+        operations.remove(file.targetPath);
+        file.installed = false;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (file.backedUp) {
+      try {
+        operations.installExclusive(file.backupPath, file.targetPath);
+        operations.remove(file.backupPath);
+        file.backedUp = false;
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  }
+  errors.push(...removeStagedFiles(pending, operations));
+  return errors;
+}
+
+function throwWithRecoveryErrors(error: unknown, recoveryErrors: readonly unknown[]): never {
+  if (recoveryErrors.length === 0) {
+    throw error;
+  }
+  throw new AggregateError(
+    [error, ...recoveryErrors],
+    "atomic file write failed and rollback was incomplete"
+  );
 }
 
 type Flags = Readonly<Record<string, string | boolean | undefined>>;
@@ -54,7 +217,7 @@ const USAGE = [
   "  ratify --repo <dir> --base <ref> --head <ref> --policy <file>",
   "         [--sign [--out <file>] [--pubkey-out <file>] [--did <did>] [--policy-version <v>]]",
   "         [--space <id>] [--line <ref>] [--proposal <id>] [--title <t>] [--author <login>]",
-  "  verify --repo <dir> --head <ref> --env <file> --pubkey <file>"
+  "  verify --repo <dir> --base <ref> --head <ref> --env <file> --pubkey <file>"
 ].join("\n");
 
 export async function main(argv: readonly string[], io: CliIo): Promise<number> {
@@ -76,40 +239,66 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
 }
 
 async function runRatify(flags: Flags, io: CliIo): Promise<number> {
-  const reader = io.makeReader(requireString(flags, "repo"));
-  const policyYaml = io.readFile(requireString(flags, "policy"));
+  const repoDir = requireString(flags, "repo");
+  const baseRef = requireString(flags, "base");
+  const headRef = requireString(flags, "head");
+  const policyPath = requireString(flags, "policy");
+  const reader = io.makeReader(repoDir);
+  const policyYaml = io.readFile(policyPath);
   const wantSign = flags.sign === true || typeof flags.sign === "string";
+  const signing = wantSign ? buildSigningPlan(flags) : undefined;
 
   const req: RatifyRequest = {
     reader,
-    baseRef: requireString(flags, "base"),
-    headRef: requireString(flags, "head"),
+    baseRef,
+    headRef,
     policyYaml,
     space: optionalString(flags, "space", "loom/space"),
     lineRef: optionalString(flags, "line", "main"),
     proposalId: optionalString(flags, "proposal", "local"),
     title: optionalString(flags, "title", "Loom Transform"),
     author: optionalString(flags, "author", "unknown"),
-    ...(wantSign ? { sign: buildSign(flags, io) } : {})
+    ...(signing === undefined ? {} : { sign: signing.options })
   };
 
   const res = await ratify(req);
+  if (signing !== undefined) {
+    if (res.envelope === undefined) {
+      throw new Error("signing completed without an attestation envelope");
+    }
+    io.writeFilesAtomically([
+      {
+        path: signing.envelopePath,
+        content: JSON.stringify(res.envelope, null, 2)
+      },
+      {
+        path: signing.publicKeyPath,
+        content: signing.options.key.publicKeyPem
+      }
+    ]);
+  }
+
   io.log(formatRatify(res));
-  if (res.envelope) {
-    const out = optionalString(flags, "out", "loom-attestation.json");
-    io.writeFile(out, JSON.stringify(res.envelope, null, 2));
-    io.log(`attestation written: ${out}`);
+  if (signing !== undefined) {
+    io.log(`attestation written: ${signing.envelopePath}`);
+    io.log(`verification public key written: ${signing.publicKeyPath}`);
   }
   return res.evaluation.result.status === "block" ? 1 : 0;
 }
 
 async function runVerify(flags: Flags, io: CliIo): Promise<number> {
-  const reader = io.makeReader(requireString(flags, "repo"));
-  const envelope = JSON.parse(io.readFile(requireString(flags, "env"))) as DsseEnvelope;
-  const publicKeyPem = io.readFile(requireString(flags, "pubkey"));
+  const repoDir = requireString(flags, "repo");
+  const baseRef = requireString(flags, "base");
+  const headRef = requireString(flags, "head");
+  const envelopePath = requireString(flags, "env");
+  const publicKeyPath = requireString(flags, "pubkey");
+  const reader = io.makeReader(repoDir);
+  const envelope = JSON.parse(io.readFile(envelopePath)) as DsseEnvelope;
+  const publicKeyPem = io.readFile(publicKeyPath);
   const res = await verifyAttestation({
     reader,
-    headRef: requireString(flags, "head"),
+    baseRef,
+    headRef,
     envelope,
     publicKeyPem
   });
@@ -117,15 +306,26 @@ async function runVerify(flags: Flags, io: CliIo): Promise<number> {
   return res.verdict.ok ? 0 : 1;
 }
 
-function buildSign(flags: Flags, io: CliIo): SignOptions {
-  const key = generateKeyPair();
-  const pubOut = optionalString(flags, "pubkey-out", "loom-attestation.pub.pem");
-  io.writeFile(pubOut, key.publicKeyPem);
-  io.log(`verification public key written: ${pubOut}`);
+interface SigningPlan {
+  readonly options: SignOptions;
+  readonly envelopePath: string;
+  readonly publicKeyPath: string;
+}
+
+function buildSigningPlan(flags: Flags): SigningPlan {
+  const envelopePath = optionalString(flags, "out", "loom-attestation.json");
+  const publicKeyPath = optionalString(flags, "pubkey-out", "loom-attestation.pub.pem");
+  if (envelopePath === publicKeyPath) {
+    throw new Error("--out and --pubkey-out must identify different files");
+  }
   return {
-    key,
-    checkerDid: optionalString(flags, "did", "did:loom:local-checker"),
-    detectorSuiteVersion: optionalString(flags, "suite-version", "loom-ratify@1.1.0"),
-    policyVersion: optionalString(flags, "policy-version", "1")
+    options: {
+      key: generateKeyPair(),
+      checkerDid: optionalString(flags, "did", "did:loom:local-checker"),
+      detectorSuiteVersion: optionalString(flags, "suite-version", "loom-ratify@1.1.0"),
+      policyVersion: optionalString(flags, "policy-version", "1")
+    },
+    envelopePath,
+    publicKeyPath
   };
 }

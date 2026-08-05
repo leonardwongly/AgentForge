@@ -3,20 +3,22 @@
 Signed provenance for Loom changes, assembled from **established standards**
 (in-toto Statement v1 + DSSE envelope + Ed25519 via `node:crypto`) rather than
 reinvented crypto. It binds a deterministic governance decision to a specific
-change via the in-toto **subject digest** (the "subject-pin").
+base-to-result transition via the in-toto **subject digest** (the "subject-pin").
 
 ## Surface
 
 - `generateKeyPair()` — Ed25519 key pair as PEM strings.
 - `pae(payloadType, payload)` — DSSE Pre-Authentication Encoding.
 - `factsDigest(facts)` — `sha256Hex(canonicalize(facts))`; re-derivable by anyone.
+- `transitionSubjectCid({ baseState, resultState })` — a domain-separated,
+  canonical content address for the ordered State transition.
 - `buildDeterministicCheckStatement(input)` — an in-toto Statement whose subject
-  digest is pinned to the change's `Cid` and whose predicate records the checker,
-  pinned inputs, facts, `factsDigest`, and the `pass|warn|block` decision.
+  is derived from `baseState` and `resultState` and whose predicate records the
+  same pinned inputs, checker, facts, `factsDigest`, and decision.
 - `signStatement(statement, key)` / `verifyEnvelope(envelope, publicKeyPem)`.
-- `verifyProvenance({ transformCid, envelope, publicKeyPem })` — verifies the
-  signature **and** that the subject-pin matches `transformCid` (fails with a
-  precise reason otherwise).
+- `verifyProvenance({ baseState, resultState, envelope, publicKeyPem })` — verifies
+  the signature, exact transition subject, matching predicate inputs, and facts
+  digest (failing closed with a precise reason otherwise).
 
 ## Honest scope
 

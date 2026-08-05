@@ -49,9 +49,11 @@ The normative key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and
 | `merge`            | combine two lineages into one new State via a reconciliation Transform                                 |
 | conflict           | a **typed, node-granular** disagreement the engine cannot resolve automatically (§2.3)                 |
 
-The engine has two entry points: **`merge(base, ours, theirs)`** (combine two lineages) and
-**`reapply(transform, newBase)`** (advance one recipe-bearing Transform onto a moved base).
-`merge` uses `reapply` internally when one side has an eligible pinned Recipe
+The engine has two entry points: **`merge(base, ours, theirs, context)`**
+(combine two lineages) and **`reapply(transform, newBase, context)`** (advance one
+Recipe-bearing Transform onto a moved base). The fixed authoring context is part
+of deterministic execution and the output Transform. `merge` uses `reapply`
+internally when one side has an eligible pinned Recipe
 (§3.4).
 
 ## 2. The conflict model
@@ -134,8 +136,9 @@ admission.
 
 ### 3.1 Inputs and the recipe/engine model
 
-`reapply(t: Transform, newBase: State)` accepts any Transform, but only a
-Transform with an eligible Recipe can produce `CleanReapply`.
+`reapply(t: Transform, newBase: State, context: ReapplyContext)` accepts any
+Transform, but only a Transform with an eligible Recipe that reproduces the
+complete authored operation program can produce `CleanReapply`.
 
 ```ts
 interface Recipe {
@@ -162,6 +165,7 @@ type ReapplyOutcome =
   | {
       kind: "CleanReapply";
       resultState: Cid;
+      writeSet: Cid;
       effectFingerprint: Cid;
       recomputed: true;
     }
@@ -178,6 +182,7 @@ type ReapplyOutcome =
         | "no-recipe"
         | "not-pinned"
         | "toolchain-mismatch"
+        | "recipe-coverage"
         | "precondition"
         | "scope-violation"
         | "engine-error"
@@ -186,15 +191,56 @@ type ReapplyOutcome =
     };
 ```
 
-`CleanReapply` describes a verified candidate State. It does not mean that the
+`writeSet` addresses this canonical object:
+
+```ts
+interface ReapplyContext {
+  space: SpaceId;
+  author: Did;
+  creationNonce: ByteString;
+  creationOrdinalBase: number;
+}
+
+interface ReapplyWriteSet {
+  kind: "loom.reapply-write-set";
+  schema: 1;
+  baseState: Cid;
+  resultState: Cid;
+  operations: Operation[];
+}
+```
+
+A Recipe engine returns the same closed, versioned `Operation` union defined by
+the core Transform algebra, including every operation's normative preconditions.
+`operations` is an ordered program: canonical DAG-CBOR preserves the exact
+engine-returned order, reordering changes the write-set CID, and implementations
+MUST NOT topologically re-sort it. Two fresh runs are deterministic only when
+their canonical operation-array bytes are identical. Applying the entire array
+to `baseState` MUST reproduce `resultState` exactly; a missing, extra, duplicate,
+out-of-scope, unsupported, or failing operation invalidates the write set.
+
+`ReapplyContext` is fixed before execution and supplied to both fresh runs. A
+creation operation derives its NodeIdent from that context's author and
+creationNonce plus `creationOrdinalBase + localCreationIndex`, using core §7.5;
+the engine cannot mint an identity from ambient randomness. Original-base
+coverage uses the original Transform's author/creationNonce and ordinal base
+zero. New-base execution uses the context of the newly constructed Transform.
+Cross-implementation DAG-CBOR/CID vectors
+for every Operation variant, ordering, path swap, and create/delete case are
+required by the Phase 0 schema gate.
+
+`CleanReapply` describes a verified candidate State and a canonical complete
+write-set object that reproduces it from `newBase`. It does not mean that the
 candidate has been authorized, approved, or admitted to a Shared Line.
 
 **Engines** are pure, sandboxed transformers registered by the Loom implementation. An engine takes
-`(rule, inputCells, env)` and returns `writeCells` or an error. Engines must be **hermetic**:
+`(rule, inputCells, env, reapplyContext)` and returns an ordered `Operation[]` or
+an error. Engines must be **hermetic**:
 no network, no clock, no ambient filesystem — only the declared inputs and the pinned
 toolchain. `determinismClass` records the honest truth about an engine+rule:
 
-- `pinned` — hermetic and reproducible: same `(rule, inputs, toolchain)` ⇒ byte-identical
+- `pinned` — hermetic and reproducible: same
+  `(rule, inputs, toolchain, reapplyContext)` ⇒ byte-identical
   output. **Only `pinned` recipes are eligible to _win_ a merge** (recompute instead of
   diff-merge). Examples: jscodeshift/comby codemods, `dep-bump`, deterministic formatters.
 - `environment-sensitive` — depends on tool version, locale, operating system,
@@ -207,26 +253,51 @@ toolchain. `determinismClass` records the honest truth about an engine+rule:
 ### 3.2 The algorithm
 
 ```
-reapply(t, newBase) -> ReapplyOutcome:
-  if t.recipe is absent:                      return HardFailure("no-recipe")           # -> caller uses text 3-way
-  if t.recipe.determinismClass != "pinned":  return HardFailure("not-pinned")
+reapply(t, newBase, context: ReapplyContext) -> ReapplyOutcome:
+  if t.recipe is absent:                     return HardFailure("no-recipe")
+  if t.recipe.determinismClass != "pinned": return HardFailure("not-pinned")
+  if context.space != newBase.space:         return HardFailure("precondition")
 
-  # 0. toolchain self-check (determinism guard)
+  # 0. toolchain and authored-operation coverage
   if resolveToolchain(t.recipe.toolchain) mismatches available: return HardFailure("toolchain-mismatch")
+  originalBase := get(t.baseState)
+  originalInputs := resolveAll(t.recipe.inputSelector, originalBase)
+  if any unresolved: return HardFailure("recipe-coverage")
+  originalContext := {space:t.space, author:t.author,
+                      creationNonce:t.creationNonce, creationOrdinalBase:0}
+  authoredOpsA := runFreshSandbox(t.recipe, originalInputs, originalContext)
+  authoredOpsB := runFreshSandbox(t.recipe, originalInputs, originalContext)
+  if either run errors or canonicalBytes(authoredOpsA) != canonicalBytes(authoredOpsB):
+      return HardFailure("recipe-coverage")
+  if canonicalBytes(authoredOpsA) != canonicalBytes(t.operations):
+      return HardFailure("recipe-coverage")
+  if capabilityFootprints(authoredOpsA) escape writeScope on originalBase:
+      return HardFailure("recipe-coverage")
+  authoredResult := applyOps(originalBase, authoredOpsA)
+  if authoredResult fails or addr(authoredResult) != t.resultState:
+      return HardFailure("recipe-coverage")
 
-  # 1. preconditions: every inputSelector resolves; writeScope may name absent creation targets
+  # 1. new-base preconditions
   inCells := resolveAll(t.recipe.inputSelector, newBase)
-  if any unresolved:                          return HardFailure("precondition")        # target vanished -> text 3-way
+  if any unresolved: return HardFailure("precondition")
 
-  # 2. execute the rule hermetically against newBase (NOT against the old diff)
-  firstWrites  := runFreshSandbox(t.recipe, inCells)
-  secondWrites := runFreshSandbox(t.recipe, inCells)
-  if either run errors:                        return HardFailure("engine-error")
-  if digest(firstWrites) != digest(secondWrites): return HardFailure("nondeterministic-engine")
-  if firstWrites escapes writeScope:           return HardFailure("scope-violation")
+  # 2. execute the ordered operation program twice with the SAME new context
+  firstOps  := runFreshSandbox(t.recipe, inCells, context)
+  secondOps := runFreshSandbox(t.recipe, inCells, context)
+  if either run errors: return HardFailure("engine-error")
+  if canonicalBytes(firstOps) != canonicalBytes(secondOps):
+      return HardFailure("nondeterministic-engine")
+  if capabilityFootprints(firstOps) escape writeScope on newBase:
+      return HardFailure("scope-violation")
 
-  # 3. build candidate State from the verified first run
-  candidate := applyWrites(newBase, firstWrites)
+  # 3. build candidate State and its exact write-set object
+  candidate := applyOps(newBase, firstOps)
+  if candidate fails: return HardFailure("precondition")
+  writeSet := ReapplyWriteSet(baseState=addr(newBase),
+                              resultState=addr(candidate),
+                              operations=firstOps)
+  if applyOps(newBase, writeSet.operations) != candidate:
+      return HardFailure("engine-error")
 
   # 4. invariant + expected-effect checks
   actualFingerprint := effectFingerprint(newBase, candidate, t.recipe.writeScope)
@@ -244,22 +315,26 @@ reapply(t, newBase) -> ReapplyOutcome:
                         report=putObject(effectDiffReport(t, candidate, newBase)))
 
   return CleanReapply(resultState=putObject(candidate),
+                      writeSet=putObject(writeSet),
                       effectFingerprint=actualFingerprint,
                       recomputed=true)
 ```
 
 Outcome semantics (refining core spec §11):
 
-- **`CleanReapply`** — the rule ran hermetically, stayed in `writeScope`, passed its
-  determinism self-check and invariants. `resultState` is the _recomputed_ tree. Non-conflicting
-  base edits inside `inputSelector` are absorbed automatically (the rule simply sees them).
+- **`CleanReapply`** — the rule first reproduced the complete original authored
+  result, then ran hermetically on the new base, stayed in `writeScope`, and
+  passed its determinism self-check and invariants. `resultState` is the
+  recomputed tree and `writeSet` is the canonical complete delta from `newBase`.
+  Non-conflicting base edits inside `inputSelector` are absorbed automatically.
 - **`Divergence`** — the rule ran but the result violated an `invariant` or the
   `expectedEffectFingerprint` (e.g. a human hand-edited a target Cell so the rule now
   transforms it into something outside the authored intent). Emits a `report` (base/expected/
   actual per `nid`) for human or agent adjudication. **Never auto-accepted.**
-- **`HardFailure`** — no recipe, a Recipe not eligible for verified reapply,
-  toolchain mismatch, precondition gone, scope violation, engine error, or a
-  failed determinism self-check. The caller falls back to **text 3-way** over
+- **`HardFailure`** — no Recipe, incomplete authored-operation coverage, a Recipe
+  not eligible for verified reapply, toolchain mismatch, precondition gone,
+  scope violation, engine error, or a failed determinism self-check. The caller
+  falls back to **text 3-way** over
   the deterministic LCA for the affected Cells.
 
 ### 3.3 Invariants (cheap machine checks that turn "clean" into "trustworthy")
@@ -267,14 +342,17 @@ Outcome semantics (refining core spec §11):
 The scariest failure is a **false clean**: the rule runs and produces plausible-but-wrong
 bytes. Mitigations, in order of strength:
 
-1. **`writeScope` enforcement** — a rule that writes outside its declared cells hard-fails.
-2. **Run-twice determinism self-check** — catches a nominally-`pinned` engine that isn't.
-3. **`expectedEffectFingerprint`** — pins the expected write/effect shape inside
+1. **Authored-operation coverage** — two original-base executions must return
+   canonical operation bytes exactly equal to `Transform.operations`; State-only
+   equivalence cannot hide alternate, reordered, net-zero, or manual operations.
+2. **`writeScope` enforcement** — a rule that writes outside its declared cells hard-fails.
+3. **Run-twice determinism self-check** — catches a nominally-`pinned` engine that isn't.
+4. **`expectedEffectFingerprint`** — pins the expected write/effect shape inside
    the Recipe's scope while excluding unrelated changes already present in the
    new base. A materially different recompute becomes `Divergence`, not silent
    success. The full result State MUST NOT be used as this fingerprint because
    legitimate new-base content would make every useful reapply diverge.
-4. **`invariants`** — declarative post-conditions the engine can check on `candidate`, e.g.
+5. **`invariants`** — declarative post-conditions the engine can check on `candidate`, e.g.
    `{kind:"parses", lang:"ts"}`, `{kind:"no_new_effect", not:["adds_dependency"]}`,
    `{kind:"count_delta", selector:"call foo(", expect:">=0"}`, or `{kind:"recipe_check",
 check: «a pinned verifier recipe»}`. Invariants are the bridge from "reapply is convenient"
@@ -315,25 +393,102 @@ remain byte-for-byte equivalent in shape.
 ### 3.4 Using `reapply` inside `merge`
 
 ```
-merge(base, ours, theirs):
-  perNid = classify(ΔO, ΔT, base)                      # §2.3
-  result = base
-  for nid, cls in perNid:
-    switch cls:
-      INDEPENDENT | COMMUTING: result = compose(result, ops(nid))
-      RECOMPUTABLE:            # the recipe side is re-run against the OTHER side's result
-        out = reapply(recipeSideTransform(nid), stateWithOtherSideApplied)
-        if out is CleanReapply: result = graft(result, out, nid)
-        else:                   result = textThreeWay(result, base, ours, theirs, nid)  # fallback
-      CONFLICT:                result = textThreeWay(...) or emit Conflict(nid)
-  return { baseState: base, candidateState: result, conflicts }
+merge(base, ours, theirs, context: ReapplyContext):
+  assert context.creationOrdinalBase == 0
+  plan := buildAtomicMergePlan(ΔO, ΔT, base)
+    # Every Recipe-bearing Transform is one indivisible unit containing its
+    # complete read set, write set, authored operations, and affected nids.
+    # Remaining non-Recipe operations may be node-granular units.
+  result := base
+  accounted := ∅
+  finalOperations := []
+  nextCreationOrdinal := 0
+
+  for unit in plan.dependencyOrder:
+    assert plan.dependencies(unit) are already represented in result,
+           finalOperations, or typed conflicts
+
+    if unit is RECOMPUTABLE_RECIPE:
+      before := result
+      unitContext := context with creationOrdinalBase=nextCreationOrdinal
+      out := reapply(unit.transform, before, unitContext)
+      if out is CleanReapply:
+        writeSet := get(out.writeSet)
+        assert writeSet.baseState == addr(before)
+        assert applyOps(before, writeSet.operations) == get(out.resultState)
+        assert capabilityFootprints(writeSet.operations) stay within unit.recipe.writeScope
+        assert no unresolved dependency or collision with another unit
+        result := get(out.resultState)                 # install the WHOLE candidate atomically
+        finalOperations += writeSet.operations          # exact order returned by the engine
+        nextCreationOrdinal += countCreationOps(writeSet.operations)
+        accounted += every operation and nid in unit   # exact original-operation coverage proved
+      else:
+        resolvedOps := textThreeWayForCompleteUnit(base, ours, theirs, unit,
+                       context with creationOrdinalBase=nextCreationOrdinal)
+        if resolvedOps has conflicts:
+          emit all typed conflicts for unit
+          accounted += every operation represented by those conflicts
+        else:
+          result := applyOps(result, resolvedOps)
+          finalOperations += resolvedOps
+          nextCreationOrdinal += countCreationOps(resolvedOps)
+          accounted += every resolved operation in unit
+    else:
+      resolvedOps := composeNodeUnitOrTextThreeWay(result, unit,
+                     context with creationOrdinalBase=nextCreationOrdinal)
+      result := applyOps(result, resolvedOps)
+      finalOperations += resolvedOps
+      nextCreationOrdinal += countCreationOps(resolvedOps)
+      accounted += every resolved operation in unit
+
+  assert every input operation is in accounted or a typed Conflict
+  return { baseState: base, candidateState: result, operations: finalOperations,
+           author: context.author, creationNonce: context.creationNonce, conflicts }
 ```
 
-The RECOMPUTABLE branch is Loom's merge-specific advantage: when a codemod (`ours`) and a hand edit
-(`theirs`) touch the same `nid`, Loom **re-runs the codemod over the hand-edited base** rather
-than trying to reconcile two textual diffs — so the human's new code also gets transformed
-(worked in §5). If the recompute is anything but `CleanReapply`, it degrades to the mandatory text
-3-way. No magic, no data loss.
+A Recipe Transform is atomic even when classification begins per NodeIdent.
+Before new-base execution, `reapply` proves that the Recipe returns the exact
+original Transform operation program. It then returns a canonical ordered
+operation set for one complete candidate
+State, so merge MUST install that complete program or none of it; it MUST NOT
+graft one `nid` from that candidate
+or combine old writes with newly recomputed writes. Recipes with overlapping
+read/write sets need an order established by Transform ancestry. If no such
+order exists, the coordinator MUST fall back for the complete affected units or
+emit typed conflicts rather than inventing an order from map or CID iteration.
+Disjoint units use this byte-exact total order. Each unit has a canonical key:
+
+```text
+canonicalDAGCBOR([
+  "loom-merge-unit-order-v1",
+  sortedRawCidBytes(sourceTransformCids),
+  sortedUnsigned(operationOrdinals)
+])
+```
+
+`sourceTransformCids` is the duplicate-free set of authored Transforms
+contributing operations to the unit, and `operationOrdinals` contains their
+zero-based positions in those Transforms. At each topological-plan step, the
+coordinator chooses the ready unit whose complete key is lexicographically
+smallest by raw bytes. Distinct units with an identical key are
+`AmbiguousMergePlan` conflicts rather than an implementation-defined tie.
+Input-map order, traversal order, locale, and CID text rendering MUST NOT affect
+the result.
+
+The merge plan then allocates Transform-global creation ordinals by final
+operation order: every unit receives the next ordinal base, and accepted
+creation operations advance it. The output Transform MUST use exactly the
+returned author, creationNonce, and ordered operations; context substitution,
+operation substitution, or ordinal renumbering invalidates State reproduction
+and conformance.
+
+The RECOMPUTABLE branch is Loom's merge-specific advantage: when a codemod
+(`ours`) and a hand edit (`theirs`) touch the same `nid`, Loom **re-runs the whole
+codemod Transform over a State containing the hand edit** rather than trying to
+reconcile two textual diffs. The human's new code and every other write in the
+Recipe's dependency unit are therefore transformed together (worked in §5). If
+the recompute is anything but `CleanReapply`, the complete unit degrades to the
+mandatory text three-way/conflict path. No partial graft, no magic, no data loss.
 
 ---
 
@@ -344,33 +499,60 @@ the admission protocol. Two rules make this safe:
 
 ### 4.1 Facts are re-derived, never inherited
 
-The reconciliation Transform's `resultState` differs from both parents, so
-detectors run over the new authoritative diff from `base` to `result`. A
-`reapply` that (say) newly matches a `sensitive_path` or adds a dependency the original run
-didn't will surface those facts at admission. Facts that are a pure function of
-the recomputed content and pinned tools may be verified/blockable.
+A merge or reapply creates a new Transform, so detectors run over the complete
+authoritative transition from the current Line State to the candidate result.
+They run even when the candidate State CID happens to equal an earlier State CID.
+A `reapply` that newly matches a `sensitive_path` or adds a dependency the
+original run did not will therefore surface those facts at admission. Facts that
+are a pure function of the recomputed content and pinned tools may be
+verified/blockable.
 
-### 4.2 Reapply that changes `resultState` **invalidates prior human approvals**
+### 4.2 Every new merge/reapply Transform **invalidates prior human approvals**
 
-This is the subtle correctness rule the independent review surfaced. A `human-approval`
-attestation (core spec §14) is pinned to a Transform CID via the provenance subject-pin:
-`subject[0].digest.sha256 == sha256(TransformCID)`. When `reapply` recomputes a new
-`resultState`, it produces a **new Transform CID**, so:
+A `human-approval` attestation (core spec §14) binds both a Transform CID and its
+result State CID. For a SHA-256 CIDv1 Transform, the in-toto
+`subject[0].digest.sha256` value is the lowercase hexadecimal digest embedded in
+the validated CID multihash—equivalently the SHA-256 digest of the canonical
+Transform bytes. It is **not** `sha256(textualCid)` or a hash of the binary CID.
+The canonical CID text belongs in the subject name.
+
+Reapply onto a new head changes the Transform's parent/base metadata and
+therefore creates a new Transform CID even when recomputation produces a State
+CID identical to the original result. Approval invalidation is consequently
+keyed to construction of the new Transform, not to State inequality:
 
 ```
-onReapply(original, outcome):
-  if outcome is CleanReapply and outcome.resultState != original.resultState:
-     # the approved bytes no longer exist; the subject-pin of any prior human-approval is now stale
-     invalidatePriorApprovals(original)                 # do NOT carry them to the recomputed Transform
-     reRunReviewerRouting(recomputedTransform)          # requiredReviewers reset per policy
-  # agent-run + deterministic-check attestations are re-issued for the reapply run regardless
+onReapply(original, outcome, newHead, context):
+  if outcome is CleanReapply:
+     writeSet := get(outcome.writeSet)
+     recomputedTransform := buildTransform(parent=newHead,
+                                           baseState=writeSet.baseState,
+                                           resultState=outcome.resultState,
+                                           operations=writeSet.operations,
+                                           author=context.author,
+                                           creationNonce=context.creationNonce,
+                                           derivedFrom=[addr(original)])
+     assert applyOps(get(writeSet.baseState), recomputedTransform.operations)
+            == get(recomputedTransform.resultState)
+     discardAllInheritedHumanApprovals(recomputedTransform)
+     reDeriveFacts(recomputedTransform)
+     reRunReviewerRouting(recomputedTransform)
+     reissueRunAndCheckAttestations(recomputedTransform)
+     return recomputedTransform
+  # Divergence and HardFailure follow the complete-unit conflict/fallback path.
 ```
 
-Concretely: an approval of "rename `foo`→`foo(…,ctx)` across 40 cells" does **not** silently
-apply to a reapply that also rewrote a teammate's newly-added `foo(y)` — the reviewer approved
-a different result. Admission treats the recomputed Transform as unapproved and re-triggers the
-`ReviewerRequirement`s. `Divergence` outcomes are always human-routed. This closes the
-"stale approval re-attachment" gap and keeps "humans approve _this_ risk" literally true.
+A caller that returns the original Transform unchanged has not created a reapply
+Transform and may continue to reference approvals for that exact original
+subject. Once a new Transform is constructed, no prior human approval may be
+attached in version `0.1`, regardless of whether the result State changed.
+
+Concretely, an approval of "rename `foo`→`foo(…,ctx)` across 40 cells" does not
+silently apply to a reapply that also rewrote a teammate's newly added `foo(y)`.
+Nor does it apply when the moved base recomputes to byte-identical output: the
+reviewed history subject is still different. Admission treats both newly
+constructed Transforms as unapproved and re-triggers the `ReviewerRequirement`s.
+`Divergence` outcomes are always human-routed.
 
 ### 4.3 Determinism class gates blockability
 
@@ -404,13 +586,13 @@ advantage claimed, just no regression.
 - **Git**: textual merge may be clean or conflicting depending on the changed
   hunks, but the human's new `foo(y)` remains **untransformed** because the
   codemod already ran on the old base.
-- **Loom**: `reapply(T_R, stateWithTheirsApplied)` re-runs `R` over the base that already
+- **Loom**: `reapply(T_R, stateWithTheirsApplied, context)` re-runs `R` over the base that already
   contains `foo(y)`. The rule now also rewrites `foo(y) → foo(y, ctx)`. Determinism self-check
   passes; `{parses:ts}` holds ⇒ `CleanReapply`. Result: **all** calls transformed, including
   the new one; zero conflict. A new Transform `T_R'` uses the current target
   head as its history parent, records `derivedFrom:[T_R]`, and carries the
   recomputed `resultState`; per §4.2 any prior human approval of `T_R` does not carry —
-  admission re-routes reviewers because the result changed.
+  admission re-routes reviewers because the Transform changed.
 
 ### 5.3 Divergence (rule would mis-transform a hand edit)
 
@@ -434,12 +616,14 @@ it resolves every case another VCS resolves.
 ### 5.5 Stale-approval closed (§4.2 in action)
 
 `T_R` was approved by `alice` (human-approval attestation pinned to `addr(T_R)`). Base
-advances; `reapply` yields `T_R'` with a new CID and new `resultState`. `invalidatePriorApprovals(T_R)`
-fires; `alice`'s approval is **not** attached to `T_R'`; admission shows the requirement unmet and
-re-requests review. `alice` (or a delegate holding the Grant) approves `T_R'`, producing a
-fresh human-approval pinned to `addr(T_R')`. The ledger leaf for the admission records exactly
-this new attestation set (core spec §14.2), so an auditor sees that the recomputed result was
-the one approved.
+advances; `reapply` yields `T_R'` with a new CID. Whether its `resultState` is new
+or byte-identical to the original, `discardAllInheritedHumanApprovals(T_R')`
+fires; `alice`'s approval is **not** attached to `T_R'`; admission shows the
+requirement unmet and re-requests review. `alice` (or a delegate holding the
+Grant) approves `T_R'`, producing a fresh human-approval pinned to `addr(T_R')`.
+The ledger leaf for the admission records exactly this new attestation set (core
+spec §14.2), so an auditor sees that the recomputed history subject was the one
+approved.
 
 ---
 
@@ -452,28 +636,38 @@ Shared Line, resolved by optimistic concurrency + reapply:
 submit loop (client):
   loop:
     expected := currentHead(line)
-    outcome  := reapply(myTransform, expected.resultState)      # advance MY change onto the live head
+    context  := freshReapplyContext(space=line.space, author=actor,
+                                    creationNonce=random256(), creationOrdinalBase=0)
+    outcome  := reapply(myTransform, expected.resultState, context) # advance onto live head
     if outcome is HardFailure or Divergence:
         mergeBase := deterministicLcaState(expected.headTransform, myTransform)
         merged := merge(base=mergeBase,
                         ours=expected.resultState,
-                        theirs=resultStateOf(myTransform))
+                        theirs=resultStateOf(myTransform),
+                        context=context)
         if merged.conflicts: return ManualResolution(merged.conflicts)   # human/agent authors resolution
         candidateTransform := buildTransform({
             parents: [expected.headTransform, myTransform],
             baseState: merged.baseState,
-            resultState: merged.candidateState
+            resultState: merged.candidateState,
+            operations: merged.operations,
+            author: merged.author,
+            creationNonce: merged.creationNonce
         })
     else:
         candidateTransform := buildTransform({
             parents: [expected.headTransform],
             baseState: expected.resultState,
             resultState: outcome.resultState,
+            operations: get(outcome.writeSet).operations,
+            author: context.author,
+            creationNonce: context.creationNonce,
             derivedFrom: [myTransform]
         })
     res := SubmitProposal({line,
                            headTransform: addr(candidateTransform),
                            expectedHead: expected.headTransform,
+                           expectedSequence: expected.sequence,
                            …})
     if res == RebaseRequired: continue                          # head moved again; recompute (cheap for pinned recipes)
     return res
@@ -483,8 +677,10 @@ submit loop (client):
   of contenders whose changes remain independent or cleanly reapplicable SHOULD
   converge without manual conflict resolution. Loom does not guarantee
   starvation freedom under an unbounded stream of higher-priority admissions.
-- A single hot Shared Line still serializes admissions: there is one compare-and-swap
-  winner per round. Loom inherits the monorepo merge-queue bottleneck and can
+- A single hot Shared Line still serializes admissions: there is one
+  `(headTransform, sequence)` compare-and-swap winner per round. A stale tuple,
+  including an ABA-replayed head with an old sequence, must rebase. Loom inherits
+  the monorepo merge-queue bottleneck and can
   mitigate it by sharding Shared Lines per service or package. Cross-Line
   atomicity is an open core-spec decision; sharding does not by itself solve
   dependent multi-Line changes.
@@ -512,7 +708,7 @@ submit loop (client):
    invariants catch gross errors, but a rule can still produce plausible-wrong output that
    passes cheap invariants. An effect fingerprint only pins the expected scoped
    writes, not program correctness. The honest posture: reapply reduces conflict toil,
-   and its verified facts, invariants, and mandatory admission review of changed results bound the
+   and its verified facts, invariants, and mandatory admission review of every new Transform bound the
    risk — but "the codemod is correct" is never proven, only checked. This
    follows the attested-not-proven rule in core spec §3.6.
 4. **Per-language semantic tooling is a treadmill.** Node-granular conflict scoping and the
@@ -551,6 +747,13 @@ submit loop (client):
   facets and is not assumed for file-granular Cells.
 
 # Reapply engine
+- authored-operation coverage: alternate, reordered, net-zero, partial, or
+  mixed manual+Recipe programs that are not byte-identical to the original
+  Transform operations return `HardFailure("recipe-coverage")`; no authored
+  operation is marked accounted.
+- context binding: same-context reruns are byte-identical; changing author,
+  nonce, ordinal base, output Transform operations, or unit ordinal allocation
+  is detected, including multiple creation-bearing units.
 - clean-absorb (§5.1); recompute-win (§5.2) compared with reference text merge,
   with Loom required to transform the newly introduced matching call when the
   pinned Recipe and invariants permit it.
@@ -560,9 +763,19 @@ submit loop (client):
 - writeScope enforcement: a rule writing outside writeScope => HardFailure.
 
 # Governance correctness (the stress-test gap)
-- stale-approval-invalidation (§4.2/§5.5): reapply changing resultState => prior human-approval
-  NOT attached to the recomputed Transform; ReviewerRequirement re-triggered; ledger leaf
-  records only the fresh approval set.
+- stale-approval-invalidation (§4.2/§5.5): every newly constructed
+  merge/reapply Transform rejects prior human approval, including when the new
+  Transform CID has the same result State CID; ReviewerRequirement re-triggered;
+  ledger leaf records only the fresh approval set.
+- atomic-recipe-integration: a multi-Cell Recipe whose recompute changes several
+  outputs installs the entire verified ordered operation set or none; per-nid
+  partial grafts, mixed old/new Recipe operations, and unordered overlapping
+  Recipes never land.
+- write-set vectors: every Operation variant, order permutation, path swap,
+  create/delete, malformed precondition, and write-set CID matches independent
+  DAG-CBOR reference vectors.
+- subject-digest: the in-toto SHA-256 subject equals the digest embedded in the
+  verified Transform CID and never a second hash over CID text or bytes.
 - fact-re-derivation: reapply that newly matches a sensitive_path/dependency surfaces the
   VerifiedFact at admission (not inherited from the parent).
 - determinism-class gating: environment-sensitive and nondeterministic Recipes
@@ -572,7 +785,9 @@ submit loop (client):
 - hot-line rebase loop (§6): a finite eligible contender set converges without
   manual resolution when every recompute remains `CleanReapply`; otherwise the
   contender produces a typed conflict or manual-resolution result.
-- serialization: exactly one CAS winner per admission round; losers rebase/recompute.
+- serialization: exactly one `(headTransform, sequence)` CAS winner per
+  admission round; stale-head, stale-sequence, and ABA-tuple losers
+  rebase/recompute.
 ```
 
 ## 9. Current implementation gaps
@@ -583,6 +798,9 @@ The current prototype is intentionally smaller than this specification:
   requires the verified path to accept only `pinned` Recipes.
 - `expectedResultDigest` currently compares a complete prototype State address;
   it must be replaced by the scoped `expectedEffectFingerprint` defined here.
+- prototype `reapply()` does not yet perform the normative original-base
+  authored-operation coverage proof, accept a ReapplyContext, or return a canonical
+  ordered-operation write-set object;
 - `mergeStates()` and `reapply()` are separate public operations; the normative
   RECOMPUTABLE branch has not yet been integrated into one merge coordinator.
 - prototype Cells are file-granular text/bytes values, so sub-file semantic

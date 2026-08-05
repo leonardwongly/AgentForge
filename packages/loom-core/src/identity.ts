@@ -1,9 +1,9 @@
 import { sha256Hex, canonicalize } from "./addressing.js";
 import type { Cell, Cid, NodeIdent, NodeSelector, State } from "./types.js";
 
-/** An empty tree. */
+/** An empty tree backed by a path map with no inherited property names. */
 export function emptyState(): State {
-  return { kind: "state", cells: {} };
+  return { kind: "state", cells: Object.create(null) as Record<string, Cell> };
 }
 
 /**
@@ -20,10 +20,21 @@ export function mintNodeIdent(
   return `nid:${digest.slice(0, 32)}` as NodeIdent;
 }
 
-/** Derive nid -> path from a State (each Cell carries its stable ident). */
+/**
+ * Derive nid -> path from a State (each Cell carries its stable ident).
+ * Duplicate identities make selector resolution ambiguous and therefore fail
+ * closed. Sorting by path keeps the diagnostic independent of insertion order.
+ */
 export function deriveIdentityIndex(state: State): ReadonlyMap<NodeIdent, string> {
   const index = new Map<NodeIdent, string>();
-  for (const [path, cell] of Object.entries(state.cells)) {
+  const entries = Object.entries(state.cells).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  for (const [path, cell] of entries) {
+    const previousPath = index.get(cell.ident);
+    if (previousPath !== undefined) {
+      throw new Error(
+        `loom: duplicate NodeIdent ${JSON.stringify(cell.ident)} at paths ${JSON.stringify(previousPath)} and ${JSON.stringify(path)}`
+      );
+    }
     index.set(cell.ident, path);
   }
   return index;
@@ -35,13 +46,16 @@ export function resolveSelector(
   sel: NodeSelector
 ): { readonly path: string; readonly cell: Cell } | undefined {
   if ("path" in sel) {
+    if (!Object.hasOwn(state.cells, sel.path)) {
+      return undefined;
+    }
     const cell = state.cells[sel.path];
-    return cell ? { path: sel.path, cell } : undefined;
+    return cell === undefined ? undefined : { path: sel.path, cell };
   }
   const path = deriveIdentityIndex(state).get(sel.nid);
-  if (path === undefined) {
+  if (path === undefined || !Object.hasOwn(state.cells, path)) {
     return undefined;
   }
   const cell = state.cells[path];
-  return cell ? { path, cell } : undefined;
+  return cell === undefined ? undefined : { path, cell };
 }

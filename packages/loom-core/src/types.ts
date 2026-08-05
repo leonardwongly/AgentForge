@@ -173,10 +173,22 @@ export type ConflictClass = "independent" | "commuting" | "recomputable" | "conf
 export interface Conflict {
   readonly nid: NodeIdent;
   readonly path: string;
-  readonly kind: "content" | "delete/edit" | "recompute-divergence";
+  readonly kind:
+    "content" | "binary" | "delete/edit" | "move/move" | "path-collision" | "recompute-divergence";
+  /** The second identity when distinct Cells resolve to the same path. */
+  readonly otherNid?: NodeIdent | undefined;
   readonly base?: string | undefined;
   readonly ours?: string | undefined;
   readonly theirs?: string | undefined;
+  readonly basePath?: string | undefined;
+  readonly oursPath?: string | undefined;
+  readonly theirsPath?: string | undefined;
+  readonly baseFacet?: CellFacet | undefined;
+  readonly oursFacet?: CellFacet | undefined;
+  readonly theirsFacet?: CellFacet | undefined;
+  readonly baseMode?: number | undefined;
+  readonly oursMode?: number | undefined;
+  readonly theirsMode?: number | undefined;
   readonly textConflict?: string | undefined;
   readonly suggestedResolution?: string | undefined;
 }

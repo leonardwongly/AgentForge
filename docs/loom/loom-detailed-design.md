@@ -100,11 +100,11 @@ an external status check.
 
 ### 3.5 Exact-result approval
 
-Human approval is bound to an exact Transform and result State. Any merge or
-reapply that changes the result creates a new Transform and invalidates prior
-human approvals unless the approval predicate explicitly and safely covers the
-new result. The initial specification defines no such transferable approval;
-therefore changed results always require re-evaluation.
+Human approval is bound to an exact Transform and result State. Every newly
+constructed merge or reapply Transform invalidates prior human approvals, even
+when it reproduces an identical result State. The initial specification defines
+no transferable approval predicate; therefore every new Transform requires
+fresh evaluation and approval when policy requires it.
 
 ### 3.6 Attested, not proven
 
@@ -375,6 +375,20 @@ The `toolchain` object and each selector list are explicit even when their maps
 or arrays are empty; omitted ambient environment values cannot be part of a
 `pinned` Recipe.
 
+A Recipe makes its Transform eligible for verified reapply only when two fresh
+hermetic executions over the Transform's original `baseState` return canonical
+operation-array bytes exactly equal to each other **and** to
+`Transform.operations`, and applying that exact list reproduces the Transform's
+`resultState`. State equality alone is insufficient: alternate, reordered,
+net-zero, or merely equivalent operation programs do not prove that every
+authored operation, capability footprint, and implied effect was preserved.
+This **authored-operation coverage check** accounts for the whole authored
+program. If a Transform mixes manual operations with Recipe output that the
+Recipe does not reproduce exactly, verified reapply MUST return
+`HardFailure("recipe-coverage")`; the complete Transform then uses ordinary
+merge/conflict handling. Clients SHOULD represent independently reappliable
+mechanical and manual work as separate ordered Transforms.
+
 ### 7.8 Transform
 
 ```ts
@@ -410,6 +424,24 @@ A reapply onto a new head MUST use that new head as its history parent and SHOUL
 put the original Transform in `derivedFrom`. It MUST NOT claim the original
 Transform as its sole history parent when its base is a different Line head.
 
+For every Shared Line transition, the Proposal's `expectedHead` MUST be an
+ancestor of `headTransform`, including the equality case only for a rejected
+no-op. The **introduced Transform closure** is:
+
+```text
+ancestors(headTransform) - ancestors(expectedHead)
+```
+
+where ancestry includes the named Transform itself. The authority MUST traverse
+all parent edges, reject cycles, missing objects, and configured traversal-limit
+violations, and verify every Transform in that closure. Side history may enter
+the closure only through a reconciliation Transform that names every reconciled
+tip in `parents`, including the current `expectedHead`, and uses the specified
+LCA and merge rules. Directly assigning an old or unrelated Transform as the new
+head is forbidden. A rollback restores prior content with a newly authored
+Transform descended from the current head so that its operations, effects,
+authorization, and policy consequences remain visible.
+
 `parents` and `derivedFrom` are canonical CID sets: sorted by CID bytes and
 duplicate-free. `operations` is an ordered program and MUST retain its authored
 order. `declaredEffects` is a canonical set under the effect registry's encoded
@@ -432,10 +464,11 @@ interface Proposal {
   schema: 1;
   line: LineId;
   expectedHead: Cid;
+  expectedSequence: bigint;
   headTransform: Cid;
   transformSignatures: Cid[];
   attestations: Cid[];
-  grantChain: Cid[];
+  grants: Cid[];
   idempotencyKey: string;
 }
 
@@ -445,7 +478,10 @@ interface AdmissionRecord {
   proposal: Cid;
   line: LineId;
   previousHead: Cid;
+  previousSequence: bigint;
   admittedHead: Cid;
+  admittedSequence: bigint;
+  decisionTime: string;
   resultState: Cid;
   policy: Cid;
   decision: "pass" | "warn" | "override";
@@ -462,14 +498,60 @@ interface RejectionRecord {
   proposal: Cid;
   line: LineId;
   observedHead: Cid;
+  observedSequence: bigint;
+  decisionTime: string;
   policy: Cid;
   decision: "stale" | "invalid" | "unauthorized" | "conflict" | "block";
   reasons: RejectionReason[];
-  facts?: Cid;
+  facts: Cid | null;
+  rebaseEvidence: Cid | null;
   evidence: Cid[];
   attestations: Cid[];
   grants: Cid[];
 }
+
+interface RebaseEvidenceBase {
+  kind: "loom.rebase-evidence";
+  schema: 1;
+  candidateHead: Cid;
+  observedHead: Cid;
+}
+
+type RebaseEvidence =
+  | (RebaseEvidenceBase & {
+      status: "available";
+      selectedLca: Cid;
+      bestAncestors: Cid[];
+      unavailableReason: null;
+    })
+  | (RebaseEvidenceBase & {
+      status: "unrelated";
+      selectedLca: null;
+      bestAncestors: [];
+      unavailableReason: null;
+    })
+  | (RebaseEvidenceBase & {
+      status: "unavailable";
+      selectedLca: null;
+      bestAncestors: [];
+      unavailableReason: "candidate-unavailable" | "traversal-limit";
+    });
+
+interface RebaseRequiredBase {
+  kind: "loom.rebase-required";
+  schema: 1;
+  line: LineId;
+  expectedHead: Cid;
+  expectedSequence: bigint;
+  candidateHead: Cid;
+  observedHead: Cid;
+  observedSequence: bigint;
+  evidence: Cid;
+}
+
+type RebaseRequired =
+  | (RebaseRequiredBase & { scope: "shared"; rejection: Cid })
+  | (RebaseRequiredBase & { scope: "local"; rejection: null });
 ```
 
 For `TransformSignature`, the signed message is canonical DAG-CBOR encoding of
@@ -479,11 +561,39 @@ verification algorithm is selected by the resolved `keyId`; implementations
 MUST reject an algorithm or key type that the declared DID method does not
 authorize.
 
+Every non-genesis Transform in the introduced closure MUST have at least one
+valid TransformSignature whose `subject` is that Transform's CID and whose
+`signer` equals `Transform.author`. The resolved `keyId` MUST be authorized for
+that author at the admission ledger position. Additional co-signatures MAY be
+recorded, but a signature by another actor does not authenticate the author and
+cannot replace the required author signature. The leaf Grant audience used to
+authorize the Transform MUST be the same author. Genesis authentication follows
+the separately signed SpaceDescriptor rule in §9.1.
+
 Proposal and AdmissionRecord arrays MUST be canonical sets: sorted by CID,
-duplicate-free, and interpreted exactly. An admission MUST bind the complete set
-used for the decision so evidence cannot be detached after the fact.
-RejectionRecord evidence, attestation, and Grant arrays follow the same rule;
-`reasons` uses a closed, versioned rejection-reason registry.
+duplicate-free, and interpreted exactly. `Proposal.grants` is the union of all
+submitted Grant objects; each chain is reconstructed from signed `parent` links,
+not array order, so one Proposal can authorize multiple Transform authors and
+approvers without treating unrelated Grants as one chain. The signature set MUST
+cover every Transform in the introduced closure. An admission MUST bind the
+complete sets used for the decision so evidence cannot be detached after the
+fact. RejectionRecord evidence, attestation, and Grant arrays follow the same rule;
+`reasons` uses a closed, versioned rejection-reason registry. `facts` is
+explicitly `null` when facts were not derived; omission is not an alternate
+encoding.
+
+`RebaseEvidence` is a closed discriminated union; fields from another status are
+invalid rather than ignored. In the `available` variant, `bestAncestors` is a
+sorted, duplicate-free, non-empty complete best-ancestor set and `selectedLca`
+is chosen by §9.4. The `unrelated` and `unavailable` variants have exactly the
+empty ancestor tuple and null LCA; only `unavailable` carries a typed reason. The
+candidate and observed heads are always explicit. A Shared stale rejection MUST
+store the evidence CID in `RejectionRecord.rebaseEvidence`; non-stale rejections
+MUST store null. The RebaseRequired projection and evidence objects are reachable
+from the same atomic outcome. A Local response uses the same canonical evidence
+and response schemas with `rejection:null` and stores both CIDs in idempotency
+state. Every response field MUST equal its linked evidence/record field; a
+mismatch invalidates the response.
 
 ## 8. Transform algebra
 
@@ -506,6 +616,23 @@ type Operation =
 Every operation has explicit preconditions. An absent selector, occupied move
 destination, invalid range, identity collision, facet projection mismatch, or
 path violation MUST return a typed failure and MUST NOT become a silent no-op.
+
+Authorization uses an operation's complete **capability footprint**, not only the
+field typed as `NodeSelector`:
+
+- `put_cell` and `put_external` include their destination `at` path;
+- `delete_cell`, `set_metadata`, `patch_bytes`, `put_facet`, and `delete_facet`
+  include the resolved source NodeIdent and current path; and
+- `move_cell` includes the resolved source NodeIdent, its current path, and the
+  destination `to` path independently.
+
+A destination or creation path MUST be covered by a path selector; authority over
+a NodeIdent at its current location does not grant authority to move or recreate
+it in another namespace. Each Transform MUST be authorized by one valid Grant
+chain whose leaf covers every operation name, every member of every operation's
+capability footprint, aggregate effects, and resource bounds. Implementations
+MUST NOT combine partial coverage from otherwise insufficient chains to
+manufacture authority for one Transform.
 
 Operations are applied in listed order. A verifier MUST apply them from
 `baseState` and reproduce `resultState` exactly. An implementation MAY use an
@@ -596,9 +723,14 @@ LineId = multibase(
 
 `creationNonce` is a random 256-bit value. `headState` MUST equal the result
 State of `headTransform`. `sequence` increases by one for every committed head
-transition; every Shared Line transition is an admitted transition. A Line
-update uses compare-and-swap over `(headTransform, sequence)`; a stale writer
-receives `RebaseRequired` and MUST NOT overwrite the winning head.
+transition; every Shared Line transition is an admitted transition. **Every
+Local or Shared Line transition** MUST compare-and-swap the exact
+`(headTransform, sequence)` tuple. A Shared Proposal supplies `expectedHead` and
+`expectedSequence`; a Local seal supplies the tuple recorded by its
+ChangeSession. A mismatch in either component returns `RebaseRequired` with the
+observed tuple and MUST NOT overwrite the winner. This rule prevents concurrent
+Local seals, stale Shared proposals, and `H → … → H` ABA requests from replacing
+newer work.
 
 ### 9.3 Local and Shared Lines
 
@@ -660,8 +792,10 @@ response when the resulting Recipe claims `pinned` determinism.
 
 A ChangeSession is a mutable local transaction journal, not an immutable Loom
 object. It binds a random session identifier, actor, source Line, base Transform
-and State, optional delegated Grant, Intent draft, ordered operation journal,
-working-copy path, and monotonically increasing append sequence.
+and State, the source Line sequence observed at open, optional delegated Grant,
+Intent draft, ordered operation journal, working-copy path, monotonically
+increasing append sequence, and a digest of the journal prefix at each
+acknowledged sequence.
 
 Loom has no implicit repository-global staging index. Each concurrent human or
 agent SHOULD receive a distinct ChangeSession and working copy. Implementations
@@ -669,12 +803,16 @@ MUST NOT capture files from one session into another merely because they share a
 host filesystem. Selective capture is explicit by path or NodeIdent and records
 the session that observed the bytes.
 
-Sealing a session MUST read a stable working-copy snapshot, validate every
-operation against the recorded base, store all reachable objects, construct the
-result State, and create exactly one Transform. If files change during sealing,
-the operation returns a typed retry rather than a mixed snapshot. The journal
-MUST remain recoverable until the Transform and its Local Line update are
-durable.
+A seal request MUST bind the session's recorded Line tuple and an exact
+`expectedAppendSequence` plus journal-prefix digest. Sealing MUST freeze that
+journal prefix, read a stable working-copy snapshot, validate every operation
+against the recorded base, store all reachable objects, construct the result
+State, and create exactly one Transform. A changed Line tuple, appended journal
+entry, digest mismatch, or file mutation returns a typed retry or
+`RebaseRequired` rather than a mixed snapshot. Installing the Transform, updating
+the Local Line by tuple CAS, and committing the seal idempotency result MUST be
+one recoverable transaction; exactly one concurrent seal can win. The journal
+MUST remain recoverable until that transaction is durable.
 
 ### 10.5 Reference authoring flow
 
@@ -705,12 +843,15 @@ The detailed algorithm is normative in
 2. Stable identity allows moves and edits to be composed without path guessing.
 3. Automatic commutativity is conservative; uncertainty becomes text merge or a
    typed conflict.
-4. Only a hermetic `pinned` Recipe may produce a verified automatic reapply.
-5. Environment-sensitive and nondeterministic recipes may produce advisory
-   candidates but MUST NOT bypass the text/conflict and approval path.
+4. Only a hermetic `pinned` Recipe that reproduces its complete authored result
+   from the original base may produce a verified automatic reapply.
+5. Environment-sensitive, partial-coverage, and nondeterministic recipes may
+   produce advisory candidates but MUST NOT bypass the text/conflict and
+   approval path.
 6. Reapply executes against the new base, enforces write scope, re-derives facts,
    and creates a new Transform.
-7. A changed result invalidates all previous human approvals.
+7. Every newly created merge or reapply Transform invalidates all previous human
+   approvals, even when its result State equals a previously approved State.
 8. A conflict MUST preserve base, sides, affected identity, and enough evidence
    for a human or agent to author an explicit resolution Transform.
 
@@ -723,9 +864,9 @@ syntax. The initial implementation MAY support `did:key` and `did:web` while the
 `did:loom` method is finalized. A deployment MUST publish the supported methods
 and verification algorithms.
 
-Transform signatures MUST use a domain-separated message that includes the
-specification version and Transform CID. Admission verifies the key that was
-valid at the decision's ledger position, not merely the actor's latest key.
+Transform signatures MUST use a versioned, domain-separated message that binds
+the Transform CID and Space. Admission verifies the key that was valid at the
+decision's ledger position, not merely the actor's latest key.
 
 Key rotation and revocation MUST be ledgered. Compromise recovery MUST preserve
 the ability to verify historical signatures while preventing revoked keys from
@@ -736,41 +877,104 @@ authorizing later admissions.
 A Grant delegates the product of:
 
 ```text
-operation types × path or NodeIdent selectors × effect bounds × caveats
+transform operations × governance actions × approval requirements
+× path or NodeIdent selectors × effect bounds × caveats
 ```
 
 ```ts
+type GovernanceAction = "approve" | "override";
+
+interface GrantCaveat {
+  registry: string;
+  version: number;
+  name: string;
+  value: Cid;
+}
+
 interface Grant {
   kind: "loom.grant";
   schema: 1;
+  space: SpaceId;
+  line: LineId;
+  ledgerOrigin: string;
   issuer: Did;
   audience: Did;
-  operations: Array<Operation["op"] | "*">;
+  keyId: string;
+  transformOperations: Array<Operation["op"] | "*">;
+  governanceActions: GovernanceAction[];
+  approvalRequirements: Array<Cid | "*">;
   selectors: NodeSelector[];
   effectBounds: EffectBounds;
+  caveats: GrantCaveat[];
   notBefore?: string;
   notAfter: string;
+  notBeforeLedgerSequence?: bigint;
+  notAfterLedgerSequence?: bigint;
   parent?: Cid;
   signature: ByteString;
 }
 ```
 
-Every delegated child MUST be an attenuation of its parent. It cannot add an
-operation, broaden a selector, increase a cell budget, allow deletion or
-sensitive access not allowed by the parent, extend expiry, or remove a caveat.
-Undecidable selector inclusion MUST fail closed.
+`"*"` in `transformOperations` covers only Transform operation types; it does
+not grant `approve` or `override`. An approval-only Grant can therefore use an
+empty `transformOperations` list without granting write authority.
+
+Every delegated child MUST be an attenuation of its parent. It MUST preserve the
+exact `space`, `line`, and `ledgerOrigin`; version `0.1` defines no resource
+wildcard. It cannot add a Transform operation or governance action, broaden an
+approval requirement or selector, increase a cell budget, allow deletion or
+sensitive access not allowed by the parent, extend either time or ledger-sequence
+validity, or remove or alter a caveat. Undecidable inclusion MUST fail closed.
+
+`caveats` is a canonical set sorted by encoded bytes and duplicate-free. The
+initial profile uses a closed, versioned caveat registry. A child MUST include
+every parent caveat byte-for-byte and MAY add recognized caveats; unsupported
+registry/version/name combinations reject authorization rather than being
+ignored. Caveat-specific handlers MAY define additional provably narrower forms,
+but absent such a rule only exact retention is attenuation.
+
+The root Grant MUST omit `parent` and have `issuer` equal to the Shared Line
+controller. For every child, `parent` MUST equal the CID of the immediately
+preceding Grant and `child.issuer` MUST equal `parent.audience`. The leaf
+`audience` MUST equal the actor being authorized: the Transform author, approval
+actor, or override actor. Missing parents, cycles, duplicate Grants, broken
+issuer/audience continuity, and a mismatched leaf actor MUST fail closed.
 
 The Grant signature covers canonical DAG-CBOR encoding of
 `["loom-grant-signature-v1", unsignedGrant]`, where `unsignedGrant` is the
-complete Grant map with only the `signature` field omitted. This binds the
-issuer, audience, parent CID, operations, selectors, effect bounds, and validity
-window. Grant timestamps MUST be canonical RFC 3339 UTC instants with seconds
-precision; equivalent alternate spellings are rejected rather than normalized.
+complete Grant map with only the `signature` field omitted. This binds every
+field above, including `keyId`, resource scope, and caveats. The verification
+algorithm and key type are selected by the issuer's resolved `keyId`; a method
+that does not authorize that combination MUST be rejected. Grant timestamps
+MUST be canonical RFC 3339 UTC instants with seconds precision; equivalent
+alternate spellings are rejected rather than normalized.
 
-The Grant chain MUST root at the Shared Line controller. Admission MUST evaluate
-revocation and key validity at the admission ledger position. An actor MUST NOT
-approve its own Transform unless policy explicitly permits self-approval; the
-default policy forbids it.
+For a Transform, one leaf Grant MUST cover every Transform operation, the
+complete capability footprint defined in §8.1, aggregate effects, and resource
+bounds. For a human approval, one leaf MUST include `approve`, cover the exact
+approval-requirement CID (or an explicit `"*"`), and cover the affected selectors
+and effects. An override requires `override` independently; `approve` does not
+imply `override` and vice versa. The DSSE signing DID, predicate approver or
+override actor, and leaf audience MUST be identical. An actor MUST NOT approve
+its own Transform unless policy explicitly permits self-approval; the default
+policy forbids it.
+
+Every Grant signature MUST verify under the issuer key valid at the pending
+admission ledger position, and every Grant MUST be unrevoked there. Time validity
+is the half-open interval `notBefore <= decisionTime < notAfter`; absent
+`notBefore` means no lower time bound, and `notAfter` is required. Ledger validity
+uses the same half-open rule when present:
+`notBeforeLedgerSequence <= event.sequence < notAfterLedgerSequence`; either
+ledger bound MAY be absent. Every present upper bound MUST be greater than its
+lower bound. A child lower bound cannot precede its parent's and a child upper
+bound cannot exceed or remove its parent's. Equality with a lower bound is
+valid; equality with an upper bound is expired.
+
+Time bounds are evaluated against the single `decisionTime` committed in the
+outcome record and LedgerEvent; ledger bounds use that event's origin-relative
+sequence and therefore require `Grant.ledgerOrigin == LedgerEvent.origin`. Both
+kinds of bound apply when present. An idempotent replay uses the original
+committed position and time, never a newly sampled clock.
 
 ## 13. Governance and admission
 
@@ -779,27 +983,75 @@ default policy forbids it.
 Admission is an atomic state machine:
 
 ```text
-receive Proposal
-  → deduplicate idempotency key
-  → compare expected head
+receive Proposal from an authenticated replica
+  → bind (replica, operation, idempotency key) to the Proposal CID
+  → reserve the next ledger position and one monotonic decisionTime
+  → compare expected (head, sequence)
   → fetch and verify all objects
-  → verify Transform signatures and State reproduction
-  → verify effects cover implied effects
-  → authorize every Transform through its Grant chain
-  → derive deterministic facts from authoritative bytes and effects
+  → derive the complete introduced Transform closure and verify required ancestry
+  → verify every Transform's author signature and reproduce every result State
+  → verify effects cover implied effects and compute complete capability footprints
+  → authorize every Transform author through its controller-rooted Grant chain
+  → derive deterministic facts from the complete authoritative Line transition
   → evaluate the pinned policy
-  → validate evidence and approval attestations
+  → validate evidence and approval/override actors, actions, requirements, and Grants
   → create AdmissionRecord or RejectionRecord
   → durably commit the outcome ledger event and, only for admission, the Line head transition
   → return the committed record
 ```
 
-A RejectionRecord MUST bind the Proposal, Line, observed head, policy, complete
-fact/evidence/attestation/Grant sets, and typed rejection reasons. It has no
-`admittedHead` and MUST NOT cause a Line transition. A `warn` decision MAY
-advance only when the policy explicitly permits it. A `block` decision MUST NOT
-advance. An override requires a separate authorized human attestation, a
-reason, and a policy rule permitting override.
+The authority MUST resolve `Proposal.line` to one LineRef and reject unless every
+introduced Transform, every base/result State, and every traversed parent belongs
+to exactly `LineRef.space`. Every author/approval/override Grant MUST name that
+same Space and Line and the origin of the pending LedgerEvent. Cross-Space,
+cross-Line, and cross-origin substitution is forbidden even when the same DID
+controls both resources.
+
+The authority MUST reject a Proposal when `expectedHead` is not an ancestor of
+`headTransform`, when a reconciliation omits a reconciled tip, when any
+introduced Transform is omitted from verification, or when the Proposal attempts
+to assign an old head directly. Every introduced Transform and every parent edge
+in the closure MUST be fetched, signature-checked, replayed, effect-checked, and
+authorized. Policy facts MUST cover the authoritative transition from the
+current Line State to the proposed result State as well as the per-Transform
+operations, so a side branch or unrelated base cannot hide deletions or other
+effects.
+
+A RejectionRecord MUST bind the Proposal, Line, observed head and sequence,
+decision time, policy, complete fact/evidence/attestation/Grant sets used for the
+decision, and typed rejection reasons. It has no `admittedHead` and MUST NOT
+cause a Line transition. A `warn`
+decision MAY advance only when the policy explicitly permits it. A `block`
+decision MUST NOT advance. An override requires a separate authorized human
+attestation, a reason, and a policy rule permitting override.
+
+Proposal idempotency is scoped by `(authenticatedReplica, "SubmitProposal",
+idempotencyKey)`. The first committed outcome stores both the Proposal CID and
+result. Replaying the same tuple with the same Proposal CID MUST return that
+result; presenting a different Proposal CID under the tuple MUST fail with
+`IdempotencyConflict` and MUST NOT return or replace the prior result.
+
+A tuple mismatch MUST commit a `RejectionRecord{decision:"stale"}` and rejection
+LedgerEvent atomically with that idempotency result while leaving the Line
+unchanged. It MUST also commit the canonical RebaseEvidence and Shared
+RebaseRequired objects, set `rebaseEvidence` to that evidence CID, and make all
+three reachable. If the candidate head is unavailable because tuple comparison
+precedes object fetch, evidence uses `status:"unavailable"`; the authority MUST
+NOT fabricate an LCA. `RebaseRequired` is the transport projection of this
+durable result. After response loss or restart, replay returns byte-identical
+record, evidence, response, and observed tuple even if the Line has advanced
+again; it MUST NOT recompute a newer result. `facts` is null, while evidence,
+attestation, and Grant sets not evaluated on this early path are canonical empty
+sets.
+
+The authority samples `decisionTime` once per first-seen idempotency tuple. It is
+a canonical RFC 3339 UTC instant with seconds precision, MUST equal the outcome
+LedgerEvent's `recordedAt`, and MUST be no earlier than the previous event's
+`recordedAt`. Clock rollback causes `ClockRollback` and a fail-closed write pause
+rather than timestamp clamping. This time is authority-attested, not proof of
+external wall-clock truth; witnesses MAY enforce a declared maximum receive-time
+skew. Offline verification reproduces Grant checks from the committed time and
+ledger sequence and reports the deployment's time trust model.
 
 ### 13.2 Deterministic facts
 
@@ -833,7 +1085,13 @@ commit atomically while the Line head and sequence remain unchanged.
 
 Loom provenance uses DSSE envelopes containing in-toto Statement v1 subjects.
 Every attestation MUST subject-pin the Transform CID and, when it describes a
-result, MUST also include the result State CID.
+result, MUST also include the result State CID. For a SHA-256 CIDv1 Transform,
+the in-toto subject's `digest.sha256` value is the lowercase hexadecimal
+multihash digest embedded in the validated CID, equivalently
+`sha256(canonicalTransformBytes)`. It is NOT a new hash of the CID's textual or
+binary representation. `subject.name` SHOULD contain the canonical CID text, and
+verification MUST recompute the CID from the canonical Transform bytes before
+accepting the embedded digest.
 
 Initial predicates are:
 
@@ -865,10 +1123,13 @@ construction prevents detachment without introducing a hash cycle.
 
 ### 14.3 Approval invalidation
 
-An approval is valid only when its signature, actor key, Grant, requirement,
-Transform CID, result State CID, and evidence set all verify at admission. A new
-Transform CID or result State invalidates it. Approval inheritance is forbidden
-in version `0.1`.
+An approval is valid only when its signature, actor key, `approve` Grant action,
+requirement scope, Transform CID, result State CID, affected selectors/effects,
+and evidence set all verify at admission. The DSSE signer, predicate approver,
+and leaf Grant audience MUST be the same DID. Overrides apply the equivalent
+rule with the distinct `override` action and policy permission. A new Transform
+CID or result State invalidates approval. Approval inheritance is forbidden in
+version `0.1`.
 
 ## 15. Ledger and witnessed trust
 
@@ -886,6 +1147,7 @@ interface LedgerEvent {
     "admission" | "rejection" | "grant-change" | "key-change" | "policy-change" | "administrative";
   subject: Cid;
   previous: Cid | null;
+  recordedAt: string;
 }
 
 interface LedgerCheckpoint {
@@ -902,7 +1164,10 @@ interface LedgerCheckpoint {
 first event and otherwise contains the preceding LedgerEvent CID. An admission
 event's subject is its AdmissionRecord; a rejection event's subject is its
 RejectionRecord. Other event types subject-pin the immutable object describing
-the change. `lastEvent` is `null` only for an empty checkpoint.
+the change. `recordedAt` is canonical RFC 3339 UTC with seconds precision and is
+non-decreasing within one origin. For admission and rejection events it MUST
+equal the subject record's `decisionTime`. `lastEvent` is `null` only for an
+empty checkpoint.
 
 The normative Merkle construction follows RFC 6962 tree hashing with SHA-256:
 each leaf is `SHA-256(0x00 || canonicalLedgerEventBytes)` and each interior node
@@ -935,22 +1200,36 @@ Required operations are:
 HasObjects(cids) -> missing cids
 GetObjects(cids) -> verified object stream
 PutObjects(stream) -> stored or rejected objects
-GetLine(line, afterSequence?) -> head and optional event stream
-OpenChange(line, baseState, idempotencyKey) -> session
-AppendOperations(session, sequence, operations) -> acknowledged sequence
-SealChange(session, intent, recipe?) -> Transform CID
+GetLine(line, afterSequence?) -> head, sequence, and optional event stream
+OpenChange(line, expectedHead, expectedLineSequence, baseState, idempotencyKey) -> session
+AppendOperations(session, sequence, operations, idempotencyKey) -> acknowledged sequence and journal digest
+SealChange(session, expectedHead, expectedLineSequence, expectedAppendSequence, journalDigest, intent, recipe?, idempotencyKey) -> Transform CID and new Line tuple
 SubmitProposal(proposal) -> admission, rejection, or RebaseRequired
 GetProof(admission or ledger position) -> verification bundle
 ```
 
-All mutating calls require an idempotency key scoped to authenticated replica
-identity. Replayed calls MUST return the original committed result. Object
-transfer is naturally idempotent by CID.
+Every non-object mutating request carries an idempotency key. Authorities scope
+it by authenticated replica identity and operation name and atomically persist
+the canonical request digest with the committed result. A replay with the same
+digest MUST return the original result, including after response loss or session
+closure. Reuse with a different digest MUST return `IdempotencyConflict` without
+mutation. For `AppendOperations`, the stream sequence additionally deduplicates
+frames and rejects gaps; it does not replace request idempotency. `SealChange`
+binds the exact Local Line tuple, append sequence, and journal digest and commits
+its Transform, Local Line CAS, and idempotency result atomically. `PutObjects` is
+the explicit exception: CID plus verified bytes is its natural request identity,
+and supplying different bytes for a CID is `HashMismatch`, never a new write.
 
 Receivers MUST verify objects before promotion from quarantine, enforce object
 count and byte quotas, bound concurrency, and reject decompression or expansion
-bombs. A stale expected head returns `RebaseRequired` with the current head and
-deterministic LCA evidence; it MUST NOT act like an unleased force update.
+bombs. A stale `SubmitProposal` uses `Proposal.headTransform` as `candidateHead`
+and returns the durable RejectionRecord-backed `RebaseRequired` projection
+defined in §13.1. A stale Local `OpenChange` or `SealChange` uses the request's
+`expectedHead` as `candidateHead` because no new Transform has been committed;
+its canonical request-bound response and evidence are stored with the
+idempotency result. Replay returns that frozen result even if the Local Line
+advances again. Neither path may act like an unleased force update or recompute a
+different result on replay.
 
 Offline clients MAY append to Local Lines. Reconnection syncs immutable objects
 before submitting a Proposal. A client MUST retain unsynchronized reachable
@@ -1151,7 +1430,8 @@ conformant evidence.
 4. **Transforms exclude post-address signatures and provenance.** Proposal,
    attestation, AdmissionRecord, and ledger objects bind them without a hash cycle.
 5. **NodeIdent creation uses an authoring nonce, not the creating Transform CID.**
-6. **Changed merge/reapply results require fresh approval.**
+6. **Every new merge/reapply Transform requires fresh approval.** Approval is
+   not inherited even when the new Transform reproduces an identical State.
 7. **Only pinned hermetic Recipes may create verified automatic reapply results.**
 8. **DAG-CBOR/CIDv1/SHA-256 is the pre-1.0 target encoding.** Hash agility is
    designed but not activated.
@@ -1159,6 +1439,28 @@ conformant evidence.
 10. **Durability and recovery gates precede ecosystem and convenience features.**
 11. **SpaceId and LineId use nonce-based domain-separated derivation.** Neither
     depends on an object that embeds the derived identifier.
+12. **Shared Line admission is ancestry-preserving.** The expected head must be
+    an ancestor of the proposed head, and the complete introduced closure is
+    verified; rollback is a new descendant Transform, never pointer reassignment.
+13. **Identity and capability principals are continuous and least-privilege.**
+    Author signatures, Grant hops, leaf audiences, exact Space/Line/ledger scope,
+    Transform operations, governance actions, requirements, caveats, and complete
+    footprints bind the same actor without write/approve/override implication.
+14. **Recipe reapply is complete and atomic.** The Recipe must reproduce its
+    original authored result, and its verified ordered operation set is
+    integrated completely or not at all.
+15. **Concurrency and replay identities are explicit.** Every Line update leases
+    `(head, sequence)`; Local seals also lease the journal prefix; idempotency
+    keys bind one request digest to one durable result, including stale rejection.
+16. **in-toto SHA-256 subjects use the Transform object digest.** The digest is
+    extracted from a verified CID multihash, not computed over the CID itself.
+17. **Grant validity is ledger-verifiable.** Exact resource domains, half-open
+    time/sequence bounds, one monotonic authority-attested decision time, and one
+    ledger position are committed per outcome and reused for replay; external
+    wall-clock truth depends on the declared witness/time trust model.
+18. **Rebase outcomes are canonical and durable.** Shared stale outcomes bind a
+    rejection, evidence, and response; Local stale responses use the same evidence
+    schema, and idempotent replay never recomputes either.
 
 ### Open before `0.2`
 

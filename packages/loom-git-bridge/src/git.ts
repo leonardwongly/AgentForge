@@ -11,11 +11,70 @@
  * path yields a different ident (delete+add, matching git's default).
  */
 import { execFileSync } from "node:child_process";
+import { TextDecoder } from "node:util";
 import { sha256Hex, type Cell, type NodeIdent, type State } from "@agentforge/loom-core";
 import type { GitReader, GitTreeEntry, TransformStates } from "./types.js";
 
 /** Upper bound for captured git stdout (bytes); large enough for big blobs/trees. */
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
+const FULL_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const LS_TREE_METADATA = /^([0-7]{6}) (blob|tree|commit) ([0-9a-f]{40}|[0-9a-f]{64})$/;
+
+function decodeUtf8(bytes: Uint8Array, subject: string): string {
+  try {
+    // fatal prevents invalid bytes from aliasing valid U+FFFD content. Treat a
+    // leading BOM as content as well, rather than silently dropping it.
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new Error(`loom-git-bridge: ${subject} is not valid UTF-8`);
+  }
+}
+
+function parseLsTree(output: Buffer): ReadonlyArray<GitTreeEntry> {
+  const entries: GitTreeEntry[] = [];
+  let offset = 0;
+
+  while (offset < output.length) {
+    const nulIndex = output.indexOf(0, offset);
+    if (nulIndex === -1) {
+      throw new Error("loom-git-bridge: malformed git ls-tree output (missing NUL terminator)");
+    }
+
+    const record = output.subarray(offset, nulIndex);
+    offset = nulIndex + 1;
+    const tabIndex = record.indexOf(0x09);
+    if (tabIndex === -1) {
+      throw new Error("loom-git-bridge: malformed git ls-tree output (missing metadata separator)");
+    }
+
+    const metadata = decodeUtf8(record.subarray(0, tabIndex), "ls-tree metadata");
+    const match = LS_TREE_METADATA.exec(metadata);
+    if (match === null) {
+      throw new Error("loom-git-bridge: malformed git ls-tree metadata");
+    }
+
+    const mode = match[1];
+    const gitType = match[2];
+    const objectId = match[3];
+    if (mode === undefined || gitType === undefined || objectId === undefined) {
+      throw new Error("loom-git-bridge: malformed git ls-tree metadata");
+    }
+
+    const path = decodeUtf8(record.subarray(tabIndex + 1), `path for object ${objectId}`);
+    if (path.length === 0) {
+      throw new Error("loom-git-bridge: malformed git ls-tree output (empty path)");
+    }
+
+    entries.push({
+      path,
+      mode,
+      type: gitType === "blob" ? "blob" : "tree",
+      objectId
+    });
+  }
+
+  return entries;
+}
 
 /**
  * Deterministically derive a Cell's stable identity from its path. The same
@@ -33,12 +92,15 @@ export function nodeIdentForPath(path: string): NodeIdent {
  */
 export async function stateFromGitRef(reader: GitReader, ref: string): Promise<State> {
   const entries = await reader.lsTree(ref);
-  const cells: Record<string, Cell> = {};
+  const cells = Object.create(null) as Record<string, Cell>;
   for (const entry of entries) {
     if (entry.type !== "blob") {
       continue;
     }
-    const text = await reader.readFile(ref, entry.path);
+    const text =
+      entry.objectId !== undefined && reader.readBlob !== undefined
+        ? await reader.readBlob(entry.objectId)
+        : await reader.readFile(ref, entry.path);
     cells[entry.path] = {
       facet: "text",
       ident: nodeIdentForPath(entry.path),
@@ -62,15 +124,13 @@ export async function transformSetFromGit(
 
 /**
  * Real {@link GitReader} over the `git` CLI. Uses execFileSync with an argument
- * array (never a shell string), so refs/paths can never be interpreted by a
- * shell. The async signatures are honoured by wrapping synchronous output in a
- * resolved Promise.
+ * array (never a shell string). Git output remains bytes until it is decoded as
+ * strict UTF-8, and tree paths use NUL-delimited, non-quoted records.
  */
 export function execGitReader(repoDir: string): GitReader {
-  function runGit(args: ReadonlyArray<string>): string {
+  function runGit(args: ReadonlyArray<string>): Buffer {
     try {
       return execFileSync("git", ["-C", repoDir, ...args], {
-        encoding: "utf8",
         maxBuffer: GIT_MAX_BUFFER
       });
     } catch (error) {
@@ -79,34 +139,21 @@ export function execGitReader(repoDir: string): GitReader {
     }
   }
 
+  function readBlob(objectId: string): Promise<string> {
+    if (!FULL_OBJECT_ID.test(objectId)) {
+      throw new Error("loom-git-bridge: invalid full Git object ID");
+    }
+    return Promise.resolve(decodeUtf8(runGit(["cat-file", "blob", objectId]), `blob ${objectId}`));
+  }
+
   return {
     lsTree(ref: string): Promise<ReadonlyArray<GitTreeEntry>> {
-      const output = runGit(["ls-tree", "-r", ref]);
-      const entries: GitTreeEntry[] = [];
-      for (const line of output.split("\n")) {
-        if (line.length === 0) {
-          continue;
-        }
-        // Default format: "<mode> <type> <sha>\t<path>". Split once at the TAB
-        // so paths that contain spaces stay intact.
-        const tabIndex = line.indexOf("\t");
-        if (tabIndex === -1) {
-          continue;
-        }
-        const meta = line.slice(0, tabIndex);
-        const path = line.slice(tabIndex + 1);
-        const metaParts = meta.split(" ");
-        const mode = metaParts[0];
-        const type = metaParts[1];
-        if (mode === undefined || type === undefined) {
-          continue;
-        }
-        entries.push({ path, mode, type: type === "blob" ? "blob" : "tree" });
-      }
-      return Promise.resolve(entries);
+      return Promise.resolve(parseLsTree(runGit(["ls-tree", "-r", "-z", "--full-tree", ref])));
     },
+    readBlob,
     readFile(ref: string, path: string): Promise<string> {
-      return Promise.resolve(runGit(["show", `${ref}:${path}`]));
+      const subject = `blob ${ref}:${path}`;
+      return Promise.resolve(decodeUtf8(runGit(["show", `${ref}:${path}`]), subject));
     }
   };
 }

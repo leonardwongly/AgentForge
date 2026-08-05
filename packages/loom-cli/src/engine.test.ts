@@ -3,14 +3,17 @@ import { generateKeyPair } from "@agentforge/loom-provenance";
 import { describe, expect, it } from "vitest";
 import { ratify, verifyAttestation } from "./engine.js";
 
+const sensitiveTree = {
+  "README.md": "# Demo\n",
+  "src/app.ts": "export const x = 1;\n",
+  "src/billing/charge.ts": "export const charge = (): number => 1;\n"
+};
+
 const trees: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   base: { "README.md": "# Demo\n", "src/app.ts": "export const x = 1;\n" },
+  base_with_sensitive: sensitiveTree,
   head_clean: { "README.md": "# Demo v2\n", "src/app.ts": "export const x = 1;\n" },
-  head_sensitive: {
-    "README.md": "# Demo\n",
-    "src/app.ts": "export const x = 1;\n",
-    "src/billing/charge.ts": "export const charge = (): number => 1;\n"
-  }
+  head_sensitive: sensitiveTree
 };
 
 function fakeReader(): GitReader {
@@ -94,7 +97,7 @@ describe("loom CLI engine — git refs -> decision -> provenance", () => {
     expect(res.evaluation.result.status).toBe("pass");
   });
 
-  it("signs an attestation that independently verifies against the same head", async () => {
+  it("signs an attestation that independently verifies against the same transition", async () => {
     const key = generateKeyPair();
     const res = await ratify({
       ...baseReq(),
@@ -110,15 +113,18 @@ describe("loom CLI engine — git refs -> decision -> provenance", () => {
     }
     const verified = await verifyAttestation({
       reader: fakeReader(),
+      baseRef: "base",
       headRef: "head_sensitive",
       envelope,
       publicKeyPem: key.publicKeyPem
     });
     expect(verified.verdict.ok).toBe(true);
+    expect(verified.baseAddress).toBe(res.baseAddress);
     expect(verified.resultAddress).toBe(res.resultAddress);
+    expect(verified.subjectAddress).toBe(res.subjectAddress);
   });
 
-  it("rejects the attestation when verified against a different head (subject-pin)", async () => {
+  it("rejects the attestation when verified against a different head", async () => {
     const key = generateKeyPair();
     const res = await ratify({
       ...baseReq(),
@@ -133,11 +139,59 @@ describe("loom CLI engine — git refs -> decision -> provenance", () => {
     }
     const verified = await verifyAttestation({
       reader: fakeReader(),
+      baseRef: "base",
       headRef: "head_clean",
       envelope,
       publicKeyPem: key.publicKeyPem
     });
     expect(verified.verdict.ok).toBe(false);
+  });
+
+  it("rejects replay across bases when identical heads produce different policy outcomes", async () => {
+    const key = generateKeyPair();
+    const signed = await ratify({
+      ...baseReq(),
+      baseRef: "base",
+      headRef: "head_sensitive",
+      policyYaml: enforceBillingPolicy,
+      sign: { key, checkerDid: "did:loom:test", detectorSuiteVersion: "test@1", policyVersion: "1" }
+    });
+    const otherBase = await ratify({
+      ...baseReq(),
+      baseRef: "base_with_sensitive",
+      headRef: "head_sensitive",
+      policyYaml: enforceBillingPolicy
+    });
+
+    expect(signed.evaluation.result.status).toBe("block");
+    expect(otherBase.evaluation.result.status).toBe("pass");
+    expect(otherBase.resultAddress).toBe(signed.resultAddress);
+    expect(otherBase.baseAddress).not.toBe(signed.baseAddress);
+
+    const envelope = signed.envelope;
+    if (!envelope) {
+      throw new Error("envelope missing");
+    }
+    const original = await verifyAttestation({
+      reader: fakeReader(),
+      baseRef: "base",
+      headRef: "head_sensitive",
+      envelope,
+      publicKeyPem: key.publicKeyPem
+    });
+    const replayed = await verifyAttestation({
+      reader: fakeReader(),
+      baseRef: "base_with_sensitive",
+      headRef: "head_sensitive",
+      envelope,
+      publicKeyPem: key.publicKeyPem
+    });
+
+    expect(original.verdict).toEqual({ ok: true });
+    expect(replayed.verdict).toEqual({
+      ok: false,
+      reason: "subject does not match expected transition"
+    });
   });
 
   it("throws on invalid policy YAML", async () => {

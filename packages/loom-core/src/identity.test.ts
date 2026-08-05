@@ -143,3 +143,40 @@ describe("move invariant", () => {
     expect(resolveSelector(after, { nid: ident })?.path).toBe("src/new.ts");
   });
 });
+
+describe("State integrity regressions", () => {
+  it("uses a null-prototype cell map for empty states", () => {
+    expect(Object.getPrototypeOf(emptyState().cells)).toBeNull();
+  });
+
+  it("does not resolve inherited object properties as paths", () => {
+    const state: State = { kind: "state", cells: {} };
+    for (const path of ["__proto__", "constructor", "toString"]) {
+      expect(resolveSelector(state, { path })).toBeUndefined();
+    }
+  });
+
+  it("resolves prototype-like names when they are own paths", () => {
+    const cells = Object.create(null) as Record<string, Cell>;
+    const paths = ["__proto__", "constructor", "toString"];
+    for (const [ordinal, path] of paths.entries()) {
+      cells[path] = cellOf(mintNodeIdent(TX_A, ordinal, path), path);
+    }
+    const state: State = { kind: "state", cells };
+
+    for (const path of paths) {
+      expect(resolveSelector(state, { path })?.cell.text).toBe(path);
+    }
+  });
+
+  it("rejects duplicate NodeIdent values instead of silently choosing one path", () => {
+    const duplicate = mintNodeIdent(TX_A, 0, "a.ts");
+    const state = stateOf([
+      ["b.ts", cellOf(duplicate, "second")],
+      ["a.ts", cellOf(duplicate, "first")]
+    ]);
+
+    expect(() => deriveIdentityIndex(state)).toThrow(/duplicate NodeIdent.*a\.ts.*b\.ts/u);
+    expect(() => resolveSelector(state, { nid: duplicate })).toThrow(/duplicate NodeIdent/u);
+  });
+});

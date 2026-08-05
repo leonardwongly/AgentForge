@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 /** loom CLI entry: wires the real filesystem + git reader into {@link main}. */
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import process from "node:process";
+
 import { execGitReader } from "@agentforge/loom-git-bridge";
-import { main, type CliIo } from "./main.js";
+
+import { createNodeAtomicWriteOperations } from "./atomic-fs.js";
+import { createAtomicFileWriter, main, type CliIo } from "./main.js";
 
 const io: CliIo = {
   readFile: (path) => readFileSync(path, "utf8"),
-  writeFile: (path, content) => writeFileSync(path, content, "utf8"),
+  writeFilesAtomically: createAtomicFileWriter(createNodeAtomicWriteOperations()),
   makeReader: (repoDir) => execGitReader(repoDir),
   log: (message) => process.stdout.write(`${message}\n`),
   error: (message) => process.stderr.write(`${message}\n`)

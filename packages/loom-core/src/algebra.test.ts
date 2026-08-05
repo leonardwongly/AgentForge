@@ -229,6 +229,73 @@ describe("impliedEffects", () => {
     expect(testDelete).toContain("deletes_test");
   });
 
+  it("treats put_cell identity replacement as deletion plus edit", () => {
+    const base = stateOf([
+      ["src/a.ts", cellOf("nid:old", "old")],
+      ["src/a.test.ts", cellOf("nid:test-old", "old test")]
+    ]);
+
+    const sourceReplacement = impliedEffects(base, [
+      {
+        op: "put_cell",
+        at: "src/a.ts",
+        ident: "nid:new" as NodeIdent,
+        facet: "text",
+        text: "new"
+      }
+    ]);
+    expect(sourceReplacement).toEqual(expect.arrayContaining(["edits_source", "deletes_source"]));
+    expect(sourceReplacement).not.toContain("deletes_test");
+
+    const testReplacement = impliedEffects(base, [
+      {
+        op: "put_cell",
+        at: "src/a.test.ts",
+        ident: "nid:test-new" as NodeIdent,
+        facet: "text",
+        text: "new test"
+      }
+    ]);
+    expect(testReplacement).toEqual(
+      expect.arrayContaining(["edits_source", "deletes_source", "deletes_test"])
+    );
+
+    const sequentialReplacement = impliedEffects(emptyState(), [
+      {
+        op: "put_cell",
+        at: "src/generated.ts",
+        ident: "nid:first" as NodeIdent,
+        facet: "text",
+        text: "first"
+      },
+      {
+        op: "put_cell",
+        at: "src/generated.ts",
+        ident: "nid:second" as NodeIdent,
+        facet: "text",
+        text: "second"
+      }
+    ]);
+    expect(sequentialReplacement).toEqual(
+      expect.arrayContaining(["edits_source", "deletes_source"])
+    );
+  });
+
+  it("does not derive a deletion when put_cell preserves the existing identity", () => {
+    const base = stateOf([["src/a.ts", cellOf("nid:a", "old")]]);
+    expect(
+      impliedEffects(base, [
+        {
+          op: "put_cell",
+          at: "src/a.ts",
+          ident: "nid:a" as NodeIdent,
+          facet: "text",
+          text: "new"
+        }
+      ])
+    ).toEqual(["edits_source"]);
+  });
+
   it("move_cell implies moves_cell", () => {
     const base = stateOf([["a.ts", cellOf("nid:a", "A")]]);
     expect(
@@ -292,5 +359,50 @@ describe("verifyEffects", () => {
     expect(check.ok).toBe(false);
     expect(check.missing).toEqual(["deletes_source"]);
     expect(check.extra).toEqual(["changes_ci"]);
+  });
+});
+
+describe("State map and identity integrity regressions", () => {
+  it("preserves prototype-like path names as own cells", () => {
+    const paths = ["__proto__", "constructor", "toString"] as const;
+    const result = applyOps(
+      emptyState(),
+      paths.map((path, ordinal) => ({
+        op: "put_cell" as const,
+        at: path,
+        ident: `nid:special-${ordinal}` as NodeIdent,
+        facet: "text" as const,
+        text: path
+      }))
+    );
+    const state = expectApplied(result);
+
+    expect(Object.getPrototypeOf(state.cells)).toBeNull();
+    expect(Object.keys(state.cells).sort()).toEqual([...paths].sort());
+    for (const path of paths) {
+      expect(Object.hasOwn(state.cells, path)).toBe(true);
+      expect(requireCell(state, path).text).toBe(path);
+    }
+  });
+
+  it("fails a put_cell that would duplicate a NodeIdent at another path", () => {
+    const result = applyOps(emptyState(), [
+      { op: "put_cell", at: "a.ts", ident: "nid:duplicate" as NodeIdent, facet: "text", text: "A" },
+      { op: "put_cell", at: "b.ts", ident: "nid:duplicate" as NodeIdent, facet: "text", text: "B" }
+    ]);
+
+    expectPrecondition(result);
+    if (!result.ok) {
+      expect(result.error.detail).toMatch(/duplicate NodeIdent.*a\.ts.*b\.ts/u);
+    }
+  });
+
+  it("fails closed when the input State already contains duplicate identities", () => {
+    const cells = Object.create(null) as Record<string, Cell>;
+    cells["a.ts"] = cellOf("nid:duplicate", "A");
+    cells["b.ts"] = cellOf("nid:duplicate", "B");
+
+    const result = applyOps({ kind: "state", cells }, []);
+    expectPrecondition(result);
   });
 });

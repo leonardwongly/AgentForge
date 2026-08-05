@@ -5,11 +5,12 @@
  * it runs against a fake GitReader in tests.
  */
 import type { PullRequestReview } from "@agentforge/core";
-import { stateAddress, type Cid, type State } from "@agentforge/loom-core";
-import { stateFromGitRef, transformSetFromGit, type GitReader } from "@agentforge/loom-git-bridge";
+import { stateAddress, type Cid } from "@agentforge/loom-core";
+import { transformSetFromGit, type GitReader } from "@agentforge/loom-git-bridge";
 import {
   buildDeterministicCheckStatement,
   signStatement,
+  transitionSubjectCid,
   verifyProvenance,
   type DsseEnvelope,
   type KeyPair,
@@ -43,6 +44,7 @@ export interface RatifyResult {
   readonly evaluation: TransformEvaluation;
   readonly baseAddress: Cid;
   readonly resultAddress: Cid;
+  readonly subjectAddress: Cid;
   readonly envelope?: DsseEnvelope | undefined;
 }
 
@@ -66,12 +68,15 @@ export async function ratify(req: RatifyRequest): Promise<RatifyResult> {
   });
   const baseAddress = stateAddress(base);
   const resultAddress = stateAddress(result);
+  const subjectAddress = transitionSubjectCid({
+    baseState: baseAddress,
+    resultState: resultAddress
+  });
 
   if (!req.sign) {
-    return { evaluation, baseAddress, resultAddress };
+    return { evaluation, baseAddress, resultAddress, subjectAddress };
   }
   const statement = buildDeterministicCheckStatement({
-    transformCid: resultAddress,
     checkerDid: req.sign.checkerDid,
     detectorSuiteVersion: req.sign.detectorSuiteVersion,
     baseState: baseAddress,
@@ -81,11 +86,12 @@ export async function ratify(req: RatifyRequest): Promise<RatifyResult> {
     decision: evaluation.result.status
   });
   const envelope = signStatement(statement, req.sign.key);
-  return { evaluation, baseAddress, resultAddress, envelope };
+  return { evaluation, baseAddress, resultAddress, subjectAddress, envelope };
 }
 
 export interface VerifyRequest {
   readonly reader: GitReader;
+  readonly baseRef: string;
   readonly headRef: string;
   readonly envelope: DsseEnvelope;
   readonly publicKeyPem: string;
@@ -93,20 +99,29 @@ export interface VerifyRequest {
 
 export interface CliVerifyResult {
   readonly verdict: VerifyResult;
+  readonly baseAddress: Cid;
   readonly resultAddress: Cid;
+  readonly subjectAddress: Cid;
 }
 
 /**
- * Independently verify an attestation: re-derive the head State address from the
- * repo and confirm the signature + subject-pin bind the signed decision to it.
+ * Independently verify an attestation: re-derive both base and head State
+ * addresses from the repo, then confirm the signature, subject, and predicate
+ * bind the signed decision to that exact transition.
  */
 export async function verifyAttestation(req: VerifyRequest): Promise<CliVerifyResult> {
-  const headState: State = await stateFromGitRef(req.reader, req.headRef);
-  const resultAddress = stateAddress(headState);
+  const { base, result } = await transformSetFromGit(req.reader, req.baseRef, req.headRef);
+  const baseAddress = stateAddress(base);
+  const resultAddress = stateAddress(result);
+  const subjectAddress = transitionSubjectCid({
+    baseState: baseAddress,
+    resultState: resultAddress
+  });
   const verdict = verifyProvenance({
-    transformCid: resultAddress,
+    baseState: baseAddress,
+    resultState: resultAddress,
     envelope: req.envelope,
     publicKeyPem: req.publicKeyPem
   });
-  return { verdict, resultAddress };
+  return { verdict, baseAddress, resultAddress, subjectAddress };
 }

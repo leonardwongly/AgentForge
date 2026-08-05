@@ -5,8 +5,9 @@ export function formatRatify(res: RatifyResult): string {
   const decision = res.evaluation.result;
   const lines: string[] = [];
   lines.push(`decision: ${decision.status.toUpperCase()}`);
-  lines.push(`base:     ${res.baseAddress}`);
-  lines.push(`result:   ${res.resultAddress}`);
+  lines.push(`base:       ${res.baseAddress}`);
+  lines.push(`result:     ${res.resultAddress}`);
+  lines.push(`transition: ${res.subjectAddress}`);
   lines.push(`changed files: ${res.evaluation.diff.length}`);
   lines.push(`facts:         ${res.evaluation.facts.length}`);
 
@@ -46,6 +47,8 @@ export function formatVerify(res: CliVerifyResult): string {
   lines.push(
     res.verdict.ok ? "attestation: VALID" : `attestation: INVALID (${res.verdict.reason})`
   );
-  lines.push(`bound to result: ${res.resultAddress}`);
+  lines.push(`base:       ${res.baseAddress}`);
+  lines.push(`result:     ${res.resultAddress}`);
+  lines.push(`transition: ${res.subjectAddress}`);
   return lines.join("\n");
 }

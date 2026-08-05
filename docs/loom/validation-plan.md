@@ -85,17 +85,18 @@ Current prototype gaps that MUST remain visible in test reports include:
 
 ### 4.1 Encoding and object integrity (`LOOM-ENC`)
 
-| ID             | Requirement                                                                                                            |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `LOOM-ENC-001` | At least two independent processes encode every canonical vector to byte-identical DAG-CBOR.                           |
-| `LOOM-ENC-002` | CIDv1 text and bytes match published reference vectors for structured and raw objects.                                 |
-| `LOOM-ENC-003` | Non-canonical integers, lengths, duplicate keys, unsupported floats, and unknown same-version fields are rejected.     |
-| `LOOM-ENC-004` | A one-bit object mutation produces `HashMismatch` and never enters the reachable store.                                |
-| `LOOM-ENC-005` | Domain-separated node IDs, signatures, and cache keys cannot be substituted for object CIDs.                           |
-| `LOOM-ENC-006` | Chunked and unchunked representations reconstruct identical logical bytes; manifest size and chunk order are enforced. |
-| `LOOM-ENC-007` | Decoder allocation and nesting limits reject object, stack, and decompression bombs before unsafe allocation.          |
+| ID             | Requirement                                                                                                                  |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `LOOM-ENC-001` | At least two independent processes encode every canonical vector to byte-identical DAG-CBOR.                                 |
+| `LOOM-ENC-002` | CIDv1 text and bytes match published reference vectors for structured and raw objects.                                       |
+| `LOOM-ENC-003` | Non-canonical integers, lengths, duplicate keys, unsupported floats, and unknown same-version fields are rejected.           |
+| `LOOM-ENC-004` | A one-bit object mutation produces `HashMismatch` and never enters the reachable store.                                      |
+| `LOOM-ENC-005` | Domain-separated node IDs, signatures, and cache keys cannot be substituted for object CIDs.                                 |
+| `LOOM-ENC-006` | Chunked and unchunked representations reconstruct identical logical bytes; manifest size and chunk order are enforced.       |
+| `LOOM-ENC-007` | Decoder allocation and nesting limits reject object, stack, and decompression bombs before unsafe allocation.                |
+| `LOOM-ENC-008` | ReapplyWriteSet DAG-CBOR/CID vectors cover every Operation variant, operation ordering, path swaps, and create/delete cases. |
 
-`LOOM-ENC-001` through `007` are REQUIRED for `LOOM-CORE`.
+`LOOM-ENC-001` through `008` are REQUIRED for `LOOM-CORE`.
 
 ### 4.2 Paths, Cells, and States (`LOOM-STATE`)
 
@@ -129,19 +130,24 @@ Current prototype gaps that MUST remain visible in test reports include:
 
 The companion merge specification defines detailed cases. The minimum suite is:
 
-| ID               | Requirement                                                                                                          |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `LOOM-MERGE-001` | LCA selection is deterministic on linear, criss-cross, and multiple-best-ancestor DAGs.                              |
-| `LOOM-MERGE-002` | Random operation pairs satisfy no-silent-loss: every change appears in the result or a typed conflict.               |
-| `LOOM-MERGE-003` | Move/edit over the same NodeIdent composes when content and destination constraints permit.                          |
-| `LOOM-MERGE-004` | Delete/edit, divergent moves, binary changes, and overlapping text edits produce deterministic results or conflicts. |
-| `LOOM-MERGE-005` | Text three-way vectors match the published Loom reference behavior and preserve newline/encoding evidence.           |
-| `LOOM-MERGE-006` | Only a hermetic pinned Recipe may return a verified `CleanReapply`.                                                  |
-| `LOOM-MERGE-007` | Write-scope escape, missing input, toolchain mismatch, failed invariant, or nondeterminism never auto-admits.        |
-| `LOOM-MERGE-008` | Reapply executes against the new base and can transform newly introduced matching content.                           |
-| `LOOM-MERGE-009` | Unrelated base changes do not invalidate an effect fingerprint; affected unexpected changes cause `Divergence`.      |
-| `LOOM-MERGE-010` | A changed result produces a new Transform, re-derives facts, and invalidates every prior human approval.             |
-| `LOOM-MERGE-011` | Unresolved conflicts cannot advance a Shared Line.                                                                   |
+| ID               | Requirement                                                                                                                                                      |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LOOM-MERGE-001` | LCA selection is deterministic on linear, criss-cross, and multiple-best-ancestor DAGs.                                                                          |
+| `LOOM-MERGE-002` | Random operation pairs satisfy no-silent-loss: every change appears in the result or a typed conflict.                                                           |
+| `LOOM-MERGE-003` | Move/edit over the same NodeIdent composes when content and destination constraints permit.                                                                      |
+| `LOOM-MERGE-004` | Delete/edit, divergent moves, binary changes, and overlapping text edits produce deterministic results or conflicts.                                             |
+| `LOOM-MERGE-005` | Text three-way vectors match the published Loom reference behavior and preserve newline/encoding evidence.                                                       |
+| `LOOM-MERGE-006` | Only a hermetic pinned Recipe may return a verified `CleanReapply`.                                                                                              |
+| `LOOM-MERGE-007` | Write-scope escape, missing input, toolchain mismatch, failed invariant, or nondeterminism never auto-admits.                                                    |
+| `LOOM-MERGE-008` | Reapply executes against the new base and can transform newly introduced matching content.                                                                       |
+| `LOOM-MERGE-009` | Unrelated base changes do not invalidate an effect fingerprint; affected unexpected changes cause `Divergence`.                                                  |
+| `LOOM-MERGE-010` | Every newly constructed merge/reapply Transform re-derives facts and invalidates prior approvals, even with an identical result State.                           |
+| `LOOM-MERGE-011` | Unresolved conflicts cannot advance a Shared Line.                                                                                                               |
+| `LOOM-MERGE-012` | A multi-Cell Recipe result is installed as one complete verified write set or not at all; partial per-node grafts never land.                                    |
+| `LOOM-MERGE-013` | Overlapping Recipe units without a history-defined order fall back or conflict instead of using incidental iteration order.                                      |
+| `LOOM-MERGE-014` | Original-base Recipe output must be byte-identical to Transform.operations; alternate, reordered, net-zero, partial, or mixed programs hard-fail.                |
+| `LOOM-MERGE-015` | ReapplyWriteSet preserves exact engine operation order; malformed, reordered, duplicate, failing-precondition, and swapped-path programs are rejected.           |
+| `LOOM-MERGE-016` | ReapplyContext is identical across fresh runs and bound to output author/nonce/operations; global ordinals remain unique across multiple creation-bearing units. |
 
 Comparison against Git SHOULD be retained as a regression corpus, but Git parity
 is not a proof of Loom correctness. A conservative Loom conflict is acceptable;
@@ -149,17 +155,18 @@ silent loss or an unverified automatic resolution is not.
 
 ### 4.5 Working copy (`LOOM-WC`)
 
-| ID            | Requirement                                                                                                             |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `LOOM-WC-001` | Materialization validates all paths, collisions, sizes, modes, and object hashes before mutation.                       |
-| `LOOM-WC-002` | Files are written without following workspace symlinks; symlinks are created only after safe regular entries.           |
-| `LOOM-WC-003` | Crash at every journal step restores the prior complete tree or resumes to the new complete tree.                       |
-| `LOOM-WC-004` | Untracked paths are never overwritten without an explicit recorded user decision.                                       |
-| `LOOM-WC-005` | Status distinguishes edits, deletes, moves, type/mode changes, untracked paths, ignored paths, and collisions.          |
-| `LOOM-WC-006` | Concurrent editor writes during capture either produce a stable snapshot or a typed retry; mixed reads are rejected.    |
-| `LOOM-WC-007` | Materializing malicious paths, symlinks, device files, and oversized trees cannot escape or corrupt the workspace root. |
-| `LOOM-WC-008` | Concurrent ChangeSessions cannot capture or advance one another's journals, working copies, or Local Lines.             |
-| `LOOM-WC-009` | A sealed Transform and Local Line update become durable together; interrupted sealing remains recoverable.              |
+| ID            | Requirement                                                                                                                               |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `LOOM-WC-001` | Materialization validates all paths, collisions, sizes, modes, and object hashes before mutation.                                         |
+| `LOOM-WC-002` | Files are written without following workspace symlinks; symlinks are created only after safe regular entries.                             |
+| `LOOM-WC-003` | Crash at every journal step restores the prior complete tree or resumes to the new complete tree.                                         |
+| `LOOM-WC-004` | Untracked paths are never overwritten without an explicit recorded user decision.                                                         |
+| `LOOM-WC-005` | Status distinguishes edits, deletes, moves, type/mode changes, untracked paths, ignored paths, and collisions.                            |
+| `LOOM-WC-006` | Concurrent editor writes during capture either produce a stable snapshot or a typed retry; mixed reads are rejected.                      |
+| `LOOM-WC-007` | Materializing malicious paths, symlinks, device files, and oversized trees cannot escape or corrupt the workspace root.                   |
+| `LOOM-WC-008` | Concurrent ChangeSessions cannot capture or advance one another's journals, working copies, or Local Lines.                               |
+| `LOOM-WC-009` | Seal binds and freezes the exact append sequence and journal digest; delayed seals or concurrent appends return a typed retry.            |
+| `LOOM-WC-010` | Transform installation, Local Line tuple CAS, and seal idempotency commit atomically; one concurrent seal wins and stale/ABA tuples fail. |
 
 ### 4.6 Durable storage, recovery, GC, and backup (`LOOM-STORE`)
 
@@ -179,31 +186,43 @@ insufficient for a `LOOM-CORE` claim.
 
 ### 4.7 Identity and Grants (`LOOM-AUTH`)
 
-| ID              | Requirement                                                                                                               |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `LOOM-AUTH-001` | Transform signatures are domain-separated and subject-pinned to the exact Transform CID.                                  |
-| `LOOM-AUTH-002` | Historical signatures verify using the key valid at the admission position.                                               |
-| `LOOM-AUTH-003` | Revoked or not-yet-valid keys cannot authorize later admissions.                                                          |
-| `LOOM-AUTH-004` | Every Grant chain roots at the Line controller and every child is an attenuation.                                         |
-| `LOOM-AUTH-005` | Operation, selector, effect, deletion, sensitive-path, cell-count, time, and custom caveats fail closed.                  |
-| `LOOM-AUTH-006` | Undecidable selector inclusion is rejected rather than broadened.                                                         |
-| `LOOM-AUTH-007` | An agent cannot expand its own Grant or approve its own change under default policy.                                      |
-| `LOOM-AUTH-008` | Key compromise and controller recovery drills preserve historical verification and stop future compromised authorization. |
-| `LOOM-AUTH-009` | Space bootstrap rejects a descriptor without a valid initial-controller signature or configured trust root.               |
+| ID              | Requirement                                                                                                                                                                 |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LOOM-AUTH-001` | Transform signatures are domain-separated and subject-pinned to the exact Transform CID.                                                                                    |
+| `LOOM-AUTH-002` | Historical signatures verify using the key valid at the admission position.                                                                                                 |
+| `LOOM-AUTH-003` | Revoked or not-yet-valid keys cannot authorize later admissions.                                                                                                            |
+| `LOOM-AUTH-004` | A Grant chain roots at the controller, follows exact parent CIDs and issuer/audience continuity, attenuates every hop, and ends at the authorized actor.                    |
+| `LOOM-AUTH-005` | Operation, selector, effect, deletion, sensitive-path, cell-count, time, and custom caveats fail closed.                                                                    |
+| `LOOM-AUTH-006` | Undecidable selector inclusion is rejected rather than broadened.                                                                                                           |
+| `LOOM-AUTH-007` | An agent cannot expand its own Grant or approve its own change under default policy.                                                                                        |
+| `LOOM-AUTH-008` | Key compromise and controller recovery drills preserve historical verification and stop future compromised authorization.                                                   |
+| `LOOM-AUTH-009` | Space bootstrap rejects a descriptor without a valid initial-controller signature or configured trust root.                                                                 |
+| `LOOM-AUTH-010` | Every introduced Transform has an author-matching signature; a missing signature or different actor's co-signature cannot substitute.                                       |
+| `LOOM-AUTH-011` | Move authorization covers source identity/path and destination path; put operations cover creation paths, with out-of-scope targets rejected.                               |
+| `LOOM-AUTH-012` | `approve` and `override` are distinct scoped actions; approval-only Grants confer no write power and signer/predicate/leaf actors must match.                               |
+| `LOOM-AUTH-013` | Grant time/sequence intervals are half-open; exact lower/upper boundaries, malformed intervals, child subsets, clock rollback, and replay are deterministic.                |
+| `LOOM-AUTH-014` | Replaying a Grant across another Line, Space, or ledger origin fails even when the same controller DID and selectors are otherwise valid.                                   |
+| `LOOM-AUTH-015` | Grant keyId/algorithm substitution, unknown caveats, duplicate caveats, changed caveats, or caveat removal fail closed at every chain hop.                                  |
+| `LOOM-AUTH-016` | One leaf chain covers every operation name, source/destination footprint member, aggregate effect, and bound; partial-chain unions and every Operation variant fail closed. |
 
 ### 4.8 Shared admission (`LOOM-ADMIT`)
 
-| ID               | Requirement                                                                                                                             |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `LOOM-ADMIT-001` | Structural validation, authorization, facts, policy, evidence, approvals, record, ledger, and head update form one logical transaction. |
-| `LOOM-ADMIT-002` | Exactly one concurrent expected-head CAS wins; losers receive `RebaseRequired` and never overwrite.                                     |
-| `LOOM-ADMIT-003` | Replaying an idempotency key returns the original result and cannot bind a different request.                                           |
-| `LOOM-ADMIT-004` | `block` and unresolved conflict decisions cannot advance the Line.                                                                      |
-| `LOOM-ADMIT-005` | Override requires an authorized human, reason, exact result, and policy permission.                                                     |
-| `LOOM-ADMIT-006` | Crash after every transaction step recovers to old-complete or new-complete state.                                                      |
-| `LOOM-ADMIT-007` | Acknowledged admission remains reachable with its exact evidence, approval, Grant, and attestation sets.                                |
-| `LOOM-ADMIT-008` | Fact cache changes when any result-affecting input changes and remains stable otherwise.                                                |
-| `LOOM-ADMIT-009` | Rejection commits a complete RejectionRecord and ledger event while leaving the Line head and sequence unchanged.                       |
+| ID               | Requirement                                                                                                                                                            |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LOOM-ADMIT-001` | Structural validation, authorization, facts, policy, evidence, approvals, record, ledger, and head update form one logical transaction.                                |
+| `LOOM-ADMIT-002` | Exactly one concurrent `(expectedHead, expectedSequence)` CAS wins; stale-head, stale-sequence, and ABA-tuple losers receive `RebaseRequired`.                         |
+| `LOOM-ADMIT-003` | Replaying an idempotency key with the same request returns the original result; a different request gets `IdempotencyConflict`.                                        |
+| `LOOM-ADMIT-004` | `block` and unresolved conflict decisions cannot advance the Line.                                                                                                     |
+| `LOOM-ADMIT-005` | Override requires an authorized human, reason, exact result, and policy permission.                                                                                    |
+| `LOOM-ADMIT-006` | Crash after every transaction step recovers to old-complete or new-complete state.                                                                                     |
+| `LOOM-ADMIT-007` | Acknowledged admission remains reachable with its exact evidence, approval, Grant, and attestation sets.                                                               |
+| `LOOM-ADMIT-008` | Fact cache changes when any result-affecting input changes and remains stable otherwise.                                                                               |
+| `LOOM-ADMIT-009` | Rejection commits a complete RejectionRecord and ledger event while leaving the Line head and sequence unchanged.                                                      |
+| `LOOM-ADMIT-010` | An unrelated/old proposed head or reconciliation omitting the current head is rejected; rollback requires a new descendant Transform.                                  |
+| `LOOM-ADMIT-011` | The complete introduced Transform closure is traversed; omitting any intermediate/side Transform, signature, Grant, effect, or parent fails.                           |
+| `LOOM-ADMIT-012` | Facts and policy cover the current-Line-State-to-candidate transition, exposing deletions or effects hidden by side-history bases.                                     |
+| `LOOM-ADMIT-013` | Tuple mismatch atomically commits linked rejection/evidence/response; all invalid status-field combinations and non-null stale facts reject; replay is byte-identical. |
+| `LOOM-ADMIT-014` | Proposal Line, LineRef Space, every closure Transform/State/parent, every Grant scope, and pending LedgerEvent origin must match exactly.                              |
 
 ### 4.9 Provenance, ledger, and witnesses (`LOOM-TRUST`)
 
@@ -218,18 +237,22 @@ insufficient for a `LOOM-CORE` claim.
 | `LOOM-TRUST-007` | Witnesses refuse inconsistent checkpoints and emit durable split-view evidence.                                                                    |
 | `LOOM-TRUST-008` | Offline verification uses only the bundle and declared trust root and reports the exact trust topology.                                            |
 | `LOOM-TRUST-009` | Single-authority deployments cannot pass tests or emit metadata claiming independent witness trust without a separate administrative trust domain. |
+| `LOOM-TRUST-010` | An in-toto SHA-256 subject uses the verified Transform CID's multihash digest; hashing CID text/bytes again fails reference vectors.               |
 
 ### 4.10 Replication and synchronization (`LOOM-SYNC`)
 
-| ID              | Requirement                                                                                                   |
-| --------------- | ------------------------------------------------------------------------------------------------------------- |
-| `LOOM-SYNC-001` | Object transfer is idempotent, hash-verified, bounded, and restartable.                                       |
-| `LOOM-SYNC-002` | Missing dependencies remain quarantined until the reachable graph verifies.                                   |
-| `LOOM-SYNC-003` | Operation stream sequence numbers deduplicate retries and reject gaps or reordering.                          |
-| `LOOM-SYNC-004` | Offline Local Line objects remain protected from GC until sync acknowledgement or explicit abandonment.       |
-| `LOOM-SYNC-005` | Network partition and reconnect cannot roll back an acknowledged Shared Line head.                            |
-| `LOOM-SYNC-006` | Authentication, authorization, quota, and back-pressure failures are typed and do not partially mutate state. |
-| `LOOM-SYNC-007` | Malicious peers cannot cause unbounded DAG walks, allocations, proof work, or connection fan-out.             |
+| ID              | Requirement                                                                                                                                                   |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LOOM-SYNC-001` | Object transfer is idempotent, hash-verified, bounded, and restartable.                                                                                       |
+| `LOOM-SYNC-002` | Missing dependencies remain quarantined until the reachable graph verifies.                                                                                   |
+| `LOOM-SYNC-003` | Operation stream sequence numbers deduplicate retries and reject gaps or reordering.                                                                          |
+| `LOOM-SYNC-004` | Offline Local Line objects remain protected from GC until sync acknowledgement or explicit abandonment.                                                       |
+| `LOOM-SYNC-005` | Network partition and reconnect cannot roll back an acknowledged Shared Line head.                                                                            |
+| `LOOM-SYNC-006` | Authentication, authorization, quota, and back-pressure failures are typed and do not partially mutate state.                                                 |
+| `LOOM-SYNC-007` | Malicious peers cannot cause unbounded DAG walks, allocations, proof work, or connection fan-out.                                                             |
+| `LOOM-SYNC-008` | Open, append, seal, and submit retries after response loss/restart return the byte-identical full result/evidence; conflicting key reuse never mutates.       |
+| `LOOM-SYNC-009` | Seal retries bind Local Line tuple, append sequence, and journal digest; concurrent seal/append races cannot overwrite or mix journal prefixes.               |
+| `LOOM-SYNC-010` | Local stale OpenChange/SealChange uses expectedHead as candidateHead, links identical evidence/response fields, and replays frozen CIDs after later advances. |
 
 ### 4.11 Git interoperability (`LOOM-GIT`)
 
@@ -254,7 +277,9 @@ Before any real-project pilot, the implementation MUST complete:
   protocol frames;
 - adversarial recipe and sandbox-escape testing;
 - authorization property tests and privilege-escalation review;
-- replay, downgrade, stale-approval, and signature-confusion tests;
+- replay, downgrade, stale-approval, signature/key/algorithm confusion,
+  cross-Line/Space/origin Grant substitution, unknown-caveat, clock-rollback,
+  and approval/override capability-substitution tests;
 - denial-of-service tests with deep DAGs, large objects, hot Lines, and proof
   requests; and
 - an independent review before Loom becomes the sole authoritative history for
@@ -267,15 +292,15 @@ policy success proves software correctness.
 
 The following fault points are REQUIRED where the component exists:
 
-| Component      | Injected failures                                                                                                |
-| -------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Object store   | process kill, machine restart, disk full, short write, corrupted temp object, failed flush, failed rename        |
-| Working copy   | kill between every journal step, editor race, permission loss, symlink swap, case collision                      |
-| Admission      | kill before/after object promotion, record creation, ledger append, head CAS, idempotency commit, response write |
-| Database       | transaction abort, connection loss, primary failover, stale replica read, serialization retry                    |
-| Sync           | disconnect at every frame, duplicate frame, missing frame, reordered frame, malicious CID, quota exhaustion      |
-| Ledger/witness | inconsistent checkpoint, unavailable quorum, stale checkpoint, forged signature, proof truncation                |
-| Backup/restore | missing segment, stale key metadata, partial object set, corrupt ledger, wrong configuration                     |
+| Component      | Injected failures                                                                                                                                      |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Object store   | process kill, machine restart, disk full, short write, corrupted temp object, failed flush, failed rename                                              |
+| Working copy   | kill between every journal step, editor/concurrent-seal/delayed-seal race, journal append after request, permission loss, symlink swap, case collision |
+| Admission      | kill before/after object promotion, record creation, ledger append, head CAS, idempotency commit, response write                                       |
+| Database       | transaction abort, connection loss, primary failover, stale replica read, serialization retry                                                          |
+| Sync           | disconnect/response loss before and after commit, duplicate/missing/reordered frame, conflicting idempotency reuse, malicious CID, quota exhaustion    |
+| Ledger/witness | inconsistent checkpoint, unavailable quorum, stale checkpoint, forged signature, proof truncation                                                      |
+| Backup/restore | missing segment, stale key metadata, partial object set, corrupt ledger, wrong configuration                                                           |
 
 Each fault test records expected old/new state, actual recovery state, reachable
 roots, and whether an acknowledgement had been issued.
@@ -285,6 +310,8 @@ roots, and whether an acknowledgement had been issued.
 ### Phase 0 — Specification
 
 - Every normative object has a non-circular address construction.
+- ReapplyContext/WriteSet, closed RebaseEvidence/RebaseRequired variants, and
+  Grant caveat/key/resource schemas have canonical cross-implementation vectors.
 - The decision register is internally consistent.
 - Test IDs cover every non-negotiable invariant.
 - Current implementation gaps are explicit.
@@ -297,13 +324,17 @@ roots, and whether an acknowledgement had been issued.
 - Cross-process canonical vectors pass.
 - A fuzzed Git corpus round-trips within declared interoperability limits.
 - Crash recovery and clean-room restore pass.
+- Local Line tuple-CAS, exact journal-prefix sealing, and concurrent-seal tests pass.
 - Zero silent-loss findings remain open.
 
 ### Phase 2 — Shared authority
 
 - All `LOOM-AUTH`, `LOOM-ADMIT`, and non-witness `LOOM-TRUST` tests pass.
-- Concurrent admission and idempotency tests pass under load.
-- Unauthorized and stale-approved proposals cannot advance a Shared Line.
+- Concurrent tuple-CAS admission and request-bound idempotency tests pass under load.
+- Byte-identical stale-record/evidence/response replay and
+  decision-time/Grant-boundary/domain/caveat tests pass.
+- Unrelated-head, incomplete-closure, unauthorized, and stale-approved proposals
+  cannot advance a Shared Line.
 - An acknowledged admission survives every declared fault.
 
 ### Phase 3 — Agent-native protocol

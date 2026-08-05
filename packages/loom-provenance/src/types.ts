@@ -4,7 +4,7 @@
  * Signed provenance for Loom changes, assembled from established standards
  * (in-toto Statement v1 + DSSE envelope + Ed25519 via node:crypto) rather than
  * reinvented crypto. It binds a deterministic-check decision to a specific
- * Transform via the in-toto subject digest (the "subject-pin", design §9.5).
+ * base-to-result State transition via the in-toto subject digest.
  *
  * Honest scope: this produces and verifies signed, subject-pinned attestations.
  * It does NOT integrate a transparency log / Rekor / witnesses (networked,
@@ -48,11 +48,15 @@ export interface InTotoStatement<P> {
   readonly predicate: P;
 }
 
+/** The independently addressable inputs of one base-to-result transition. */
+export interface StateTransitionInput {
+  readonly baseState: Cid;
+  readonly resultState: Cid;
+}
+
 export interface DeterministicCheckPredicate {
   readonly checker: { readonly did: string; readonly detectorSuiteVersion: string };
-  readonly inputs: {
-    readonly baseState: string;
-    readonly resultState: string;
+  readonly inputs: StateTransitionInput & {
     readonly policyVersion: string;
   };
   readonly facts: ReadonlyArray<VerifiedFact>;
@@ -61,15 +65,18 @@ export interface DeterministicCheckPredicate {
   readonly decision: "pass" | "warn" | "block";
 }
 
-export interface DeterministicCheckInput {
-  readonly transformCid: Cid;
+export interface DeterministicCheckInput extends StateTransitionInput {
   readonly checkerDid: string;
   readonly detectorSuiteVersion: string;
-  readonly baseState: Cid;
-  readonly resultState: Cid;
   readonly policyVersion: string;
   readonly facts: ReadonlyArray<VerifiedFact>;
   readonly decision: "pass" | "warn" | "block";
+}
+
+/** Expected transition and trust material used to verify an untrusted envelope. */
+export interface VerifyProvenanceInput extends StateTransitionInput {
+  readonly envelope: DsseEnvelope;
+  readonly publicKeyPem: string;
 }
 
 export type VerifyResult = { readonly ok: true } | { readonly ok: false; readonly reason: string };

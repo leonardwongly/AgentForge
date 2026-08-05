@@ -11,12 +11,19 @@ governance decision (`loom-ratify`) → optional signed provenance
 loom ratify --repo <dir> --base <ref> --head <ref> --policy <file>
             [--sign [--out <file>] [--pubkey-out <file>] [--did <did>] [--policy-version <v>]]
             [--space <id>] [--line <ref>] [--proposal <id>] [--title <t>] [--author <login>]
-loom verify --repo <dir> --head <ref> --env <file> --pubkey <file>
+loom verify --repo <dir> --base <ref> --head <ref> --env <file> --pubkey <file>
 ```
 
 `ratify` exits non-zero when the decision is `block`, so it is CI-usable.
-`verify` re-derives the head `State` address from the repo and confirms the
-signature **and** subject-pin bind the signed decision to exactly that change.
+When `--sign` is used, evaluation and signing finish before any artifact is
+written. The envelope and verification public key are then staged beside their
+respective targets and committed as one rename-and-rollback operation; a
+reported staging or commit failure preserves both previous artifacts and emits
+no artifact-success message.
+
+`verify` re-derives both the base and head `State` addresses from the repo and
+confirms the signature, transition subject, and predicate inputs bind the signed
+decision to exactly that base-to-result change.
 
 ## Run it (via tsx; the workspace runs TypeScript directly)
 
@@ -26,13 +33,13 @@ pnpm exec tsx packages/loom-cli/src/index.ts \
   ratify --repo /path/to/repo --base HEAD~1 --head HEAD --policy policy.yaml --sign
 
 pnpm exec tsx packages/loom-cli/src/index.ts \
-  verify --repo /path/to/repo --head HEAD --env loom-attestation.json --pubkey loom-attestation.pub.pem
+  verify --repo /path/to/repo --base HEAD~1 --head HEAD \
+  --env loom-attestation.json --pubkey loom-attestation.pub.pem
 ```
 
-Verified end-to-end against a real two-commit repo: a `src/billing/**` change
-is **blocked** (required reviewer pending); once signed, the attestation
-**verifies** against the same head and is **rejected** (`subject digest does not
-match transform`) against a different head.
+The attestation verifies only against the same base/head transition. Even when
+two evaluations have an identical head State, an envelope signed for one base
+is rejected for the other because the canonical transition subjects differ.
 
 ## Honest scope
 

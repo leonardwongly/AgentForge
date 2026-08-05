@@ -55,7 +55,7 @@ const codemod: Recipe = {
 
 describe("loom-core integration — codemod → reapply → governance", () => {
   it("authors the codemod result over the base (reapply is the authoring primitive)", () => {
-    const authored = reapply(codemod, base, base);
+    const authored = reapply(codemod, base, base, codemod.toolchain);
     expect(authored.kind).toBe("CleanReapply");
     if (authored.kind === "CleanReapply") {
       expect(textAt(authored.resultState, "callers/a.ts")).toBe("foo(x, ctx)");
@@ -64,13 +64,13 @@ describe("loom-core integration — codemod → reapply → governance", () => {
   });
 
   it("recomputes over an advanced base that added a conflicting call", () => {
-    const authored = reapply(codemod, base, base);
+    const authored = reapply(codemod, base, base, codemod.toolchain);
     if (authored.kind !== "CleanReapply") throw new Error("authoring failed");
     // Base advances: a teammate adds foo(y) on callers/a.ts.
     const advanced = requireState(base, [
       { op: "put_cell", at: "callers/a.ts", ident: nidA, facet: "text", text: "foo(x) foo(y)" }
     ]);
-    const outcome = reapply(codemod, authored.resultState, advanced);
+    const outcome = reapply(codemod, authored.resultState, advanced, codemod.toolchain);
     expect(outcome.kind).toBe("CleanReapply");
     if (outcome.kind === "CleanReapply") {
       // The new call is transformed too — the intent, not the old diff, was rebased.
@@ -115,8 +115,15 @@ describe("loom-core integration — codemod → reapply → governance", () => {
       chain: [grant],
       actor: agent,
       controller,
-      requestedOps: ["patch_text"],
-      cellsTouched: ["callers/a.ts"],
+      base,
+      ops: [
+        {
+          op: "patch_text",
+          sel: { path: "callers/a.ts" },
+          range: [0, 0],
+          text: "// governed\n"
+        }
+      ],
       effects: ["edits_source"]
     });
     expect(okDecision.ok).toBe(true);
@@ -125,15 +132,23 @@ describe("loom-core integration — codemod → reapply → governance", () => {
       chain: [grant],
       actor: agent,
       controller,
-      requestedOps: ["patch_text"],
-      cellsTouched: ["secrets/key.txt"], // outside cellSelectors -> fail closed
+      base,
+      ops: [
+        {
+          op: "put_cell",
+          at: "secrets/key.txt",
+          ident: mintNodeIdent(T0, 3, "secrets/key.txt"),
+          facet: "text",
+          text: "not-a-secret"
+        }
+      ],
       effects: ["edits_source"]
     });
     expect(denied.ok).toBe(false);
   });
 
   it("produces a stable, field-order-insensitive fact cache key", () => {
-    const authored = reapply(codemod, base, base);
+    const authored = reapply(codemod, base, base, codemod.toolchain);
     if (authored.kind !== "CleanReapply") throw new Error("authoring failed");
     const resultCid = stateAddress(authored.resultState);
     const k1 = factCacheKey({

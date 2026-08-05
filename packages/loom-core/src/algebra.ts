@@ -1,4 +1,4 @@
-import { resolveSelector } from "./identity.js";
+import { deriveIdentityIndex, resolveSelector } from "./identity.js";
 import type { ApplyResult, Cell, Effect, EffectCheck, Op, State } from "./types.js";
 
 const TEST_PATH = /(^|\/)(?:tests?|__tests__)\/|\.(?:test|spec)\.[a-z0-9]+$/iu;
@@ -10,7 +10,11 @@ export function isTestPath(path: string): boolean {
 
 /** Apply a sequence of Ops to a State, checking preconditions. Pure. */
 export function applyOps(state: State, ops: ReadonlyArray<Op>): ApplyResult {
-  const cells: Record<string, Cell> = { ...state.cells };
+  const cells = cloneCells(state.cells);
+  const inputIntegrityError = identityIntegrityError(cells);
+  if (inputIntegrityError !== undefined) {
+    return fail("precondition", inputIntegrityError);
+  }
 
   for (const op of ops) {
     switch (op.op) {
@@ -20,6 +24,10 @@ export function applyOps(state: State, ops: ReadonlyArray<Op>): ApplyResult {
             ? { facet: op.facet, ident: op.ident, text: op.text }
             : { facet: op.facet, ident: op.ident, text: op.text, mode: op.mode };
         cells[op.at] = cell;
+        const integrityError = identityIntegrityError(cells);
+        if (integrityError !== undefined) {
+          return fail("precondition", integrityError);
+        }
         break;
       }
       case "delete_cell": {
@@ -35,7 +43,7 @@ export function applyOps(state: State, ops: ReadonlyArray<Op>): ApplyResult {
         if (!found) {
           return fail("precondition", `move_cell: selector does not resolve`);
         }
-        if (op.to !== found.path && cells[op.to] !== undefined) {
+        if (op.to !== found.path && Object.hasOwn(cells, op.to)) {
           return fail("precondition", `move_cell: target path already occupied: ${op.to}`);
         }
         // Identity and content are preserved across the move.
@@ -71,22 +79,48 @@ export function applyOps(state: State, ops: ReadonlyArray<Op>): ApplyResult {
   return { ok: true, state: { kind: "state", cells } };
 }
 
+function cloneCells(source: Readonly<Record<string, Cell>>): Record<string, Cell> {
+  const cells = Object.create(null) as Record<string, Cell>;
+  for (const [path, cell] of Object.entries(source)) {
+    cells[path] = cell;
+  }
+  return cells;
+}
+
+function identityIntegrityError(cells: Readonly<Record<string, Cell>>): string | undefined {
+  try {
+    deriveIdentityIndex({ kind: "state", cells });
+    return undefined;
+  } catch (error) {
+    return error instanceof Error ? error.message : "loom: invalid State identity index";
+  }
+}
+
 function fail(code: "precondition" | "scope_violation", detail: string): ApplyResult {
   return { ok: false, error: { code, detail } };
 }
 
-/** Structural effects implied by ops against a base State (conservative). */
+/** Structural effects implied by ordered ops against a base State (conservative). */
 export function impliedEffects(base: State, ops: ReadonlyArray<Op>): ReadonlyArray<Effect> {
   const effects = new Set<Effect>();
+  let current = base;
+
   for (const op of ops) {
     switch (op.op) {
       case "put_cell": {
         effects.add("edits_source");
+        const replaced = Object.hasOwn(current.cells, op.at) ? current.cells[op.at] : undefined;
+        if (replaced !== undefined && replaced.ident !== op.ident) {
+          effects.add("deletes_source");
+          if (isTestPath(op.at)) {
+            effects.add("deletes_test");
+          }
+        }
         break;
       }
       case "patch_text": {
         effects.add("edits_source");
-        const found = resolveSelector(base, op.sel);
+        const found = resolveSelector(current, op.sel);
         if (found && isTestPath(found.path)) {
           effects.add("skips_test");
         }
@@ -98,7 +132,7 @@ export function impliedEffects(base: State, ops: ReadonlyArray<Op>): ReadonlyArr
       }
       case "delete_cell": {
         effects.add("deletes_source");
-        const found = resolveSelector(base, op.sel);
+        const found = resolveSelector(current, op.sel);
         if (found && isTestPath(found.path)) {
           effects.add("deletes_test");
         }
@@ -106,6 +140,11 @@ export function impliedEffects(base: State, ops: ReadonlyArray<Op>): ReadonlyArr
       }
       default:
         break;
+    }
+
+    const applied = applyOps(current, [op]);
+    if (applied.ok) {
+      current = applied.state;
     }
   }
   return [...effects];

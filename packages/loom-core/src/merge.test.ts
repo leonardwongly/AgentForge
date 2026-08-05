@@ -216,3 +216,133 @@ describe("mergeStates", () => {
     expect(textAt(candidate, "b.ts")).toBe("keep ours");
   });
 });
+
+describe("merge integrity regressions", () => {
+  const nidA = mintNodeIdent(TX, 10, "a.ts");
+  const nidB = mintNodeIdent(TX, 11, "b.ts");
+
+  function safeStateOf(entries: ReadonlyArray<readonly [string, Cell]>): State {
+    return { kind: "state", cells: Object.fromEntries(entries) };
+  }
+
+  it("preserves independent cells at prototype-like paths", () => {
+    const ours = safeStateOf([["__proto__", cellOf(nidA, "ours")]]);
+    const theirs = safeStateOf([["constructor", cellOf(nidB, "theirs")]]);
+
+    const { candidate, conflicts } = mergeStates(safeStateOf([]), ours, theirs);
+
+    expect(conflicts).toHaveLength(0);
+    expect(Object.getPrototypeOf(candidate.cells)).toBeNull();
+    expect(Object.hasOwn(candidate.cells, "__proto__")).toBe(true);
+    expect(Object.hasOwn(candidate.cells, "constructor")).toBe(true);
+    expect(textAt(candidate, "__proto__")).toBe("ours");
+    expect(textAt(candidate, "constructor")).toBe("theirs");
+  });
+
+  it("emits a path-collision instead of overwriting concurrent adds at one path", () => {
+    const base = safeStateOf([]);
+    const ours = safeStateOf([["shared.ts", cellOf(nidA, "ours")]]);
+    const theirs = safeStateOf([["shared.ts", cellOf(nidB, "theirs")]]);
+
+    const merged = mergeStates(base, ours, theirs);
+    const repeated = mergeStates(base, ours, theirs);
+    const expectedWinner = [nidA, nidB].sort()[0];
+    const expectedLoser = [nidA, nidB].sort()[1];
+
+    expect(merged).toEqual(repeated);
+    expect(merged.conflicts).toHaveLength(1);
+    expect(merged.conflicts[0]?.kind).toBe("path-collision");
+    expect(merged.conflicts[0]?.path).toBe("shared.ts");
+    expect(merged.conflicts[0]?.nid).toBe(expectedWinner);
+    expect(merged.conflicts[0]?.otherNid).toBe(expectedLoser);
+    expect(merged.conflicts[0]?.ours).toBe("ours");
+    expect(merged.conflicts[0]?.theirs).toBe("theirs");
+    expect(merged.candidate.cells["shared.ts"]?.ident).toBe(expectedWinner);
+  });
+
+  it("emits a deterministic move/move conflict for divergent moves", () => {
+    const base = stateOf([["a.ts", cellOf(nidA, "same")]]);
+    const ours = stateOf([["ours.ts", cellOf(nidA, "same")]]);
+    const theirs = stateOf([["theirs.ts", cellOf(nidA, "same")]]);
+
+    const merged = mergeStates(base, ours, theirs);
+
+    expect(merged.conflicts).toHaveLength(1);
+    expect(merged.conflicts[0]?.kind).toBe("move/move");
+    expect(merged.conflicts[0]?.basePath).toBe("a.ts");
+    expect(merged.conflicts[0]?.oursPath).toBe("ours.ts");
+    expect(merged.conflicts[0]?.theirsPath).toBe("theirs.ts");
+    expect(merged.candidate.cells["ours.ts"]?.ident).toBe(nidA);
+    expect(merged.candidate.cells["theirs.ts"]).toBeUndefined();
+  });
+
+  it("emits a binary conflict for competing mode changes", () => {
+    const baseCell: Cell = { ...cellOf(nidA, "same"), mode: 0o644 };
+    const oursCell: Cell = { ...baseCell, mode: 0o755 };
+    const theirsCell: Cell = { ...baseCell, mode: 0o600 };
+
+    const merged = mergeStates(
+      stateOf([["tool", baseCell]]),
+      stateOf([["tool", oursCell]]),
+      stateOf([["tool", theirsCell]])
+    );
+
+    expect(merged.conflicts).toHaveLength(1);
+    expect(merged.conflicts[0]?.kind).toBe("binary");
+    expect(merged.conflicts[0]?.baseMode).toBe(0o644);
+    expect(merged.conflicts[0]?.oursMode).toBe(0o755);
+    expect(merged.conflicts[0]?.theirsMode).toBe(0o600);
+    expect(merged.candidate.cells["tool"]?.mode).toBe(0o755);
+  });
+
+  it("does not run textual diff3 over competing bytes-facet changes", () => {
+    const baseCell: Cell = { facet: "bytes", ident: nidA, text: "base" };
+    const oursCell: Cell = { ...baseCell, text: "ours" };
+    const theirsCell: Cell = { ...baseCell, text: "theirs" };
+
+    const merged = mergeStates(
+      stateOf([["asset.bin", baseCell]]),
+      stateOf([["asset.bin", oursCell]]),
+      stateOf([["asset.bin", theirsCell]])
+    );
+
+    expect(merged.conflicts).toHaveLength(1);
+    expect(merged.conflicts[0]?.kind).toBe("binary");
+    expect(merged.conflicts[0]?.baseFacet).toBe("bytes");
+    expect(merged.conflicts[0]?.ours).toBe("ours");
+    expect(merged.conflicts[0]?.theirs).toBe("theirs");
+    expect(textAt(merged.candidate, "asset.bin")).toBe("ours");
+  });
+
+  it("fails closed before merging a State with duplicate NodeIdent values", () => {
+    const duplicate = safeStateOf([
+      ["b.ts", cellOf(nidA, "second")],
+      ["a.ts", cellOf(nidA, "first")]
+    ]);
+
+    expect(() => mergeStates(duplicate, duplicate, duplicate)).toThrow(
+      /duplicate NodeIdent.*a\.ts.*b\.ts/u
+    );
+  });
+});
+
+describe("merge cell metadata integrity", () => {
+  it("emits a binary conflict when facet and mode changes compete", () => {
+    const nid = mintNodeIdent(TX, 12, "asset");
+    const baseCell: Cell = { facet: "text", ident: nid, text: "same", mode: 0o644 };
+    const oursCell: Cell = { ...baseCell, facet: "bytes" };
+    const theirsCell: Cell = { ...baseCell, mode: 0o755 };
+
+    const merged = mergeStates(
+      stateOf([["asset", baseCell]]),
+      stateOf([["asset", oursCell]]),
+      stateOf([["asset", theirsCell]])
+    );
+
+    expect(merged.conflicts).toHaveLength(1);
+    expect(merged.conflicts[0]?.kind).toBe("binary");
+    expect(merged.conflicts[0]?.baseFacet).toBe("text");
+    expect(merged.conflicts[0]?.oursFacet).toBe("bytes");
+    expect(merged.conflicts[0]?.theirsMode).toBe(0o755);
+  });
+});

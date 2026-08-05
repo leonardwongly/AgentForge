@@ -23,7 +23,8 @@ import type {
   NodeSelector,
   Recipe,
   ReapplyOutcome,
-  State
+  State,
+  ToolchainLock
 } from "./types.js";
 
 /** path -> recomputed cell text. */
@@ -42,29 +43,81 @@ interface EngineRunner {
 
 type HardFailureReason = Extract<ReapplyOutcome, { readonly kind: "HardFailure" }>["reason"];
 
+function toolchainLocksEqual(expected: ToolchainLock, actual: ToolchainLock): boolean {
+  return (
+    expected.engineDigest === actual.engineDigest &&
+    expected.runtimeDigest === actual.runtimeDigest &&
+    environmentsEqual(expected.env, actual.env)
+  );
+}
+
+/** Compare environment locks as canonical key/value maps, independent of insertion order. */
+function environmentsEqual(
+  expected: Readonly<Record<string, string>> | undefined,
+  actual: Readonly<Record<string, string>> | undefined
+): boolean {
+  if (expected === undefined || actual === undefined) {
+    return expected === actual;
+  }
+
+  const expectedEntries = canonicalEnvironmentEntries(expected);
+  const actualEntries = canonicalEnvironmentEntries(actual);
+  return (
+    expectedEntries.length === actualEntries.length &&
+    expectedEntries.every(
+      ([key, value], index) =>
+        key === actualEntries[index]?.[0] && value === actualEntries[index]?.[1]
+    )
+  );
+}
+
+function canonicalEnvironmentEntries(
+  environment: Readonly<Record<string, string>>
+): ReadonlyArray<readonly [string, string]> {
+  return Object.entries(environment).sort(([left], [right]) =>
+    left < right ? -1 : left > right ? 1 : 0
+  );
+}
+
 /**
  * Advance one recipe-bearing change onto `newBase` by recomputing it (§3.2).
  *
  * Outcomes:
- * - `CleanReapply`: the rule ran hermetically, stayed in `writeScope`, passed the
- *   run-twice self-check and all invariants. `changedResult` reports whether the
- *   recomputed tree differs from `originalResultState` (which invalidates prior
- *   approvals upstream, §4.2).
+ * - `CleanReapply`: the pinned rule ran under the exact declared toolchain,
+ *   stayed in `writeScope`, passed the run-twice self-check and all invariants.
+ *   `changedResult` reports whether the recomputed tree differs from
+ *   `originalResultState` (which invalidates prior approvals upstream, §4.2).
  * - `Divergence`: an invariant or `expectedResultDigest` was violated; never
  *   auto-landed.
- * - `HardFailure`: nondeterministic recipe, invalid rule, vanished input, a write
- *   escaping `writeScope`, or a failed determinism self-check. The caller falls
- *   back to text 3-way.
+ * - `HardFailure`: non-pinned recipe, missing or mismatched execution toolchain,
+ *   invalid rule, vanished input, a write escaping `writeScope`, or a failed
+ *   determinism self-check. The caller falls back to text 3-way.
  */
 export function reapply(
   recipe: Recipe,
   originalResultState: State,
-  newBase: State
+  newBase: State,
+  executionToolchain: ToolchainLock
 ): ReapplyOutcome {
-  if (recipe.determinismClass === "nondeterministic") {
+  if (recipe.determinismClass !== "pinned") {
     return hardFailure(
       "nondeterministic",
-      "recipe declares a nondeterministic determinism class; never reapplied"
+      `recipe determinism class "${recipe.determinismClass}" is not pinned; never reapplied`
+    );
+  }
+
+  // This remains an explicit runtime guard even though the TypeScript API makes
+  // the argument mandatory: untyped callers and decoded data must fail closed.
+  if (executionToolchain === undefined) {
+    return hardFailure(
+      "toolchain_mismatch",
+      "an explicit execution ToolchainLock is required for reapply"
+    );
+  }
+  if (!toolchainLocksEqual(recipe.toolchain, executionToolchain)) {
+    return hardFailure(
+      "toolchain_mismatch",
+      "execution ToolchainLock does not exactly match recipe.toolchain"
     );
   }
 
@@ -170,7 +223,7 @@ function buildRegexReplace(rule: Readonly<Record<string, unknown>>): EngineRunne
   if (find === undefined || replace === undefined) {
     return undefined;
   }
-  const flagsValue = rule["flags"];
+  const flagsValue = Object.hasOwn(rule, "flags") ? rule["flags"] : undefined;
   if (flagsValue !== undefined && typeof flagsValue !== "string") {
     return undefined;
   }
@@ -237,7 +290,7 @@ function compileRegExp(source: string, flags: string | undefined): RegExp {
 }
 
 function readString(rule: Readonly<Record<string, unknown>>, key: string): string | undefined {
-  const value = rule[key];
+  const value = Object.hasOwn(rule, key) ? rule[key] : undefined;
   return typeof value === "string" ? value : undefined;
 }
 
@@ -277,9 +330,9 @@ function writeScopePaths(
 }
 
 function applyWrites(state: State, writes: Writes): State {
-  const cells: Record<string, Cell> = { ...state.cells };
+  const cells = cloneCells(state.cells);
   for (const [path, text] of writes) {
-    const existing = cells[path];
+    const existing = ownCell(cells, path);
     if (existing === undefined) {
       continue;
     }
@@ -289,6 +342,18 @@ function applyWrites(state: State, writes: Writes): State {
         : { facet: existing.facet, ident: existing.ident, text, mode: existing.mode };
   }
   return { kind: "state", cells };
+}
+
+function cloneCells(source: Readonly<Record<string, Cell>>): Record<string, Cell> {
+  const cells = Object.create(null) as Record<string, Cell>;
+  for (const [path, cell] of Object.entries(source)) {
+    cells[path] = cell;
+  }
+  return cells;
+}
+
+function ownCell(cells: Readonly<Record<string, Cell>>, path: string): Cell | undefined {
+  return Object.hasOwn(cells, path) ? cells[path] : undefined;
 }
 
 // ---- invariants ------------------------------------------------------------
@@ -311,8 +376,8 @@ function checkInvariant(invariant: Invariant, before: State, candidate: State): 
       return undefined;
     }
     case "path_unchanged": {
-      const before1 = before.cells[invariant.path];
-      const after1 = candidate.cells[invariant.path];
+      const before1 = ownCell(before.cells, invariant.path);
+      const after1 = ownCell(candidate.cells, invariant.path);
       const unchanged =
         (before1 === undefined && after1 === undefined) ||
         (before1 !== undefined &&
@@ -335,7 +400,7 @@ function countChangedCells(before: State, after: State): number {
   const afterPaths = new Set<string>();
   for (const [path, afterCell] of Object.entries(after.cells)) {
     afterPaths.add(path);
-    const beforeCell = before.cells[path];
+    const beforeCell = ownCell(before.cells, path);
     if (beforeCell === undefined || cellAddress(afterCell) !== cellAddress(beforeCell)) {
       count++;
     }
@@ -353,7 +418,7 @@ function diffEffects(before: State, after: State): ReadonlySet<Effect> {
   const afterPaths = new Set(Object.keys(after.cells));
 
   for (const [path, afterCell] of Object.entries(after.cells)) {
-    const beforeCell = before.cells[path];
+    const beforeCell = ownCell(before.cells, path);
     if (beforeCell === undefined) {
       effects.add("edits_source");
     } else if (cellAddress(afterCell) !== cellAddress(beforeCell)) {

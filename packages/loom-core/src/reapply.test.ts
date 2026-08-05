@@ -44,7 +44,7 @@ describe("reapply — headline recompute over a conflicting base edit (§5.2)", 
   const newBase = stateOf([["callers/a.ts", cellOf(nidA, "foo(x) foo(y)")]]);
 
   it("recomputes the rule over the new base, transforming the newly added call too", () => {
-    const outcome = reapply(CTX_CODEMOD, originalResult, newBase);
+    const outcome = reapply(CTX_CODEMOD, originalResult, newBase, TOOLCHAIN);
     expect(outcome.kind).toBe("CleanReapply");
     if (outcome.kind === "CleanReapply") {
       // BOTH calls are transformed, including the one git never saw.
@@ -74,7 +74,7 @@ describe("reapply — engines", () => {
       inputSelector: [{ path: "package.json" }],
       writeScope: [{ path: "package.json" }]
     };
-    const outcome = reapply(recipe, newBase, newBase);
+    const outcome = reapply(recipe, newBase, newBase, TOOLCHAIN);
     expect(outcome.kind).toBe("CleanReapply");
     if (outcome.kind === "CleanReapply") {
       expect(textAt(outcome.resultState, "package.json")).toBe(bumped);
@@ -94,11 +94,123 @@ describe("reapply — engines", () => {
       inputSelector: [{ path: "a.ts" }],
       writeScope: [{ path: "a.ts" }]
     };
-    const outcome = reapply(recipe, originalResult, newBase);
+    const outcome = reapply(recipe, originalResult, newBase, TOOLCHAIN);
     expect(outcome.kind).toBe("CleanReapply");
     if (outcome.kind === "CleanReapply") {
       expect(textAt(outcome.resultState, "a.ts")).toBe("foo(x, ctx)");
       expect(outcome.changedResult).toBe(false);
+    }
+  });
+});
+
+describe("reapply — eligibility and execution toolchain", () => {
+  const nid = mintNodeIdent(TX, 6, "a.ts");
+  const newBase = stateOf([["a.ts", cellOf(nid, "foo(x)")]]);
+  const originalResult = stateOf([["a.ts", cellOf(nid, "foo(x, ctx)")]]);
+  const pinnedRecipe: Recipe = {
+    ...CTX_CODEMOD,
+    inputSelector: [{ path: "a.ts" }],
+    writeScope: [{ path: "a.ts" }]
+  };
+  const environmentToolchain: ToolchainLock = {
+    engineDigest: TOOLCHAIN.engineDigest,
+    runtimeDigest: TOOLCHAIN.runtimeDigest,
+    env: { LANG: "C.UTF-8", TZ: "UTC" }
+  };
+  const environmentRecipe: Recipe = {
+    ...pinnedRecipe,
+    toolchain: environmentToolchain
+  };
+
+  it("rejects an environment-sensitive recipe as nondeterministic even with a matching lock", () => {
+    const outcome = reapply(
+      { ...pinnedRecipe, determinismClass: "environment-sensitive" },
+      originalResult,
+      newBase,
+      TOOLCHAIN
+    );
+    expect(outcome.kind).toBe("HardFailure");
+    if (outcome.kind === "HardFailure") {
+      expect(outcome.reason).toBe("nondeterministic");
+    }
+  });
+
+  it("fails closed with toolchain_mismatch when execution context is missing", () => {
+    // Reflect models an untyped/runtime caller bypassing the required fourth
+    // TypeScript argument. The implementation must still reject it safely.
+    const outcome = Reflect.apply(reapply, undefined, [
+      pinnedRecipe,
+      originalResult,
+      newBase
+    ]) as ReturnType<typeof reapply>;
+    expect(outcome.kind).toBe("HardFailure");
+    if (outcome.kind === "HardFailure") {
+      expect(outcome.reason).toBe("toolchain_mismatch");
+      expect(outcome.detail).toContain("explicit execution ToolchainLock");
+    }
+  });
+
+  it.each([
+    ["engineDigest", { engineDigest: "engine@2", runtimeDigest: TOOLCHAIN.runtimeDigest }],
+    ["runtimeDigest", { engineDigest: TOOLCHAIN.engineDigest, runtimeDigest: "node@23" }]
+  ] satisfies ReadonlyArray<readonly [string, ToolchainLock]>)(
+    "rejects an execution %s mismatch",
+    (_field, executionToolchain) => {
+      const outcome = reapply(pinnedRecipe, originalResult, newBase, executionToolchain);
+      expect(outcome.kind).toBe("HardFailure");
+      if (outcome.kind === "HardFailure") {
+        expect(outcome.reason).toBe("toolchain_mismatch");
+      }
+    }
+  );
+
+  it.each([
+    [
+      "changed value",
+      {
+        engineDigest: TOOLCHAIN.engineDigest,
+        runtimeDigest: TOOLCHAIN.runtimeDigest,
+        env: { LANG: "C.UTF-8", TZ: "Pacific/Auckland" }
+      }
+    ],
+    [
+      "missing key",
+      {
+        engineDigest: TOOLCHAIN.engineDigest,
+        runtimeDigest: TOOLCHAIN.runtimeDigest,
+        env: { LANG: "C.UTF-8" }
+      }
+    ],
+    [
+      "extra key",
+      {
+        engineDigest: TOOLCHAIN.engineDigest,
+        runtimeDigest: TOOLCHAIN.runtimeDigest,
+        env: { CI: "true", LANG: "C.UTF-8", TZ: "UTC" }
+      }
+    ],
+    ["missing env", TOOLCHAIN]
+  ] satisfies ReadonlyArray<readonly [string, ToolchainLock]>)(
+    "rejects an execution env with a %s mismatch",
+    (_case, executionToolchain) => {
+      const outcome = reapply(environmentRecipe, originalResult, newBase, executionToolchain);
+      expect(outcome.kind).toBe("HardFailure");
+      if (outcome.kind === "HardFailure") {
+        expect(outcome.reason).toBe("toolchain_mismatch");
+      }
+    }
+  );
+
+  it("accepts equal environment key/value pairs regardless of insertion order", () => {
+    const executionToolchain: ToolchainLock = {
+      engineDigest: TOOLCHAIN.engineDigest,
+      runtimeDigest: TOOLCHAIN.runtimeDigest,
+      env: { TZ: "UTC", LANG: "C.UTF-8" }
+    };
+    const outcome = reapply(environmentRecipe, originalResult, newBase, executionToolchain);
+    expect(outcome.kind).toBe("CleanReapply");
+    if (outcome.kind === "CleanReapply") {
+      expect(textAt(outcome.resultState, "a.ts")).toBe("foo(x, ctx)");
     }
   });
 });
@@ -115,7 +227,7 @@ describe("reapply — HardFailure paths (fall back to text 3-way)", () => {
       inputSelector: [{ path: "a.ts" }],
       writeScope: [{ path: "a.ts" }]
     };
-    const outcome = reapply(recipe, originalResult, newBase);
+    const outcome = reapply(recipe, originalResult, newBase, TOOLCHAIN);
     expect(outcome.kind).toBe("HardFailure");
     if (outcome.kind === "HardFailure") {
       expect(outcome.reason).toBe("nondeterministic");
@@ -128,7 +240,7 @@ describe("reapply — HardFailure paths (fall back to text 3-way)", () => {
       inputSelector: [{ path: "missing.ts" }],
       writeScope: [{ path: "missing.ts" }]
     };
-    const outcome = reapply(recipe, originalResult, newBase);
+    const outcome = reapply(recipe, originalResult, newBase, TOOLCHAIN);
     expect(outcome.kind).toBe("HardFailure");
     if (outcome.kind === "HardFailure") {
       expect(outcome.reason).toBe("precondition");
@@ -144,7 +256,7 @@ describe("reapply — HardFailure paths (fall back to text 3-way)", () => {
       inputSelector: [{ path: "a.ts" }],
       writeScope: [] // nothing may be written
     };
-    const outcome = reapply(recipe, originalResult, newBase);
+    const outcome = reapply(recipe, originalResult, newBase, TOOLCHAIN);
     expect(outcome.kind).toBe("HardFailure");
     if (outcome.kind === "HardFailure") {
       expect(outcome.reason).toBe("engine_error");
@@ -160,7 +272,7 @@ describe("reapply — HardFailure paths (fall back to text 3-way)", () => {
       inputSelector: [{ path: "a.ts" }],
       writeScope: [{ path: "a.ts" }]
     };
-    const outcome = reapply(recipe, originalResult, newBase);
+    const outcome = reapply(recipe, originalResult, newBase, TOOLCHAIN);
     expect(outcome.kind).toBe("HardFailure");
     if (outcome.kind === "HardFailure") {
       expect(outcome.reason).toBe("engine_error");
@@ -181,7 +293,7 @@ describe("reapply — HardFailure paths (fall back to text 3-way)", () => {
       inputSelector: [{ path: "a.ts" }],
       writeScope: [{ path: "a.ts" }]
     };
-    const outcome = reapply(recipe, seed, seed);
+    const outcome = reapply(recipe, seed, seed, TOOLCHAIN);
     expect(outcome.kind).toBe("CleanReapply");
     if (outcome.kind === "CleanReapply") {
       expect(outcome.changedResult).toBe(true);
@@ -204,7 +316,7 @@ describe("reapply — Divergence (never auto-landed)", () => {
       writeScope: [{ path: "a.ts" }],
       invariants: [{ kind: "max_cells_written", limit: 0 }]
     };
-    const outcome = reapply(recipe, originalResult, movedBase);
+    const outcome = reapply(recipe, originalResult, movedBase, TOOLCHAIN);
     expect(outcome.kind).toBe("Divergence");
     if (outcome.kind === "Divergence") {
       expect(outcome.expected).toBe(stateAddress(originalResult));
@@ -223,7 +335,7 @@ describe("reapply — Divergence (never auto-landed)", () => {
       writeScope: [{ path: "a.ts" }],
       invariants: [{ kind: "path_unchanged", path: "a.ts" }]
     };
-    const outcome = reapply(recipe, originalResult, newBase);
+    const outcome = reapply(recipe, originalResult, newBase, TOOLCHAIN);
     expect(outcome.kind).toBe("Divergence");
     if (outcome.kind === "Divergence") {
       expect(outcome.report).toContain("path_unchanged");
@@ -238,7 +350,7 @@ describe("reapply — Divergence (never auto-landed)", () => {
       writeScope: [{ path: "a.ts" }],
       expectedResultDigest: wrongDigest
     };
-    const outcome = reapply(recipe, originalResult, newBase);
+    const outcome = reapply(recipe, originalResult, newBase, TOOLCHAIN);
     expect(outcome.kind).toBe("Divergence");
     if (outcome.kind === "Divergence") {
       expect(outcome.expected).toBe(wrongDigest);
@@ -253,7 +365,69 @@ describe("reapply — Divergence (never auto-landed)", () => {
       writeScope: [{ path: "a.ts" }],
       expectedResultDigest: expected
     };
-    const outcome = reapply(recipe, originalResult, newBase);
+    const outcome = reapply(recipe, originalResult, newBase, TOOLCHAIN);
     expect(outcome.kind).toBe("CleanReapply");
+  });
+});
+
+describe("reapply — hostile cell path safety", () => {
+  function nullPrototypeState(entries: ReadonlyArray<readonly [string, Cell]>): State {
+    const cells = Object.create(null) as Record<string, Cell>;
+    for (const [path, cell] of entries) {
+      cells[path] = cell;
+    }
+    return { kind: "state", cells };
+  }
+
+  it("preserves a null-prototype cell map and prototype-like own paths", () => {
+    const paths = ["__proto__", "constructor", "toString"] as const;
+    const base = nullPrototypeState(
+      paths.map((path, index): readonly [string, Cell] => [
+        path,
+        cellOf(mintNodeIdent(TX, 20 + index, path), "x")
+      ])
+    );
+    const recipe: Recipe = {
+      engine: "regex-replace",
+      determinismClass: "pinned",
+      toolchain: TOOLCHAIN,
+      rule: { find: "x", replace: "y", flags: "g" },
+      inputSelector: paths.map((path) => ({ path })),
+      writeScope: paths.map((path) => ({ path }))
+    };
+
+    const outcome = reapply(recipe, base, base, TOOLCHAIN);
+    expect(outcome.kind).toBe("CleanReapply");
+    if (outcome.kind === "CleanReapply") {
+      expect(Object.getPrototypeOf(outcome.resultState.cells)).toBeNull();
+      for (const path of paths) {
+        expect(Object.hasOwn(outcome.resultState.cells, path)).toBe(true);
+        expect(outcome.resultState.cells[path]?.text).toBe("y");
+      }
+    }
+  });
+
+  it("treats a missing inherited-name invariant path as absent without throwing", () => {
+    const ident = mintNodeIdent(TX, 30, "a.ts");
+    const base = nullPrototypeState([["a.ts", cellOf(ident, "x")]]);
+    const recipe: Recipe = {
+      engine: "regex-replace",
+      determinismClass: "pinned",
+      toolchain: TOOLCHAIN,
+      rule: { find: "x", replace: "y" },
+      inputSelector: [{ path: "a.ts" }],
+      writeScope: [{ path: "a.ts" }],
+      invariants: [{ kind: "path_unchanged", path: "constructor" }]
+    };
+    let outcome: ReturnType<typeof reapply> | undefined;
+
+    expect(() => {
+      outcome = reapply(recipe, base, base, TOOLCHAIN);
+    }).not.toThrow();
+    expect(outcome?.kind).toBe("CleanReapply");
+    if (outcome?.kind === "CleanReapply") {
+      expect(Object.getPrototypeOf(outcome.resultState.cells)).toBeNull();
+      expect(Object.hasOwn(outcome.resultState.cells, "constructor")).toBe(false);
+    }
   });
 });

@@ -1,5 +1,5 @@
 /**
- * @agentforge/loom-provenance — DSSE-signed, subject-pinned attestations.
+ * @agentforge/loom-provenance — DSSE-signed, transition-pinned attestations.
  *
  * Pure functions built on established standards:
  *  - in-toto Statement v1 as the attestation body,
@@ -7,14 +7,15 @@
  *  - Ed25519 via node:crypto as the only signature scheme.
  *
  * No external dependencies. The deterministic-check decision is bound to a
- * specific Transform through the in-toto subject digest (the "subject-pin"):
- * the subject digest is the sha256 hex embedded in the Transform's Cid, so a
- * verifier can prove an envelope attests to exactly one Transform.
+ * canonical subject derived from both base and result State addresses. A
+ * verifier must independently supply both expected State addresses, preventing
+ * an attestation for one base from being replayed against another base that has
+ * the same result State.
  */
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 
 import type { VerifiedFact } from "@agentforge/core";
-import { canonicalize, sha256Hex, type Cid } from "@agentforge/loom-core";
+import { address, canonicalize, sha256Hex, type Cid } from "@agentforge/loom-core";
 
 import {
   DETERMINISTIC_CHECK_PREDICATE_TYPE,
@@ -25,11 +26,16 @@ import {
   type DsseSignature,
   type InTotoStatement,
   type KeyPair,
+  type StateTransitionInput,
+  type VerifyProvenanceInput,
   type VerifyResult
 } from "./types.js";
 
 /** DSSE payloadType for an in-toto Statement body. */
 const INTOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json";
+
+/** Domain separator for canonical base-to-result transition subjects. */
+const STATE_TRANSITION_SUBJECT_TYPE = "https://loom.agentforge.dev/state-transition/v1";
 
 /**
  * Generate a fresh Ed25519 key pair, exported as PEM strings
@@ -71,13 +77,27 @@ function cidSha256(cid: Cid): string {
 }
 
 /**
- * Assemble an in-toto Statement whose single subject is pinned to the
- * Transform's content address and whose predicate carries the
- * deterministic-check decision, inputs, checker identity, and facts.
+ * Content-address the ordered base-to-result transition with an explicit domain
+ * separator. Equal result States reached from different bases have different
+ * subjects even though their result State Cids are identical.
+ */
+export function transitionSubjectCid(input: StateTransitionInput): Cid {
+  return address({
+    _type: STATE_TRANSITION_SUBJECT_TYPE,
+    baseState: input.baseState,
+    resultState: input.resultState
+  });
+}
+
+/**
+ * Assemble an in-toto Statement whose single subject is derived from both State
+ * addresses and whose predicate carries the same pinned inputs, deterministic
+ * decision, checker identity, and facts.
  */
 export function buildDeterministicCheckStatement(
   input: DeterministicCheckInput
 ): InTotoStatement<DeterministicCheckPredicate> {
+  const subjectCid = transitionSubjectCid(input);
   const predicate: DeterministicCheckPredicate = {
     checker: {
       did: input.checkerDid,
@@ -97,8 +117,8 @@ export function buildDeterministicCheckStatement(
     _type: INTOTO_STATEMENT_TYPE,
     subject: [
       {
-        name: input.transformCid,
-        digest: { sha256: cidSha256(input.transformCid) }
+        name: subjectCid,
+        digest: { sha256: cidSha256(subjectCid) }
       }
     ],
     predicateType: DETERMINISTIC_CHECK_PREDICATE_TYPE,
@@ -117,11 +137,12 @@ export function signStatement(
   keyid?: string
 ): DsseEnvelope {
   const payloadBytes = Buffer.from(canonicalize(statement), "utf8");
-  const signature = sign(
-    null,
-    pae(INTOTO_PAYLOAD_TYPE, payloadBytes),
-    createPrivateKey(key.privateKeyPem)
-  );
+  const privateKey = createPrivateKey(key.privateKeyPem);
+  const publicKey = createPublicKey(key.publicKeyPem);
+  if (privateKey.asymmetricKeyType !== "ed25519" || publicKey.asymmetricKeyType !== "ed25519") {
+    throw new Error("provenance signing requires Ed25519 key material");
+  }
+  const signature = sign(null, pae(INTOTO_PAYLOAD_TYPE, payloadBytes), privateKey);
   const sig = signature.toString("base64");
   const signatureEntry: DsseSignature = keyid === undefined ? { sig } : { keyid, sig };
 
@@ -135,63 +156,131 @@ export function signStatement(
 /**
  * True when at least one signature in the envelope is a valid Ed25519
  * signature (from `publicKeyPem`) over the PAE of the envelope payload.
+ * Malformed untrusted key or envelope data fails closed.
  */
 export function verifyEnvelope(envelope: DsseEnvelope, publicKeyPem: string): boolean {
-  const payloadBytes = Buffer.from(envelope.payload, "base64");
-  const publicKey = createPublicKey(publicKeyPem);
-  const preAuth = pae(envelope.payloadType, payloadBytes);
-  return envelope.signatures.some((signature) =>
-    verify(null, preAuth, publicKey, Buffer.from(signature.sig, "base64"))
-  );
+  try {
+    const payloadBytes = Buffer.from(envelope.payload, "base64");
+    const publicKey = createPublicKey(publicKeyPem);
+    if (publicKey.asymmetricKeyType !== "ed25519") {
+      return false;
+    }
+    const preAuth = pae(envelope.payloadType, payloadBytes);
+    return envelope.signatures.some((signature) =>
+      verify(null, preAuth, publicKey, Buffer.from(signature.sig, "base64"))
+    );
+  } catch {
+    return false;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** Safely read `subject[0].digest.sha256` from a decoded, untrusted statement. */
-function readSubjectDigest(statement: Record<string, unknown>): string | undefined {
+interface SubjectPin {
+  readonly name: string;
+  readonly sha256: string;
+}
+
+/** Safely read the one permitted subject from a decoded, untrusted statement. */
+function readSubjectPin(statement: Record<string, unknown>): SubjectPin | undefined {
   const subject: unknown = statement["subject"];
-  if (!Array.isArray(subject)) {
+  if (!Array.isArray(subject) || subject.length !== 1) {
     return undefined;
   }
   const first: unknown = subject[0];
-  if (!isRecord(first)) {
+  if (!isRecord(first) || typeof first["name"] !== "string") {
     return undefined;
   }
   const digest: unknown = first["digest"];
-  if (!isRecord(digest)) {
+  if (!isRecord(digest) || typeof digest["sha256"] !== "string") {
     return undefined;
   }
-  const sha256: unknown = digest["sha256"];
-  return typeof sha256 === "string" ? sha256 : undefined;
+  return { name: first["name"], sha256: digest["sha256"] };
+}
+
+function isDecision(value: unknown): value is DeterministicCheckPredicate["decision"] {
+  return value === "pass" || value === "warn" || value === "block";
 }
 
 /**
- * Verify a provenance envelope against a Transform Cid and public key:
- *  1. the signature must be valid,
- *  2. the predicate must be the deterministic-check predicate,
- *  3. the subject digest must equal the Cid's sha256 hex (the subject-pin).
+ * Verify a provenance envelope against independently derived base and result
+ * State addresses and a public key:
+ *  1. payload type and signature must be valid,
+ *  2. statement and predicate types must be exact,
+ *  3. the sole subject must equal the canonical expected transition subject,
+ *  4. predicate base/result inputs must equal that expected transition, and
+ *  5. factsDigest must describe the signed facts.
  */
-export function verifyProvenance(input: {
-  readonly transformCid: Cid;
-  readonly envelope: DsseEnvelope;
-  readonly publicKeyPem: string;
-}): VerifyResult {
+export function verifyProvenance(input: VerifyProvenanceInput): VerifyResult {
+  if (input.envelope.payloadType !== INTOTO_PAYLOAD_TYPE) {
+    return { ok: false, reason: "unexpected payload type" };
+  }
   if (!verifyEnvelope(input.envelope, input.publicKeyPem)) {
     return { ok: false, reason: "signature invalid" };
   }
 
-  const statement: unknown = JSON.parse(
-    Buffer.from(input.envelope.payload, "base64").toString("utf8")
-  );
+  let statement: unknown;
+  try {
+    statement = JSON.parse(Buffer.from(input.envelope.payload, "base64").toString("utf8"));
+  } catch {
+    return { ok: false, reason: "malformed statement" };
+  }
 
-  if (!isRecord(statement) || statement["predicateType"] !== DETERMINISTIC_CHECK_PREDICATE_TYPE) {
+  if (!isRecord(statement)) {
+    return { ok: false, reason: "malformed statement" };
+  }
+  if (statement["_type"] !== INTOTO_STATEMENT_TYPE) {
+    return { ok: false, reason: "unexpected statement type" };
+  }
+  if (statement["predicateType"] !== DETERMINISTIC_CHECK_PREDICATE_TYPE) {
     return { ok: false, reason: "unexpected predicate" };
   }
 
-  if (readSubjectDigest(statement) !== cidSha256(input.transformCid)) {
-    return { ok: false, reason: "subject digest does not match transform" };
+  const expectedSubject = transitionSubjectCid(input);
+  const subject = readSubjectPin(statement);
+  if (
+    subject === undefined ||
+    subject.name !== expectedSubject ||
+    subject.sha256 !== cidSha256(expectedSubject)
+  ) {
+    return { ok: false, reason: "subject does not match expected transition" };
+  }
+
+  const predicate: unknown = statement["predicate"];
+  if (!isRecord(predicate)) {
+    return { ok: false, reason: "malformed deterministic-check predicate" };
+  }
+  const checker: unknown = predicate["checker"];
+  const inputs: unknown = predicate["inputs"];
+  const facts: unknown = predicate["facts"];
+  const signedFactsDigest: unknown = predicate["factsDigest"];
+  if (
+    !isRecord(checker) ||
+    typeof checker["did"] !== "string" ||
+    typeof checker["detectorSuiteVersion"] !== "string" ||
+    !isRecord(inputs) ||
+    typeof inputs["baseState"] !== "string" ||
+    typeof inputs["resultState"] !== "string" ||
+    typeof inputs["policyVersion"] !== "string" ||
+    !Array.isArray(facts) ||
+    typeof signedFactsDigest !== "string" ||
+    !isDecision(predicate["decision"])
+  ) {
+    return { ok: false, reason: "malformed deterministic-check predicate" };
+  }
+
+  if (inputs["baseState"] !== input.baseState || inputs["resultState"] !== input.resultState) {
+    return { ok: false, reason: "predicate inputs do not match expected transition" };
+  }
+
+  try {
+    if (sha256Hex(canonicalize(facts)) !== signedFactsDigest) {
+      return { ok: false, reason: "facts digest does not match facts" };
+    }
+  } catch {
+    return { ok: false, reason: "malformed deterministic-check predicate" };
   }
 
   return { ok: true };
