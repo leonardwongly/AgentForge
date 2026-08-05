@@ -151,6 +151,31 @@ export class FileObjectStore implements DurableObjectStore {
   hasDagCbor(cid: Cid): boolean {
     return existsSync(join(this.objectsDir, `${cid}.cbor`));
   }
+
+  /** List every stored object CID (across all codecs). */
+  listCids(): Cid[] {
+    const cids = new Set<Cid>();
+    for (const file of readdirSync(this.objectsDir)) {
+      // Legacy canonical-JSON address (loom:sha256:<hex>) or CIDv1 base32.
+      const legacy = /^(loom:sha256:[0-9a-f]{64})\.json$/u.exec(file);
+      if (legacy) {
+        cids.add(legacy[1] as Cid);
+        continue;
+      }
+      const cidv1 = /^([a-z2-7]{20,})\.(bin|cbor)$/u.exec(file);
+      if (cidv1) {
+        cids.add(cidv1[1] as Cid);
+      }
+    }
+    return [...cids];
+  }
+
+  /** Delete a stored object (no-op if absent). */
+  delete(cid: Cid): void {
+    for (const ext of ["json", "bin", "cbor"]) {
+      rmSync(join(this.objectsDir, `${cid}.${ext}`), { force: true });
+    }
+  }
 }
 
 // ---- Transactional Line journal -------------------------------------------
