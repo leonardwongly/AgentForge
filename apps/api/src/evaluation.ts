@@ -35,7 +35,9 @@ export function evaluateFixturePr(input: {
       }
     : parsed.config;
   const facts = extractVerifiedFacts(input.pr, detectorConfigFromPolicy(policy));
-  const result = evaluateMergeGuard(input.pr, facts, policy);
+  const result = evaluateMergeGuard(input.pr, facts, policy, undefined, {
+    sourceContentHash: parsed.contentHash
+  });
   const recordInput: Parameters<typeof createChangeControlRecord>[0] = {
     organizationId: input.organizationId ?? "org_local",
     repositoryId: input.repositoryId ?? repositoryIdFromFullName(input.pr.repositoryFullName),

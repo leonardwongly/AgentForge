@@ -10,7 +10,7 @@ import {
   getMembershipCacheKey,
   getFileContentCacheKey
 } from "@agentforge/core";
-import { redactSecrets } from "@agentforge/security";
+import { redactSecrets, sanitizeExternalMetadataText } from "@agentforge/security";
 
 export type GithubWebhookEnvelope = {
   deliveryId: string;
@@ -110,6 +110,8 @@ export type GithubAdapterClient = {
 export type GithubCheckPublisherClient = {
   checks: {
     create: GithubRequest<Record<string, unknown>>;
+    update?: GithubRequest<Record<string, unknown>> | undefined;
+    listForRef?: GithubRequest<Record<string, unknown>> | undefined;
   };
 };
 
@@ -292,7 +294,7 @@ export async function fetchPullRequestInputFromGithub(input: {
   return {
     repositoryFullName,
     pullRequestNumber: numberValue(pr.number) ?? input.pullNumber,
-    title: stringValue(pr.title) ?? "",
+    title: sanitizeExternalMetadataText(stringValue(pr.title) ?? "", 256),
     authorLogin: stringValue(recordValue(pr.user)?.login) ?? "",
     baseBranch: stringValue(base?.ref) ?? "",
     headBranch: stringValue(head?.ref) ?? "",
@@ -585,15 +587,81 @@ export async function publishMergeGuardCheck(input: {
   pr: Pick<PullRequestInput, "headSha">;
   result: PolicyResult;
   detailsUrl?: string | undefined;
-}): Promise<{ id: number | undefined; conclusion: CheckRunPayload["conclusion"] }> {
+  externalId?: string | undefined;
+  conclusionOverride?: CheckRunPayload["conclusion"] | undefined;
+}): Promise<{ id: number | undefined; conclusion: CheckRunPayload["conclusion"]; reused?: boolean }> {
   return publishMergeGuardCheckWithClient({
     client: createGithubClient(input.token),
     owner: input.owner,
     repo: input.repo,
     pr: input.pr,
     result: input.result,
-    detailsUrl: input.detailsUrl
+    detailsUrl: input.detailsUrl,
+    externalId: input.externalId,
+    conclusionOverride: input.conclusionOverride
   });
+}
+
+export async function reconcileMergeGuardCheckWithClient(input: {
+  client: GithubCheckPublisherClient;
+  owner: string;
+  repo: string;
+  pr: Pick<PullRequestInput, "headSha">;
+  result: PolicyResult;
+  externalId: string;
+  detailsUrl?: string | undefined;
+  conclusionOverride?: CheckRunPayload["conclusion"] | undefined;
+}): Promise<
+  { id: number; conclusion: CheckRunPayload["conclusion"]; reused: true } | undefined
+> {
+  const listForRef = input.client.checks.listForRef;
+  if (!listForRef) {
+    return undefined;
+  }
+  const payload = buildCheckRunPayload(input.pr, input.result, { detailsUrl: input.detailsUrl });
+  const conclusion = input.conclusionOverride ?? payload.conclusion;
+  for (let page = 1; page <= 10; page += 1) {
+    const response = await listForRef({
+      owner: input.owner,
+      repo: input.repo,
+      ref: payload.headSha,
+      check_name: payload.name,
+      filter: "all",
+      per_page: 100,
+      page
+    });
+    const checkRuns = arrayValue(response.data.check_runs);
+    const existing = checkRuns.find(
+      (checkRun) =>
+        stringValue(checkRun.external_id) === input.externalId &&
+        stringValue(checkRun.name) === payload.name &&
+        (stringValue(checkRun.head_sha) ?? payload.headSha) === payload.headSha
+    );
+    if (existing) {
+      const id = numberValue(existing.id);
+      if (!id) {
+        return undefined;
+      }
+      if (input.client.checks.update) {
+        await input.client.checks.update({
+          owner: input.owner,
+          repo: input.repo,
+          check_run_id: id,
+          name: payload.name,
+          status: payload.status,
+          conclusion,
+          details_url: payload.detailsUrl,
+          external_id: input.externalId,
+          output: payload.output
+        });
+      }
+      return { id, conclusion, reused: true };
+    }
+    if (checkRuns.length < 100) {
+      break;
+    }
+  }
+  return undefined;
 }
 
 export async function publishMergeGuardCheckWithClient(input: {
@@ -603,19 +671,38 @@ export async function publishMergeGuardCheckWithClient(input: {
   pr: Pick<PullRequestInput, "headSha">;
   result: PolicyResult;
   detailsUrl?: string | undefined;
-}): Promise<{ id: number | undefined; conclusion: CheckRunPayload["conclusion"] }> {
+  externalId?: string | undefined;
+  conclusionOverride?: CheckRunPayload["conclusion"] | undefined;
+}): Promise<{ id: number | undefined; conclusion: CheckRunPayload["conclusion"]; reused?: boolean }> {
+  if (input.externalId) {
+    const reconciled = await reconcileMergeGuardCheckWithClient({
+      client: input.client,
+      owner: input.owner,
+      repo: input.repo,
+      pr: input.pr,
+      result: input.result,
+      externalId: input.externalId,
+      detailsUrl: input.detailsUrl,
+      conclusionOverride: input.conclusionOverride
+    });
+    if (reconciled) {
+      return reconciled;
+    }
+  }
   const payload = buildCheckRunPayload(input.pr, input.result, { detailsUrl: input.detailsUrl });
+  const conclusion = input.conclusionOverride ?? payload.conclusion;
   const response = await input.client.checks.create({
     owner: input.owner,
     repo: input.repo,
     name: payload.name,
     head_sha: payload.headSha,
     status: payload.status,
-    conclusion: payload.conclusion,
+    conclusion,
     details_url: payload.detailsUrl,
+    ...(input.externalId ? { external_id: input.externalId } : {}),
     output: payload.output
   });
-  return { id: numberValue(response.data.id), conclusion: payload.conclusion };
+  return { id: numberValue(response.data.id), conclusion, reused: false };
 }
 
 function readRepository(value: unknown): GithubWebhookEnvelope["repository"] {
@@ -645,7 +732,7 @@ function readPullRequest(value: unknown): GithubWebhookEnvelope["pullRequest"] {
   return {
     id: numberValue(pr.id) ?? 0,
     number: numberValue(pr.number) ?? 0,
-    title: stringValue(pr.title) ?? "",
+    title: sanitizeExternalMetadataText(stringValue(pr.title) ?? "", 256),
     authorLogin: stringValue(user?.login) ?? "",
     baseBranch: stringValue(base?.ref) ?? "",
     headBranch: stringValue(head?.ref) ?? "",
@@ -685,7 +772,7 @@ function readCheckRun(value: unknown): GithubWebhookEnvelope["checkRun"] {
   }
   return {
     id: numberValue(checkRun.id) ?? 0,
-    name: stringValue(checkRun.name) ?? "",
+    name: sanitizeExternalMetadataText(stringValue(checkRun.name) ?? "", 100),
     status: stringValue(checkRun.status) ?? "",
     conclusion: stringValue(checkRun.conclusion),
     headSha: stringValue(checkRun.head_sha) ?? "",

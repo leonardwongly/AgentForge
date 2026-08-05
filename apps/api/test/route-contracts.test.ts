@@ -174,6 +174,7 @@ describe("API route plugin contracts", () => {
 function record(id: string, organizationId: string): ChangeControlRecord {
   return {
     id,
+    revision: 0,
     organizationId,
     repositoryId: `repo-${organizationId}`,
     repositoryFullName: `${organizationId}/payments`,

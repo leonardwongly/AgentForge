@@ -37,9 +37,11 @@ import {
   type GithubWebhookEnvelope
 } from "@agentforge/github";
 import {
+  buildPolicyVersion,
   builtinPolicyPacks,
   getPolicyPack,
   parsePolicyYaml,
+  policyContentHashFromVersion,
   validatePolicyYaml
 } from "@agentforge/policy";
 import {
@@ -54,6 +56,7 @@ import {
 } from "@agentforge/records";
 import { previewCodeowners } from "@agentforge/reviewers";
 import {
+  sanitizeExternalMetadataText,
   sanitizeForMetadataStorage,
   summarizeSafeSnippet,
   type MetadataStoragePolicy
@@ -84,6 +87,8 @@ import {
   type GitHubInstallationState,
   type GitHubInstallationVerifyInput,
   type GithubRepositoryRef,
+  type ManualCcrMutationInput,
+  type ManualCcrMutationResult,
   type OwnerMappingState,
   type PolicyVersionSnapshotInput,
   type PolicyVersionSnapshotState,
@@ -165,9 +170,9 @@ type AppDependencyOverrides = {
   evaluationQueue?: Queue<MergeGuardEvaluationJobPayload> | undefined;
 };
 
-type PrismaTransactionClient = Pick<
+type PrismaTransactionClient = Omit<
   PrismaClient,
-  "ownerMapping" | "policyVersion" | "repository" | "repositorySetting" | "$executeRaw"
+  "$connect" | "$disconnect" | "$on" | "$transaction" | "$use" | "$extends"
 >;
 
 type PageInfo = {
@@ -260,6 +265,7 @@ type AuditEventRow = {
 
 export type AppState = {
   deliveries: Set<string>;
+  webhookDeliveryRecords: Map<string, StoredWebhookDelivery>;
   queuedEvaluations: QueuedEvaluation[];
   records: ChangeControlRecord[];
   auditEvents: AuditEventRecord[];
@@ -428,7 +434,8 @@ const evidenceSubmissionSchema = z
   .object({
     evidenceId: z.string().trim().min(1).max(240).optional(),
     kind: evidenceKindSchema.optional(),
-    content: z.string().trim().min(10).max(4_000)
+    content: z.string().trim().min(10).max(4_000),
+    expectedRevision: z.number().int().min(0).optional()
   })
   .strict()
   .refine((value) => value.evidenceId || value.kind, {
@@ -437,19 +444,22 @@ const evidenceSubmissionSchema = z
   });
 const evidenceRejectionSchema = z
   .object({
-    recordId: z.string().trim().min(1).max(240).optional(),
+    recordId: z.string().trim().min(1).max(240),
+    expectedRevision: z.number().int().min(0).optional(),
     reason: z.string().trim().min(10).max(1_000)
   })
   .strict();
 const recordScopedActionSchema = z
   .object({
-    recordId: z.string().trim().min(1).max(240).optional()
+    recordId: z.string().trim().min(1).max(240),
+    expectedRevision: z.number().int().min(0).optional()
   })
   .strict();
 const overrideRequestSchema = z.object({
   // actorRole is intentionally ignored by the handler (the authenticated actor's
   // role is authoritative); accepted here only so legacy clients are not rejected.
   actorRole: z.string().trim().max(64).optional(),
+  expectedRevision: z.number().int().min(0).optional(),
   reason: z.string().trim().max(1_000).optional(),
   scope: z.enum(["pr", "finding", "evidence", "reviewer"]).optional()
 });
@@ -526,6 +536,74 @@ const repositorySettingsPatchSchema = z
     auditRecordRetentionDays: z.number().int().positive().max(3650).optional()
   })
   .strict();
+
+type RepositorySettingsSafetyViolation = {
+  path: string[];
+  message: string;
+};
+
+function productionRepositorySettingsViolations(
+  patch: z.infer<typeof repositorySettingsPatchSchema>
+): RepositorySettingsSafetyViolation[] {
+  const violations: RepositorySettingsSafetyViolation[] = [];
+  if (patch.dataHandling?.sourceCodeStorage === true) {
+    violations.push({
+      path: ["dataHandling", "sourceCodeStorage"],
+      message: "Source code storage cannot be enabled in production."
+    });
+  }
+  if (patch.sourceCodeStorage === true) {
+    violations.push({
+      path: ["sourceCodeStorage"],
+      message: "Source code storage cannot be enabled in production."
+    });
+  }
+  if (patch.dataHandling?.redactSecrets === false) {
+    violations.push({
+      path: ["dataHandling", "redactSecrets"],
+      message: "Secret redaction cannot be disabled in production."
+    });
+  }
+  if (patch.redactSecrets === false) {
+    violations.push({
+      path: ["redactSecrets"],
+      message: "Secret redaction cannot be disabled in production."
+    });
+  }
+  return violations;
+}
+
+function repositorySettingsPatchSchemaForEnvironment(
+  nodeEnv: ReturnType<typeof loadConfig>["nodeEnv"]
+) {
+  if (nodeEnv !== "production") {
+    return repositorySettingsPatchSchema;
+  }
+  return repositorySettingsPatchSchema.superRefine((patch, context) => {
+    for (const violation of productionRepositorySettingsViolations(patch)) {
+      context.addIssue({
+        code: "custom",
+        path: violation.path,
+        message: violation.message
+      });
+    }
+  });
+}
+
+function assertProductionRepositorySettingsAreSafe(
+  patch: z.infer<typeof repositorySettingsPatchSchema>,
+  nodeEnv: ReturnType<typeof loadConfig>["nodeEnv"]
+): void {
+  if (nodeEnv !== "production") {
+    return;
+  }
+  const violations = productionRepositorySettingsViolations(patch);
+  if (violations.length > 0) {
+    throw new Error(
+      `Unsafe repository settings for production: ${violations.map((item) => item.message).join(" ")}`
+    );
+  }
+}
 const policyYamlPayloadSchema = z.string().superRefine((value, context) => {
   if (Buffer.byteLength(value, "utf8") > POLICY_YAML_MAX_BYTES) {
     context.addIssue({
@@ -601,6 +679,7 @@ export function createApp(
   overrides: AppDependencyOverrides = {}
 ): FastifyInstance {
   const config = loadConfig();
+  const settingsPatchSchema = repositorySettingsPatchSchemaForEnvironment(config.nodeEnv);
   const storagePolicy: MetadataStoragePolicy = {
     sourceCodeStorage: config.sourceCodeStorage,
     fullDiffRetention: config.fullDiffRetention,
@@ -637,6 +716,36 @@ export function createApp(
     ? createPrismaPersistencePort(state, prisma)
     : createInMemoryPersistencePort(state);
   const runtimeStore = prisma ? "postgres" : "in_memory";
+  const commitManualCcrMutation = async (input: ManualCcrMutationInput) => {
+    const result = await persistence.manualCcrMutations.commit(input);
+    if (result.status !== "committed") {
+      return { result };
+    }
+    const deliveryId = result.trigger.delivery.deliveryId;
+    try {
+      const queued = await enqueueMergeGuardEvaluation({
+        state,
+        evaluationQueue,
+        deliveryId,
+        envelope: result.trigger.envelope
+      });
+      await persistence.webhookDeliveries.markQueued(deliveryId, queued.jobId);
+      return {
+        result,
+        reevaluation: { deliveryId, status: "queued" as const }
+      };
+    } catch (error) {
+      await persistence.webhookDeliveries.markEnqueueFailed(deliveryId, error);
+      return {
+        result,
+        reevaluation: {
+          deliveryId,
+          status: "enqueue_failed" as const,
+          recoverable: true as const
+        }
+      };
+    }
+  };
   const listRecords = (filter?: { organizationId?: string }) =>
     listChangeControlRecords(persistence, filter);
   const getRecord = (id: string) => getChangeControlRecord(persistence, id);
@@ -679,48 +788,6 @@ export function createApp(
   ) => updateRepositorySettings(persistence, repositoryId, body, config);
   const audit = (input: Parameters<typeof createAuditEvent>[0]) =>
     recordAuditEvent(persistence, input);
-  const auditReevaluation = (
-    record: ChangeControlRecord,
-    actor: ApiActor,
-    previousStatus: ChangeControlRecord["checkStatus"],
-    requestId?: string | undefined
-  ) =>
-    audit({
-      organizationId: record.organizationId,
-      repositoryId: record.repositoryId,
-      pullRequestId: record.id,
-      actor: actor.login,
-      action: "record_reevaluated",
-      targetType: "change_control_record",
-      targetId: record.id,
-      requestId,
-      metadataJson: {
-        previousStatus,
-        checkStatus: record.checkStatus,
-        lifecycle: record.lifecycle,
-        policyVersion: record.policyVersion,
-        policyPackId: record.policyPackId,
-        policyPackVersion: record.policyPackVersion,
-        openEvidence: record.requiredEvidence.filter((item) => item.status !== "approved").length,
-        pendingRequiredReviewers: record.requiredReviewers.filter(
-          (item) => item.tier === "required" && !item.approved
-        ).length,
-        actorRole: actor.role
-      }
-    });
-  const recordsForAction = async (
-    organizationId: string,
-    recordId?: string
-  ): Promise<ChangeControlRecord[]> => {
-    if (!recordId) {
-      // Scope the fallback to the actor's organization so an omitted recordId can
-      // never enumerate other tenants' records (defense-in-depth for the
-      // per-iteration org check at the call sites) (AF-SEC L4 fix).
-      return listRecords({ organizationId });
-    }
-    const record = await getRecord(recordId);
-    return record ? [record] : [];
-  };
   const requireReadActor = async (request: FastifyRequest, reply: FastifyReply) => {
     const actor = await requireApiActor(request);
     if (isAuthzFailure(actor)) {
@@ -846,7 +913,6 @@ export function createApp(
   registerApiRoutes(app, {
     apiCache,
     audit,
-    auditReevaluation,
     approveGithubInstallation: (input: GitHubInstallationDecision) =>
       approveGithubInstallation(persistence, input),
     codeownersPreviewSchema,
@@ -858,6 +924,7 @@ export function createApp(
         evaluationQueue,
         config
       }),
+    commitManualCcrMutation,
     compliancePackageRequestSchema,
     config,
     dashboardSummary,
@@ -922,14 +989,13 @@ export function createApp(
     recordPageQuerySchema,
     recordScopedActionSchema,
     overrideRequestSchema,
-    recordsForAction,
     recordsVisibleTo,
     recomputeRequirementStatus,
     rejectGithubInstallation: (input: GitHubInstallationDecision) =>
       rejectGithubInstallation(persistence, input),
     repositoryOrganizationId: getRepositoryOrganizationId,
     repositoryReadinessScore,
-    repositorySettingsPatchSchema,
+    repositorySettingsPatchSchema: settingsPatchSchema,
     requireReadActor,
     routingDiagnosticsFromOwnerMappings,
     runtimeCapabilities,
@@ -964,6 +1030,7 @@ export function createApp(
 export function createInitialState(): AppState {
   return {
     deliveries: new Set(),
+    webhookDeliveryRecords: new Map(),
     queuedEvaluations: [],
     records: [],
     auditEvents: [],
@@ -1011,7 +1078,7 @@ async function saveActiveRepositoryPolicy(
 ): Promise<RepositoryPolicyState> {
   const policy: RepositoryPolicyState = {
     repositoryId,
-    version: `${parsed.config.policy_pack_id ?? "custom"}@${parsed.config.policy_pack_version ?? parsed.config.version}+${parsed.contentHash.slice(0, 8)}`,
+    version: buildPolicyVersion(parsed.config, { sourceContentHash: parsed.contentHash }),
     mode: parsed.config.agentforge.mode,
     contentYaml,
     contentHash: parsed.contentHash,
@@ -1044,6 +1111,7 @@ async function updateRepositorySettings(
   patch: z.infer<typeof repositorySettingsPatchSchema>,
   config: ReturnType<typeof loadConfig>
 ): Promise<RepositorySettingsResult> {
+  assertProductionRepositorySettingsAreSafe(patch, config.nodeEnv);
   return persistence.repositories.updateSettings({
     repositoryId,
     patch,
@@ -1195,12 +1263,27 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
       },
       async save(record, pr) {
         const organization = await ensureOrganization(prisma, record.organizationId);
-        const repository = await ensureRepository(prisma, {
-          organizationId: organization.id,
-          repositoryId: record.repositoryId,
-          fullName: record.repositoryFullName,
-          defaultBranch: record.baseBranch
+        let repository = await prisma.repository.findFirst({
+          where: {
+            id: record.repositoryId,
+            organizationId: organization.id
+          }
         });
+        if (!repository) {
+          if (!pr) {
+            throw new Error("Repository must exist before updating a Change Control Record.");
+          }
+          repository = await ensureRepository(
+            prisma,
+            {
+              organizationId: organization.id,
+              repositoryId: record.repositoryId,
+              fullName: record.repositoryFullName,
+              defaultBranch: record.baseBranch
+            },
+            { allowSyntheticGithubRepositoryId: true }
+          );
+        }
         const pullRequest = await prisma.pullRequest.upsert({
           where: {
             repositoryId_number: {
@@ -1237,6 +1320,7 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
           update: changeControlRecordData(record),
           create: {
             id: record.id,
+            revision: record.revision,
             pullRequestId: pullRequest.id,
             ...changeControlRecordData(record)
           }
@@ -1337,6 +1421,9 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
           pageInfo: pageInfo(total, query)
         };
       }
+    },
+    manualCcrMutations: {
+      commit: (input) => commitPrismaManualCcrMutation(prisma, state, input)
     },
     repositories: {
       async organizationId(repositoryId) {
@@ -1443,17 +1530,30 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         const row = await withUnmanagedOrgBinding(() =>
           prisma.$transaction(async (tx: PrismaTransactionClient) => {
             await tx.$executeRaw`SELECT set_config('agentforge.current_org', ${repository.organizationId}, true)`;
-            const createdRow = await tx.policyVersion.create({
-              data: {
+            // Idempotent save: the version string is derived from the policy
+            // content hash, so re-saving unchanged policy content must reuse the
+            // existing version instead of hitting the
+            // (organizationId, repositoryId, version) unique constraint.
+            const existing = await tx.policyVersion.findFirst({
+              where: {
                 organizationId: repository.organizationId,
                 repositoryId: repository.id,
-                version: policy.version,
-                mode: policy.mode,
-                contentYaml: policy.contentYaml,
-                contentHash: policy.contentHash,
-                createdBy: policy.createdBy
+                version: policy.version
               }
             });
+            const createdRow =
+              existing ??
+              (await tx.policyVersion.create({
+                data: {
+                  organizationId: repository.organizationId,
+                  repositoryId: repository.id,
+                  version: policy.version,
+                  mode: policy.mode,
+                  contentYaml: policy.contentYaml,
+                  contentHash: policy.contentHash,
+                  createdBy: policy.createdBy
+                }
+              }));
             await tx.repository.update({
               where: { id: repository.id },
               data: {
@@ -1519,8 +1619,9 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         if (!repository) {
           throw new Error("Repository must exist before updating settings.");
         }
-        const [updatedRepository, dataHandling, ownerMappings] = await prisma.$transaction(
-          async (tx: PrismaTransactionClient) => {
+        const [updatedRepository, dataHandling, ownerMappings] = await withUnmanagedOrgBinding(() =>
+          prisma.$transaction(async (tx: PrismaTransactionClient) => {
+            await tx.$executeRaw`SELECT set_config('agentforge.current_org', ${repository.organizationId}, true)`;
             let policyVersionId: string | null | undefined;
             let policyMode: ChangeControlRecord["mode"] | undefined;
             if (patch.policyVersion) {
@@ -1594,7 +1695,7 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
               return output;
             });
             return [updated, currentDataHandling, mappedOwners] as const;
-          }
+          })
         );
         return {
           organizationId: repository.organizationId,
@@ -1824,33 +1925,10 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
       async recordReceived(envelope) {
         state.deliveries.add(envelope.deliveryId);
         const repositoryFullName = envelope.repository?.fullName ?? null;
-        const repositoryId = repositoryFullName
-          ? (
-              await prisma.repository.findFirst({
-                where: { fullName: repositoryFullName },
-                select: { id: true }
-              })
-            )?.id
-          : undefined;
-        const repository = repositoryId
-          ? await prisma.repository.findUnique({
-              where: { id: repositoryId },
-              select: { organizationId: true }
-            })
-          : undefined;
-        const organizationId =
-          repository?.organizationId ??
-          state.records.find((record) => record.repositoryFullName === repositoryFullName)
-            ?.organizationId;
-        const payloadJson = {
-          installationId: envelope.installationId,
-          repository: envelope.repository,
-          pullRequest: envelope.pullRequest,
-          review: envelope.review,
-          checkRun: envelope.checkRun,
-          installation: envelope.installation,
-          receivedAt: envelope.receivedAt
-        } as never;
+        const attribution = await resolveWebhookDeliveryAttribution(prisma, envelope);
+        const repositoryId = attribution.repositoryId;
+        const organizationId = attribution.organizationId;
+        const payloadJson = webhookPayloadForStorage(envelope) as never;
         const existing = await prisma.webhookDelivery.findUnique({
           where: { deliveryId: envelope.deliveryId },
           select: { deliveryStatus: true, enqueued: true }
@@ -1900,7 +1978,11 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
       async markQueued(deliveryId, queueJobId) {
         state.deliveries.add(deliveryId);
         await prisma.webhookDelivery.updateMany({
-          where: { deliveryId },
+          where: {
+            deliveryId,
+            completedAt: null,
+            deliveryStatus: { in: ["received", "enqueue_failed"] }
+          },
           data: {
             enqueued: true,
             deliveryStatus: "queued",
@@ -2228,6 +2310,390 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
   };
 }
 
+async function commitPrismaManualCcrMutation(
+  prisma: PrismaClient,
+  state: AppState,
+  input: ManualCcrMutationInput
+): Promise<ManualCcrMutationResult> {
+  const result = await withUnmanagedOrgBinding(() =>
+    prisma.$transaction(async (tx: PrismaTransactionClient): Promise<ManualCcrMutationResult> => {
+      await tx.$executeRaw`SELECT set_config('agentforge.current_org', ${input.organizationId}, true)`;
+      const current = await tx.changeControlRecord.findFirst({
+        where: {
+          id: input.recordId,
+          pullRequest: { repository: { organizationId: input.organizationId } }
+        },
+        include: {
+          pullRequest: {
+            include: {
+              repository: true
+            }
+          }
+        }
+      });
+      if (!current) {
+        return { status: "not_found" };
+      }
+      if (
+        current.revision !== input.expectedRevision ||
+        current.headSha !== input.expectedHeadSha ||
+        current.policyVersion !== input.expectedPolicyVersion
+      ) {
+        return { status: "conflict", currentRevision: current.revision };
+      }
+
+      const sourceDeliveries = await tx.webhookDelivery.findMany({
+        where: {
+          organizationId: input.organizationId,
+          repositoryId: current.pullRequest.repositoryId,
+          repositoryFullName: current.repositoryFullName,
+          pullRequestNumber: current.pullRequestNumber
+        },
+        orderBy: { createdAt: "desc" },
+        take: 25
+      });
+      const rawRepositoryGithubId = Number(current.pullRequest.repository.githubRepositoryId);
+      const rawGithubPullRequestId = Number(current.pullRequest.githubPullRequestId);
+      const repositoryGithubId =
+        Number.isSafeInteger(rawRepositoryGithubId) && rawRepositoryGithubId > 0
+          ? rawRepositoryGithubId
+          : Number(stableBigInt(current.repositoryFullName));
+      const githubPullRequestId =
+        Number.isSafeInteger(rawGithubPullRequestId) && rawGithubPullRequestId > 0
+          ? rawGithubPullRequestId
+          : Number(stableBigInt(`${current.pullRequestId}:${current.pullRequestNumber}`));
+      let source:
+        | {
+            deliveryId: string;
+            envelope?: GithubWebhookEnvelope | undefined;
+            installationId: number;
+          }
+        | undefined;
+      for (const delivery of sourceDeliveries) {
+        const envelope = envelopeFromStoredWebhookDelivery(delivery);
+        const installationId = envelope?.installationId;
+        if (
+          !envelope?.repository ||
+          envelope.repository.id !== repositoryGithubId ||
+          !installationId ||
+          !Number.isSafeInteger(installationId) ||
+          installationId <= 0
+        ) {
+          continue;
+        }
+        const installation = await tx.gitHubInstallation.findUnique({
+          where: { githubInstallationId: BigInt(installationId) },
+          select: { organizationId: true, status: true, archivedAt: true }
+        });
+        if (
+          installation?.organizationId === input.organizationId &&
+          installation.status === "approved" &&
+          installation.archivedAt === null
+        ) {
+          source = { deliveryId: delivery.deliveryId, envelope, installationId };
+          break;
+        }
+      }
+      if (!source) {
+        // No approved GitHub installation and replayable delivery are
+        // available. Commit the mutation directly with a synthesized trigger
+        // so the change-control workflow does not depend on a live GitHub
+        // connection (Loom vision: Git and GitHub are bridges, not the source
+        // of truth). When a real approved installation exists it is still
+        // used above, preserving GitHub check re-publication where available.
+        const fallbackInstallation = await tx.gitHubInstallation.findFirst({
+          where: { organizationId: input.organizationId, status: "approved", archivedAt: null },
+          select: { githubInstallationId: true }
+        });
+        source = {
+          deliveryId: `manual:${current.id}:r${current.revision + 1}`,
+          envelope: undefined,
+          installationId: Number(fallbackInstallation?.githubInstallationId ?? BigInt(1))
+        };
+      }
+
+      const revision = current.revision + 1;
+      const nextRecord: ChangeControlRecord = {
+        ...input.nextRecord,
+        id: current.id,
+        revision,
+        organizationId: input.organizationId,
+        repositoryId: current.pullRequest.repositoryId,
+        repositoryFullName: current.repositoryFullName,
+        pullRequestNumber: current.pullRequestNumber,
+        headSha: current.headSha,
+        baseBranch: current.baseBranch,
+        policyVersion: current.policyVersion,
+        policyPackId: current.policyPackId ?? undefined,
+        policyPackVersion: current.policyPackVersion ?? undefined,
+        createdAt: current.createdAt.toISOString()
+      };
+      const cas = await tx.changeControlRecord.updateMany({
+        where: {
+          id: current.id,
+          pullRequestId: current.pullRequestId,
+          revision: input.expectedRevision,
+          headSha: input.expectedHeadSha,
+          policyVersion: input.expectedPolicyVersion
+        },
+        data: {
+          ...changeControlRecordData(nextRecord),
+          revision: { increment: 1 }
+        }
+      });
+      if (cas.count !== 1) {
+        const conflicted = await tx.changeControlRecord.findUnique({
+          where: { id: current.id },
+          select: { revision: true }
+        });
+        return { status: "conflict", currentRevision: conflicted?.revision ?? revision };
+      }
+
+      let policyVersion = await tx.policyVersion.findFirst({
+        where: {
+          organizationId: input.organizationId,
+          repositoryId: current.pullRequest.repositoryId,
+          version: current.policyVersion
+        }
+      });
+      if (!policyVersion) {
+        const policyPack = current.policyPackId
+          ? await tx.policyPack.findUnique({ where: { id: current.policyPackId } })
+          : null;
+        policyVersion = await tx.policyVersion.create({
+          data: {
+            organizationId: input.organizationId,
+            repositoryId: current.pullRequest.repositoryId,
+            policyPackId: policyPack?.id ?? null,
+            version: current.policyVersion,
+            mode: nextRecord.mode,
+            contentYaml: `# Runtime policy snapshot for ${current.repositoryFullName}#${current.pullRequestNumber}\n# Full policy content was not attached to this evaluation snapshot.`,
+            contentHash:
+              policyContentHashFromVersion(current.policyVersion) ??
+              createHash("sha256").update(current.policyVersion).digest("hex"),
+            createdBy: "system"
+          }
+        });
+      }
+      let evaluation = await tx.evaluation.findFirst({
+        where: {
+          pullRequestId: current.pullRequestId,
+          policyVersionId: policyVersion.id,
+          headSha: current.headSha
+        },
+        orderBy: { startedAt: "desc" }
+      });
+      const evaluationData = {
+        mode: nextRecord.mode,
+        status: nextRecord.checkStatus,
+        completedAt: new Date(nextRecord.updatedAt),
+        explanationJson: explainChangeControlRecord(nextRecord) as never
+      };
+      evaluation = evaluation
+        ? await tx.evaluation.update({
+            where: { id: evaluation.id },
+            data: evaluationData
+          })
+        : await tx.evaluation.create({
+            data: {
+              pullRequestId: current.pullRequestId,
+              policyVersionId: policyVersion.id,
+              headSha: current.headSha,
+              ...evaluationData
+            }
+          });
+      await tx.evidenceRequirementRecord.deleteMany({
+        where: { evaluationId: evaluation.id }
+      });
+      await tx.reviewerRequirementRecord.deleteMany({
+        where: { evaluationId: evaluation.id }
+      });
+      if (nextRecord.requiredEvidence.length > 0) {
+        await tx.evidenceRequirementRecord.createMany({
+          data: nextRecord.requiredEvidence.map((evidence) => ({
+            evaluationId: evaluation.id,
+            kind: evidence.kind,
+            status: evidence.status,
+            source: evidence.source ?? null,
+            requiredByFindingId: evidence.requiredByFindingId,
+            providedBy: evidence.providedBy ?? null,
+            providedAt: evidence.providedAt ? new Date(evidence.providedAt) : null,
+            approvedBy: evidence.approvedBy ?? null,
+            approvedAt: evidence.approvedAt ? new Date(evidence.approvedAt) : null,
+            contentSummary: evidence.contentSummary ?? null
+          }))
+        });
+      }
+      if (nextRecord.requiredReviewers.length > 0) {
+        await tx.reviewerRequirementRecord.createMany({
+          data: nextRecord.requiredReviewers.map((reviewer) => ({
+            evaluationId: evaluation.id,
+            reviewer: reviewer.reviewer,
+            reviewerType: reviewer.reviewerType,
+            tier: reviewer.tier,
+            reason: reviewer.reason,
+            triggeredByFindingId: reviewer.triggeredByFindingId,
+            clearsWhen: reviewer.clearsWhen ?? null,
+            approved: reviewer.approved,
+            approvedBy: reviewer.approvedBy ?? null,
+            approvedAt: reviewer.approvedAt ? new Date(reviewer.approvedAt) : null
+          }))
+        });
+      }
+      const checkRunData = {
+        conclusion: checkConclusionForRecord(nextRecord),
+        outputTitle: "AgentForge Merge Guard",
+        outputSummary: explainChangeControlRecord(nextRecord).join(" "),
+        updatedAt: new Date(nextRecord.updatedAt)
+      };
+      await tx.checkRun.upsert({
+        where: { evaluationId: evaluation.id },
+        update: checkRunData,
+        create: { evaluationId: evaluation.id, ...checkRunData }
+      });
+
+      for (const event of input.auditEvents) {
+        await tx.auditEvent.upsert({
+          where: { id: event.id },
+          update: {},
+          create: {
+            id: event.id,
+            organizationId: input.organizationId,
+            repositoryId: current.pullRequest.repositoryId,
+            pullRequestId: current.pullRequestId,
+            schemaVersion: event.schemaVersion,
+            actor: event.actor,
+            actorRole: event.actorRole,
+            action: event.action,
+            targetType: event.targetType,
+            targetId: event.targetId,
+            source: event.source,
+            requestId: event.requestId ?? null,
+            correlationId: event.correlationId ?? null,
+            policyVersion: event.policyVersion ?? current.policyVersion,
+            policyPackId: event.policyPackId ?? current.policyPackId,
+            policyPackVersion: event.policyPackVersion ?? current.policyPackVersion,
+            metadataJson: event.metadataJson as never,
+            createdAt: new Date(event.createdAt)
+          }
+        });
+      }
+      if (input.override) {
+        await tx.overrideRecord.upsert({
+          where: { id: input.override.id },
+          update: {},
+          create: {
+            id: input.override.id,
+            pullRequestId: current.pullRequestId,
+            evaluationId: input.override.evaluationId ?? evaluation.id,
+            actor: input.override.actor,
+            actorRole: input.override.actorRole,
+            reason: input.override.reason,
+            scope: input.override.scope,
+            visibleInPr: input.override.visibleInPr,
+            policyVersion: current.policyVersion,
+            createdAt: new Date(input.override.createdAt)
+          }
+        });
+      }
+
+      const [owner = "", name = current.repositoryFullName] = current.repositoryFullName.split("/");
+      const deliveryId = `manual:${current.id}:r${revision}`;
+      const envelope: GithubWebhookEnvelope = {
+        deliveryId,
+        event: "pull_request",
+        action: "edited",
+        installationId: source.installationId,
+        repository: {
+          id: repositoryGithubId,
+          fullName: current.repositoryFullName,
+          owner,
+          name,
+          defaultBranch: current.pullRequest.repository.defaultBranch
+        },
+        pullRequest: {
+          id: githubPullRequestId,
+          number: current.pullRequest.number,
+          title: sanitizeExternalMetadataText(current.pullRequest.title, 256),
+          authorLogin: current.pullRequest.authorLogin,
+          baseBranch: current.pullRequest.baseBranch,
+          headBranch: current.pullRequest.headBranch,
+          headSha: current.pullRequest.headSha,
+          state: current.pullRequest.state,
+          merged: current.pullRequest.mergedAt !== null
+        },
+        receivedAt: new Date().toISOString()
+      };
+      const actor = input.auditEvents[0]?.actor ?? "system";
+      const requestId = input.auditEvents[0]?.requestId;
+      const payloadJson = {
+        ...webhookPayloadForStorage(envelope),
+        manualTrigger: {
+          reason: input.triggerReason,
+          actor: sanitizeExternalMetadataText(actor, 128),
+          ...(requestId ? { requestId: sanitizeExternalMetadataText(requestId, 160) } : {}),
+          recordId: current.id,
+          revision,
+          sourceDeliveryId: source.deliveryId
+        }
+      } as never;
+      const delivery = await tx.webhookDelivery.create({
+        data: {
+          deliveryId,
+          event: envelope.event,
+          action: envelope.action ?? null,
+          organizationId: input.organizationId,
+          repositoryId: current.pullRequest.repositoryId,
+          repositoryFullName: current.repositoryFullName,
+          pullRequestNumber: current.pullRequest.number,
+          headSha: current.pullRequest.headSha,
+          enqueued: false,
+          deliveryStatus: "received",
+          checkPublicationState: "pending",
+          payloadJson
+        }
+      });
+      const persisted = await tx.changeControlRecord.findUnique({
+        where: { id: current.id },
+        include: {
+          pullRequest: {
+            select: {
+              repositoryId: true,
+              repository: { select: { organizationId: true } }
+            }
+          }
+        }
+      });
+      if (!persisted) {
+        throw new Error("Committed Change Control Record could not be reloaded.");
+      }
+      return {
+        status: "committed",
+        record: changeControlRecordFromRow(persisted),
+        trigger: { delivery, envelope }
+      };
+    })
+  );
+
+  if (result.status === "committed") {
+    rememberRecord(state, result.record);
+    state.auditEvents.push(
+      ...input.auditEvents.filter(
+        (event) => !state.auditEvents.some((existing) => existing.id === event.id)
+      )
+    );
+    if (input.override) {
+      state.overrides = [
+        input.override,
+        ...state.overrides.filter((override) => override.id !== input.override?.id)
+      ];
+    }
+    state.deliveries.add(result.trigger.delivery.deliveryId);
+    state.webhookDeliveryRecords.set(result.trigger.delivery.deliveryId, result.trigger.delivery);
+  }
+  return result;
+}
+
 async function findReplayableWebhookByPullRequest(
   prisma: PrismaClient,
   target: { repositoryFullName?: string | undefined; pullRequestNumber?: number | undefined },
@@ -2361,9 +2827,11 @@ async function ensurePrismaPolicyVersionSnapshot(
       version: input.record.policyVersion,
       mode: input.record.mode,
       contentYaml: `# Runtime policy snapshot for ${input.record.repositoryFullName}#${input.record.pullRequestNumber}\n# Full policy content was not attached to this evaluation snapshot.`,
-      contentHash: createHash("sha256")
-        .update(`${input.record.policyVersion}:${input.record.policyPackId ?? ""}`)
-        .digest("hex"),
+      contentHash:
+        policyContentHashFromVersion(input.record.policyVersion) ??
+        createHash("sha256")
+          .update(`${input.record.policyVersion}:${input.record.policyPackId ?? ""}`)
+          .digest("hex"),
       createdBy: "system"
     }
   });
@@ -2394,6 +2862,146 @@ function policyVersionSnapshotFromRow(
     contentYaml: row.contentYaml,
     contentHash: row.contentHash,
     createdBy: row.createdBy
+  };
+}
+
+function githubNumericId(value: number | undefined): bigint | undefined {
+  return value !== undefined && Number.isSafeInteger(value) && value > 0
+    ? BigInt(value)
+    : undefined;
+}
+
+async function resolveWebhookDeliveryAttribution(
+  prisma: PrismaClient,
+  envelope: GithubWebhookEnvelope
+): Promise<{ organizationId?: string | undefined; repositoryId?: string | undefined }> {
+  const repositoryGithubId = githubNumericId(envelope.repository?.id);
+  const installationId = envelope.installationId ?? envelope.installation?.id;
+
+  if (installationId !== undefined) {
+    const githubInstallationId = githubNumericId(installationId);
+    if (!githubInstallationId) {
+      return {};
+    }
+    const installation = await prisma.gitHubInstallation.findUnique({
+      where: { githubInstallationId },
+      select: {
+        organizationId: true,
+        status: true,
+        archivedAt: true
+      }
+    });
+    if (
+      !installation?.organizationId ||
+      installation.status !== "approved" ||
+      installation.archivedAt
+    ) {
+      return {};
+    }
+    if (!repositoryGithubId) {
+      return { organizationId: installation.organizationId };
+    }
+    const repository = await prisma.repository.findUnique({
+      where: { githubRepositoryId: repositoryGithubId },
+      select: { id: true, organizationId: true }
+    });
+    return repository?.organizationId === installation.organizationId
+      ? { organizationId: installation.organizationId, repositoryId: repository.id }
+      : { organizationId: installation.organizationId };
+  }
+
+  if (!repositoryGithubId) {
+    return {};
+  }
+  const repository = await prisma.repository.findUnique({
+    where: { githubRepositoryId: repositoryGithubId },
+    select: { id: true, organizationId: true }
+  });
+  return repository
+    ? { organizationId: repository.organizationId, repositoryId: repository.id }
+    : {};
+}
+
+function projectWebhookEnvelope(envelope: GithubWebhookEnvelope): GithubWebhookEnvelope {
+  const pullRequest = envelope.pullRequest;
+  const checkRun = envelope.checkRun;
+  const installation = envelope.installation;
+  return {
+    deliveryId: envelope.deliveryId,
+    event: envelope.event,
+    ...(envelope.action !== undefined ? { action: envelope.action } : {}),
+    ...(envelope.installationId !== undefined ? { installationId: envelope.installationId } : {}),
+    ...(envelope.repository
+      ? {
+          repository: {
+            id: envelope.repository.id,
+            fullName: envelope.repository.fullName,
+            owner: envelope.repository.owner,
+            name: envelope.repository.name,
+            defaultBranch: envelope.repository.defaultBranch
+          }
+        }
+      : {}),
+    ...(pullRequest
+      ? {
+          pullRequest: {
+            id: pullRequest.id,
+            number: pullRequest.number,
+            title: sanitizeExternalMetadataText(pullRequest.title, 256),
+            authorLogin: pullRequest.authorLogin,
+            baseBranch: pullRequest.baseBranch,
+            headBranch: pullRequest.headBranch,
+            headSha: pullRequest.headSha,
+            state: pullRequest.state,
+            merged: pullRequest.merged
+          }
+        }
+      : {}),
+    ...(checkRun
+      ? {
+          checkRun: {
+            id: checkRun.id,
+            name: sanitizeExternalMetadataText(checkRun.name, 100),
+            status: checkRun.status,
+            ...(checkRun.conclusion !== undefined ? { conclusion: checkRun.conclusion } : {}),
+            headSha: checkRun.headSha,
+            pullRequests: checkRun.pullRequests.map((item) => ({
+              number: item.number,
+              ...(item.headSha !== undefined ? { headSha: item.headSha } : {})
+            }))
+          }
+        }
+      : {}),
+    ...(installation
+      ? {
+          installation: {
+            id: installation.id,
+            accountLogin: installation.accountLogin,
+            accountType: installation.accountType,
+            repositoriesAdded: installation.repositoriesAdded.map((repository) => ({
+              id: repository.id,
+              fullName: repository.fullName
+            })),
+            repositoriesRemoved: installation.repositoriesRemoved.map((repository) => ({
+              id: repository.id,
+              fullName: repository.fullName
+            }))
+          }
+        }
+      : {}),
+    receivedAt: envelope.receivedAt
+  };
+}
+
+function webhookPayloadForStorage(envelope: GithubWebhookEnvelope): Record<string, unknown> {
+  const projected = projectWebhookEnvelope(envelope);
+  return {
+    ...(projected.installationId !== undefined ? { installationId: projected.installationId } : {}),
+    ...(projected.repository ? { repository: projected.repository } : {}),
+    ...(projected.pullRequest ? { pullRequest: projected.pullRequest } : {}),
+    ...(projected.checkRun ? { checkRun: projected.checkRun } : {}),
+    ...(projected.installation ? { installation: projected.installation } : {}),
+    receivedAt: projected.receivedAt
   };
 }
 
@@ -2762,10 +3370,11 @@ async function enqueueMergeGuardEvaluation(input: {
   jobId?: string | undefined;
 }): Promise<QueueEnqueueResult> {
   const jobId = input.jobId ?? input.deliveryId;
+  const envelope = projectWebhookEnvelope(input.envelope);
   if (input.evaluationQueue) {
     await input.evaluationQueue.add(
       MERGE_GUARD_EVALUATION_JOB_NAME,
-      { deliveryId: input.deliveryId, envelope: input.envelope },
+      { deliveryId: input.deliveryId, envelope },
       mergeGuardEvaluationJobOptions(jobId)
     );
     return { jobId, deliveryId: input.deliveryId, backend: "redis" };
@@ -2778,7 +3387,7 @@ async function enqueueMergeGuardEvaluation(input: {
   input.state.queuedEvaluations.push({
     id: jobId,
     deliveryId: input.deliveryId,
-    envelope: input.envelope,
+    envelope,
     queuedAt: new Date().toISOString()
   });
   return { jobId, deliveryId: input.deliveryId, backend: "in_memory" };
@@ -3212,11 +3821,22 @@ export const testInternals = {
       envelope,
       config
     ),
+  recordWebhookDeliveryReceived: (
+    prisma: PrismaClient,
+    envelope: GithubWebhookEnvelope,
+    state: AppState = createInitialState()
+  ) => recordWebhookDeliveryReceived(createPrismaPersistencePort(state, prisma), envelope),
   rejectGithubInstallation: (
     prisma: PrismaClient,
     input: GitHubInstallationDecision,
     state: AppState = createInitialState()
   ) => rejectGithubInstallation(createPrismaPersistencePort(state, prisma), input),
+  saveChangeControlRecord: (
+    prisma: PrismaClient,
+    record: ChangeControlRecord,
+    pr?: PullRequestInput,
+    state: AppState = createInitialState()
+  ) => saveChangeControlRecord(createPrismaPersistencePort(state, prisma), record, pr),
   syncRepositoriesFromStoredInstallationEvents: (
     state: AppState,
     prisma: PrismaClient,
@@ -3262,19 +3882,27 @@ async function ensureRepository(
     defaultBranch: string;
     githubRepositoryId?: bigint | undefined;
   },
-  options: { forceUnarchive?: boolean } = {}
+  options: {
+    forceUnarchive?: boolean;
+    allowSyntheticGithubRepositoryId?: boolean;
+  } = {}
 ) {
+  if (input.githubRepositoryId === undefined && !options.allowSyntheticGithubRepositoryId) {
+    throw new Error("A real GitHub repository id is required outside explicit local creation.");
+  }
   const [owner = "unknown", name = input.fullName] = input.fullName.split("/");
   const githubRepositoryId = input.githubRepositoryId ?? stableBigInt(input.fullName);
   const existing = await prisma.repository.findUnique({
     where: { githubRepositoryId },
-    select: { archivedAt: true }
+    select: { organizationId: true, archivedAt: true }
   });
+  if (existing && existing.organizationId !== input.organizationId) {
+    throw new Error("GitHub repository id is already bound to a different organization.");
+  }
   const shouldReactivate = options.forceUnarchive && Boolean(existing?.archivedAt);
   return prisma.repository.upsert({
-    where: { githubRepositoryId },
+    where: { githubRepositoryId, organizationId: input.organizationId },
     update: {
-      organizationId: input.organizationId,
       fullName: input.fullName,
       owner,
       name,
@@ -3324,6 +3952,7 @@ function changeControlRecordData(record: ChangeControlRecord) {
 
 function changeControlRecordFromRow(row: {
   id: string;
+  revision: number;
   pullRequestId: string;
   repositoryFullName: string;
   pullRequestNumber: number;
@@ -3345,6 +3974,7 @@ function changeControlRecordFromRow(row: {
 }): ChangeControlRecord {
   const output = {
     id: row.id,
+    revision: row.revision,
     organizationId: row.pullRequest?.repository?.organizationId ?? "org_local",
     repositoryId: row.pullRequest?.repositoryId ?? repositoryIdFromFullName(row.repositoryFullName),
     repositoryFullName: row.repositoryFullName,

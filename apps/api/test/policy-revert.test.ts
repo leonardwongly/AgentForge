@@ -431,4 +431,33 @@ describe("policy version history and revert", () => {
     });
     expect(active.json().mode).not.toBe("not-a-real-mode");
   });
+
+  it("re-saving the currently active policy content is idempotent (no duplicate version row)", async () => {
+    const state = createInitialState();
+    const { app, repositoryId, versions } = await seedRepositoryWithTwoVersions({
+      state,
+      repositoryFullName: "acme/repo-idempotent"
+    });
+    const beforeCount = versions.length; // v1 + v2
+    // tag mirrors seedRepositoryWithTwoVersions' derivation for this repo.
+    const tag = "acme-repo-idempotent";
+
+    // Re-save the currently active (v2) content unchanged.
+    const again = await app.inject({
+      method: "PUT",
+      url: `/api/repositories/${repositoryId}/policy`,
+      payload: JSON.stringify({ contentYaml: policyYamlV2(tag) }),
+      headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
+    });
+    expect(again.statusCode).toBe(200);
+
+    const versionsAfter = await app.inject({
+      method: "GET",
+      url: `/api/repositories/${repositoryId}/policy/versions`,
+      headers: actorHeaders("alex", "platform_admin")
+    });
+    const after = versionsAfter.json().versions as Array<{ id: string; version: string }>;
+    // Idempotent re-save must not append a duplicate history row.
+    expect(after).toHaveLength(beforeCount);
+  });
 });

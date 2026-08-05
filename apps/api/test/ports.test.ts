@@ -6,6 +6,7 @@ import { createInMemoryPersistencePort, hasCompleteWebhookReplayTarget } from ".
 function record(id: string, organizationId: string): ChangeControlRecord {
   return {
     id,
+    revision: 0,
     organizationId,
     repositoryId: "repo",
     repositoryFullName: "acme/app",
@@ -173,6 +174,7 @@ describe("in-memory persistence port", () => {
       duplicate: false,
       status: "received"
     });
+    await port.webhookDeliveries.markQueued("delivery-1", "delivery-1");
     await expect(port.webhookDeliveries.recordReceived(envelope("delivery-1"))).resolves.toEqual({
       duplicate: true,
       status: "queued"

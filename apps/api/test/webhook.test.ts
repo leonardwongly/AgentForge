@@ -103,13 +103,127 @@ describe("GitHub webhook API", () => {
     await app.close();
   });
 
+  it("removes token-shaped pull request bodies from persisted and BullMQ payloads", async () => {
+    process.env.GITHUB_WEBHOOK_SECRET = "secret";
+    const state = createInitialState();
+    const token = `ghp_${"7".repeat(36)}`;
+    let persistedDelivery: Record<string, any> | undefined;
+    const prisma = {
+      repository: {
+        findUnique: vi.fn(async () => ({ id: "repo-safe", organizationId: "org-safe" }))
+      },
+      webhookDelivery: {
+        findUnique: vi.fn(async () => null),
+        create: vi.fn(async ({ data }: { data: Record<string, any> }) => {
+          persistedDelivery = data;
+          return data;
+        }),
+        updateMany: vi.fn(async () => ({ count: 1 }))
+      }
+    };
+    const queue = {
+      add: vi.fn(async (_name: string, _payload: unknown, _options: unknown) => ({
+        id: "delivery-safe-body"
+      }))
+    };
+    const app = createApp(state, {
+      prisma: prisma as never,
+      evaluationQueue: queue as never
+    });
+    const payload = {
+      action: "opened",
+      repository: { id: 9876, full_name: "acme/payments", default_branch: "main" },
+      pull_request: {
+        id: 2,
+        number: 3,
+        title: "PR",
+        body: `Deploy with ${token}`,
+        state: "open",
+        merged: false,
+        user: { login: "sam" },
+        base: { ref: "main" },
+        head: { ref: "feature/demo", sha: "sha" }
+      }
+    };
+    const body = JSON.stringify(payload);
+    const signature = `sha256=${createHmac("sha256", "secret").update(body).digest("hex")}`;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload: body,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-safe-body",
+        "x-github-event": "pull_request",
+        "x-hub-signature-256": signature
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(persistedDelivery).toMatchObject({
+      organizationId: "org-safe",
+      repositoryId: "repo-safe"
+    });
+    expect(persistedDelivery?.payloadJson.pullRequest).not.toHaveProperty("body");
+    expect(JSON.stringify(persistedDelivery)).not.toContain(token);
+    const queuedPayload = queue.add.mock.calls[0]?.[1] as
+      { envelope?: { pullRequest?: Record<string, unknown> } } | undefined;
+    expect(queuedPayload?.envelope?.pullRequest).not.toHaveProperty("body");
+    expect(JSON.stringify(queuedPayload)).not.toContain(token);
+    await app.close();
+  });
+
+  it("removes token-shaped pull request bodies from in-memory job payloads", async () => {
+    process.env.GITHUB_WEBHOOK_SECRET = "secret";
+    const state = createInitialState();
+    const app = createApp(state);
+    const token = `github_pat_${"8".repeat(30)}`;
+    const payload = {
+      action: "opened",
+      repository: { id: 4321, full_name: "acme/payments", default_branch: "main" },
+      pull_request: {
+        id: 2,
+        number: 3,
+        title: "PR",
+        body: `Do not retain ${token}`,
+        state: "open",
+        merged: false,
+        user: { login: "sam" },
+        base: { ref: "main" },
+        head: { ref: "feature/demo", sha: "sha" }
+      }
+    };
+    const body = JSON.stringify(payload);
+    const signature = `sha256=${createHmac("sha256", "secret").update(body).digest("hex")}`;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload: body,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": "delivery-safe-in-memory-body",
+        "x-github-event": "pull_request",
+        "x-hub-signature-256": signature
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(state.queuedEvaluations).toHaveLength(1);
+    expect(state.queuedEvaluations[0]?.envelope.pullRequest).not.toHaveProperty("body");
+    expect(JSON.stringify(state.queuedEvaluations)).not.toContain(token);
+    await app.close();
+  });
+
   it("records enqueue failures as recoverable and re-enqueues duplicate retries", async () => {
     process.env.GITHUB_WEBHOOK_SECRET = "secret";
     const state = createInitialState();
     const rows = new Map<string, Record<string, any>>();
     const prisma = {
       repository: {
-        findFirst: vi.fn(async () => null)
+        findFirst: vi.fn(async () => null),
+        findUnique: vi.fn(async () => null)
       },
       webhookDelivery: {
         findUnique: vi.fn(async ({ where }: { where: { deliveryId: string } }) => {
@@ -202,6 +316,131 @@ describe("GitHub webhook API", () => {
     await app.close();
   });
 
+  it("keeps completed persistence dominant when a worker finishes before markQueued", async () => {
+    process.env.GITHUB_WEBHOOK_SECRET = "secret";
+    const state = createInitialState();
+    const deliveryId = "delivery-fast-worker";
+    let row: Record<string, any> = {
+      deliveryId,
+      deliveryStatus: "enqueue_failed",
+      enqueued: false,
+      queueJobId: null,
+      queuedAt: null,
+      completedAt: null,
+      lastEnqueueFailureClass: "Error",
+      lastEnqueueFailureMessage: "redis unavailable",
+      lastEnqueueFailedAt: new Date("2026-05-26T00:00:00.000Z"),
+      createdAt: new Date("2026-05-26T00:00:00.000Z")
+    };
+    const updateMany = vi.fn(
+      async ({ where, data }: { where: Record<string, any>; data: Record<string, any> }) => {
+        const allowedStatuses = (where.deliveryStatus as { in?: string[] } | undefined)?.in;
+        const matchesStatus =
+          allowedStatuses === undefined || allowedStatuses.includes(String(row.deliveryStatus));
+        const matchesCompletedAt =
+          where.completedAt === undefined ||
+          (where.completedAt === null && row.completedAt === null);
+        if (where.deliveryId !== row.deliveryId || !matchesStatus || !matchesCompletedAt) {
+          return { count: 0 };
+        }
+        row = { ...row, ...data };
+        return { count: 1 };
+      }
+    );
+    const prisma = {
+      repository: {
+        findUnique: vi.fn(async () => null)
+      },
+      webhookDelivery: {
+        findUnique: vi.fn(async () => row),
+        create: vi.fn(),
+        updateMany
+      }
+    };
+    let signalQueueStarted!: () => void;
+    const queueStarted = new Promise<void>((resolve) => {
+      signalQueueStarted = resolve;
+    });
+    let acceptQueuedJob!: (value: { id: string }) => void;
+    const queuedJobAccepted = new Promise<{ id: string }>((resolve) => {
+      acceptQueuedJob = resolve;
+    });
+    const queue = {
+      add: vi.fn(() => {
+        signalQueueStarted();
+        return queuedJobAccepted;
+      })
+    };
+    const app = createApp(state, {
+      prisma: prisma as never,
+      evaluationQueue: queue as never
+    });
+    const payload = {
+      action: "opened",
+      repository: { id: 1, full_name: "acme/payments", default_branch: "main" },
+      pull_request: {
+        id: 2,
+        number: 3,
+        title: "PR",
+        body: "",
+        state: "open",
+        merged: false,
+        user: { login: "sam" },
+        base: { ref: "main" },
+        head: { ref: "feature/demo", sha: "sha" }
+      }
+    };
+    const body = JSON.stringify(payload);
+    const signature = `sha256=${createHmac("sha256", "secret").update(body).digest("hex")}`;
+
+    const responsePromise = app.inject({
+      method: "POST",
+      url: "/webhooks/github",
+      payload: body,
+      headers: {
+        "content-type": "application/json",
+        "x-github-delivery": deliveryId,
+        "x-github-event": "pull_request",
+        "x-hub-signature-256": signature
+      }
+    });
+
+    await queueStarted;
+    const completedRow = {
+      ...row,
+      deliveryStatus: "completed",
+      enqueued: true,
+      queueJobId: deliveryId,
+      queuedAt: new Date("2026-05-26T00:00:01.000Z"),
+      completedAt: new Date("2026-05-26T00:00:02.000Z"),
+      lastEnqueueFailureClass: null,
+      lastEnqueueFailureMessage: null,
+      lastEnqueueFailedAt: null,
+      lastFailureClass: null,
+      lastFailureMessage: null,
+      lastFailureCorrelationId: null,
+      lastFailedAt: null
+    };
+    row = completedRow;
+    acceptQueuedJob({ id: deliveryId });
+
+    const response = await responsePromise;
+
+    expect(response.statusCode).toBe(202);
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          deliveryId,
+          completedAt: null,
+          deliveryStatus: { in: ["received", "enqueue_failed"] }
+        }
+      })
+    );
+    expect(row).toEqual(completedRow);
+    await app.close();
+  });
+
   it("re-enqueues duplicate received rows left by interrupted requests", async () => {
     process.env.GITHUB_WEBHOOK_SECRET = "secret";
     const state = createInitialState();
@@ -213,7 +452,8 @@ describe("GitHub webhook API", () => {
     };
     const prisma = {
       repository: {
-        findFirst: vi.fn(async () => null)
+        findFirst: vi.fn(async () => null),
+        findUnique: vi.fn(async () => null)
       },
       webhookDelivery: {
         findUnique: vi.fn(async () => row),
@@ -268,7 +508,11 @@ describe("GitHub webhook API", () => {
     expect(queue.add).toHaveBeenCalledTimes(1);
     expect(prisma.webhookDelivery.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { deliveryId: "delivery-received-duplicate" },
+        where: {
+          deliveryId: "delivery-received-duplicate",
+          completedAt: null,
+          deliveryStatus: { in: ["received", "enqueue_failed"] }
+        },
         data: expect.objectContaining({
           deliveryStatus: "queued",
           enqueued: true,

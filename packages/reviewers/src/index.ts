@@ -74,6 +74,7 @@ export function routeReviewers(
 
       if (!current || reviewerTierRank(candidate.tier) > reviewerTierRank(current.tier)) {
         if (approval) {
+          candidate.approvalSource = "github_review";
           candidate.approvedBy = approval.reviewer;
           candidate.approvedAt = approval.submittedAt;
         }

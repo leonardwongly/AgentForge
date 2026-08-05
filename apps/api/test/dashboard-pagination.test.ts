@@ -180,6 +180,7 @@ function record(
   const timestamp = `2026-05-19T00:00:${seconds}.000Z`;
   return {
     id,
+    revision: 0,
     organizationId,
     repositoryId: `repo-${organizationId}`,
     repositoryFullName: `${organizationId}/payments`,

@@ -187,6 +187,180 @@ describe("security and audit hardening", () => {
     await app.close();
   });
 
+  it("rejects unsafe nested and legacy repository data-handling settings in production", async () => {
+    process.env.NODE_ENV = "test";
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "false";
+    const { app: setupApp, state } = await createPreviewRecord();
+    const repositoryId = state.records[0]!.repositoryId;
+    const settingsBefore = state.repositorySettings.get(repositoryId);
+    await setupApp.close();
+
+    setProductionProxyAuthEnv();
+    process.env.SOURCE_CODE_STORAGE = "false";
+    process.env.REDACT_SECRETS = "true";
+    const app = createApp(state, { prisma: undefined, evaluationQueue: undefined });
+
+    const unsafePatches = [
+      {
+        patch: { dataHandling: { sourceCodeStorage: true } },
+        path: "dataHandling.sourceCodeStorage",
+        message: "Source code storage cannot be enabled in production."
+      },
+      {
+        patch: { sourceCodeStorage: true },
+        path: "sourceCodeStorage",
+        message: "Source code storage cannot be enabled in production."
+      },
+      {
+        patch: { dataHandling: { redactSecrets: false } },
+        path: "dataHandling.redactSecrets",
+        message: "Secret redaction cannot be disabled in production."
+      },
+      {
+        patch: { redactSecrets: false },
+        path: "redactSecrets",
+        message: "Secret redaction cannot be disabled in production."
+      }
+    ] as const;
+
+    try {
+      for (const unsafe of unsafePatches) {
+        const response = await app.inject({
+          method: "PATCH",
+          url: `/api/repositories/${repositoryId}/settings`,
+          payload: JSON.stringify(unsafe.patch),
+          headers: {
+            "content-type": "application/json",
+            ...authenticatedActorHeaders("alex", "platform_admin")
+          }
+        });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toEqual(
+          expect.objectContaining({
+            error: "Invalid repository settings",
+            details: expect.arrayContaining([
+              expect.objectContaining({ path: unsafe.path, message: unsafe.message })
+            ])
+          })
+        );
+      }
+      expect(state.repositorySettings.get(repositoryId)).toEqual(settingsBefore);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("continues to accept nested and legacy repository data-handling settings in development", async () => {
+    process.env.NODE_ENV = "test";
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "false";
+    const { app: setupApp, state } = await createPreviewRecord();
+    const repositoryId = state.records[0]!.repositoryId;
+    await setupApp.close();
+
+    process.env.NODE_ENV = "development";
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
+    process.env.AGENTFORGE_API_PROXY_SECRET = "test-proxy-secret-32-characters-long";
+    process.env.AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS = "true";
+    const app = createApp(state, { prisma: undefined, evaluationQueue: undefined });
+
+    try {
+      for (const patch of [
+        { dataHandling: { sourceCodeStorage: true, redactSecrets: false } },
+        { sourceCodeStorage: true, redactSecrets: false }
+      ]) {
+        const response = await app.inject({
+          method: "PATCH",
+          url: `/api/repositories/${repositoryId}/settings`,
+          payload: JSON.stringify(patch),
+          headers: {
+            "content-type": "application/json",
+            ...authenticatedActorHeaders("alex", "platform_admin")
+          }
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json().repository.dataHandling).toEqual(
+          expect.objectContaining({ sourceCodeStorage: true, redactSecrets: false })
+        );
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("binds the repository organization inside the settings interactive transaction", async () => {
+    process.env.NODE_ENV = "test";
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "false";
+    const events: string[] = [];
+    const setConfigValues: unknown[] = [];
+    const repository = {
+      id: "repo-transaction-binding",
+      organizationId: "org_local",
+      enabled: true,
+      mode: "warn",
+      currentPolicyVersion: null,
+      settings: null
+    };
+    const transactionClient = {
+      $executeRaw: async (_sql: TemplateStringsArray, ...values: unknown[]) => {
+        events.push("set_config");
+        setConfigValues.push(...values);
+        return 1;
+      },
+      repository: {
+        update: async () => {
+          events.push("repository.update");
+          return repository;
+        }
+      },
+      ownerMapping: {
+        findMany: async () => {
+          events.push("ownerMapping.findMany");
+          return [];
+        }
+      }
+    };
+    const prisma = {
+      repository: {
+        findUnique: async () => repository
+      },
+      $transaction: async (
+        callback: (tx: typeof transactionClient) => Promise<unknown>
+      ): Promise<unknown> => {
+        events.push("transaction");
+        return callback(transactionClient);
+      }
+    };
+    const app = createApp(createInitialState(), {
+      prisma: prisma as never,
+      evaluationQueue: undefined
+    });
+
+    try {
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/api/repositories/${repository.id}/settings`,
+        payload: JSON.stringify({}),
+        headers: {
+          "content-type": "application/json",
+          ...actorHeaders("alex", "platform_admin")
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(events).toEqual([
+        "transaction",
+        "set_config",
+        "repository.update",
+        "ownerMapping.findMany"
+      ]);
+      expect(setConfigValues).toEqual([repository.organizationId]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("keeps unauthenticated policy preview read-only and rejects unauthenticated persistence", async () => {
     const state = createInitialState();
     const app = createApp(state);
@@ -612,7 +786,7 @@ describe("security and audit hardening", () => {
       actor: "alex",
       actorRole: "platform_admin",
       scope: "pr",
-      policyVersion: "security-test@1.0.0"
+      policyVersion: record.policyVersion
     });
     expect(state.auditEvents).toEqual(
       expect.arrayContaining([
@@ -621,7 +795,7 @@ describe("security and audit hardening", () => {
           actor: "alex",
           metadataJson: expect.objectContaining({
             actorRole: "platform_admin",
-            policyVersion: "security-test@1.0.0"
+            policyVersion: record.policyVersion
           })
         })
       ])
@@ -651,7 +825,7 @@ describe("security and audit hardening", () => {
       const approvedEvidence = await app.inject({
         method: "PATCH",
         url: `/api/evidence/${evidence.id}/approve`,
-        payload: JSON.stringify({}),
+        payload: JSON.stringify({ recordId: record.id }),
         headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
       });
       expect(approvedEvidence.statusCode).toBe(200);
@@ -661,7 +835,7 @@ describe("security and audit hardening", () => {
     const approvedReviewer = await app.inject({
       method: "PATCH",
       url: `/api/reviewers/${reviewer.id}/approve`,
-      payload: JSON.stringify({}),
+      payload: JSON.stringify({ recordId: record.id }),
       headers: {
         "content-type": "application/json",
         ...actorHeaders("security-team", "security_reviewer")
@@ -682,6 +856,43 @@ describe("security and audit hardening", () => {
     expect(state.auditEvents.map((event) => event.action)).toEqual(
       expect.arrayContaining(["evidence_provided", "evidence_approved", "record_reevaluated"])
     );
+    await app.close();
+  });
+
+  it("marks reviewer approvals submitted through the API as manual", async () => {
+    const { app, state } = await createPreviewRecord();
+    const record = state.records[0]!;
+    const reviewer = record.requiredReviewers[0]!;
+
+    expect(reviewer.approved).toBe(false);
+    expect(reviewer.approvalSource).toBeUndefined();
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/reviewers/${reviewer.id}/approve`,
+      payload: JSON.stringify({ recordId: record.id }),
+      headers: {
+        "content-type": "application/json",
+        ...actorHeaders("security-team", "security_reviewer")
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().reviewer).toMatchObject({
+      id: reviewer.id,
+      approved: true,
+      approvalSource: "manual",
+      approvedBy: "security-team"
+    });
+    expect(
+      response
+        .json()
+        .record.requiredReviewers.find((item: { id: string }) => item.id === reviewer.id)
+    ).toMatchObject({ approved: true, approvalSource: "manual" });
+    expect(
+      state.records[0]!.requiredReviewers.find((item) => item.id === reviewer.id)?.approvalSource
+    ).toBe("manual");
+
     await app.close();
   });
 
@@ -730,7 +941,7 @@ describe("security and audit hardening", () => {
     const approveBeforeSubmit = await app.inject({
       method: "PATCH",
       url: `/api/evidence/${evidence.id}/approve`,
-      payload: JSON.stringify({}),
+      payload: JSON.stringify({ recordId: record.id }),
       headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
     expect(approveBeforeSubmit.statusCode).toBe(409);
@@ -738,7 +949,7 @@ describe("security and audit hardening", () => {
     const developerApprove = await app.inject({
       method: "PATCH",
       url: `/api/evidence/${evidence.id}/approve`,
-      payload: JSON.stringify({}),
+      payload: JSON.stringify({ recordId: record.id }),
       headers: { "content-type": "application/json", ...actorHeaders("sam", "developer") }
     });
     expect(developerApprove.statusCode).toBe(403);
@@ -764,7 +975,10 @@ describe("security and audit hardening", () => {
     const rejected = await app.inject({
       method: "PATCH",
       url: `/api/evidence/${evidence.id}/reject`,
-      payload: JSON.stringify({ reason: "Rotation proof link is missing from the evidence." }),
+      payload: JSON.stringify({
+        recordId: record.id,
+        reason: "Rotation proof link is missing from the evidence."
+      }),
       headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
     expect(rejected.statusCode).toBe(200);
@@ -890,7 +1104,7 @@ describe("security and audit hardening", () => {
       });
 
       expect(job.statusCode).toBe(200);
-      expect(job.body).toContain("security-test@1.0.0");
+      expect(job.body).toContain("security-test@1.0.0+");
       expect(job.body).toContain(format === "csv" ? "auditEventsJson" : "auditEvents");
       expect(job.body).toContain("check_published");
       expect(job.body).toContain("record_exported");
@@ -1403,13 +1617,13 @@ describe("security and audit hardening", () => {
     await app.inject({
       method: "PATCH",
       url: `/api/evidence/${evidence.id}/approve`,
-      payload: JSON.stringify({}),
+      payload: JSON.stringify({ recordId: record.id }),
       headers: { "content-type": "application/json", ...actorHeaders("alex", "platform_admin") }
     });
     await app.inject({
       method: "PATCH",
       url: `/api/reviewers/${reviewer.id}/approve`,
-      payload: JSON.stringify({}),
+      payload: JSON.stringify({ recordId: record.id }),
       headers: {
         "content-type": "application/json",
         ...actorHeaders("security-team", "security_reviewer")

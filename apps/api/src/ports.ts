@@ -6,6 +6,7 @@ import type {
   PullRequestInput
 } from "@agentforge/core";
 import type { GithubWebhookEnvelope } from "@agentforge/github";
+import { policyContentHashFromVersion } from "@agentforge/policy";
 
 // Persistence port (assessment C1/C2). Request/domain logic should depend on
 // this seam instead of branching on in-memory vs Prisma throughout app.ts. The
@@ -107,6 +108,7 @@ export interface MetricStore {
 
 export interface PersistencePort {
   records: ChangeControlRecordStore;
+  manualCcrMutations: ManualCcrMutationStore;
   auditEvents: AuditEventStore;
   webhookDeliveries: WebhookDeliveryStore;
   githubInstallations: GitHubInstallationStore;
@@ -160,6 +162,35 @@ export type ReplayableDelivery = {
   delivery: StoredWebhookDelivery;
   envelope: GithubWebhookEnvelope;
 };
+
+export type ManualCcrMutationTriggerReason =
+  | "evidence_provided"
+  | "evidence_approved"
+  | "evidence_rejected"
+  | "reviewer_approved"
+  | "override_created";
+
+export type ManualCcrMutationInput = {
+  organizationId: string;
+  recordId: string;
+  expectedRevision: number;
+  expectedHeadSha: string;
+  expectedPolicyVersion: string;
+  nextRecord: ChangeControlRecord;
+  auditEvents: AuditEventRecord[];
+  override?: OverrideRecord | undefined;
+  triggerReason: ManualCcrMutationTriggerReason;
+};
+
+export type ManualCcrMutationResult =
+  | { status: "committed"; record: ChangeControlRecord; trigger: ReplayableDelivery }
+  | { status: "conflict"; currentRevision: number }
+  | { status: "not_found" }
+  | { status: "trigger_unavailable" };
+
+export interface ManualCcrMutationStore {
+  commit(input: ManualCcrMutationInput): Promise<ManualCcrMutationResult>;
+}
 
 export type WebhookReplayTarget = {
   deliveryId?: string | undefined;
@@ -439,6 +470,7 @@ type InMemoryPersistenceState = {
   policyVersionSnapshots: Map<string, PolicyVersionSnapshotState>;
   evaluationSnapshots: EvaluationSnapshotState[];
   deliveries: Set<string>;
+  webhookDeliveryRecords?: Map<string, StoredWebhookDelivery> | undefined;
   queuedEvaluations: Array<{
     deliveryId: string;
     envelope: GithubWebhookEnvelope;
@@ -466,6 +498,7 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
   const repositoryPolicyHistory = new Map<string, RepositoryPolicyVersionRow[]>();
   const repositorySettings = new Map<string, RepositorySettingsState>();
   const policyVersionSnapshots = new Map<string, PolicyVersionSnapshotState>();
+  const webhookDeliveryRecords = new Map<string, StoredWebhookDelivery>();
   let evaluationSnapshots: EvaluationSnapshotState[] = [];
   let ownerMappings: OwnerMappingState[] = [];
   let githubInstallations: GitHubInstallationState[] = [];
@@ -483,6 +516,13 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
   const listOwnerMappings = () => state?.ownerMappings ?? ownerMappings;
   const policySnapshotMap = () => state?.policyVersionSnapshots ?? policyVersionSnapshots;
   const listEvaluationSnapshots = () => state?.evaluationSnapshots ?? evaluationSnapshots;
+  const deliveryMap = () => {
+    if (!state) {
+      return webhookDeliveryRecords;
+    }
+    state.webhookDeliveryRecords ??= new Map<string, StoredWebhookDelivery>();
+    return state.webhookDeliveryRecords;
+  };
   const listGithubInstallations = () => state?.githubInstallations ?? githubInstallations;
   const listGithubInstallationEvents = () =>
     state?.githubInstallationEvents ?? githubInstallationEvents;
@@ -524,7 +564,9 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
       version: input.record.policyVersion,
       mode: input.record.mode,
       contentYaml: `# Runtime policy snapshot for ${input.record.repositoryFullName}#${input.record.pullRequestNumber}\n# Full policy content was not attached to this evaluation snapshot.`,
-      contentHash: `${input.record.policyVersion}:${input.record.policyPackId ?? ""}`,
+      contentHash:
+        policyContentHashFromVersion(input.record.policyVersion) ??
+        `${input.record.policyVersion}:${input.record.policyPackId ?? ""}`,
       createdBy: "system"
     };
     policySnapshotMap().set(key, snapshot);
@@ -553,6 +595,175 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
       },
       async page(query) {
         return paginateRecords(filterAndSortRecords(listRecords(), query), query);
+      }
+    },
+    manualCcrMutations: {
+      async commit(input) {
+        const current = listRecords().find(
+          (record) => record.id === input.recordId && record.organizationId === input.organizationId
+        );
+        if (!current) {
+          return { status: "not_found" };
+        }
+        if (
+          current.revision !== input.expectedRevision ||
+          current.headSha !== input.expectedHeadSha ||
+          current.policyVersion !== input.expectedPolicyVersion
+        ) {
+          return { status: "conflict", currentRevision: current.revision };
+        }
+
+        const revision = current.revision + 1;
+        const committedRecord: ChangeControlRecord = structuredClone({
+          ...input.nextRecord,
+          id: current.id,
+          revision,
+          organizationId: current.organizationId,
+          repositoryId: current.repositoryId,
+          repositoryFullName: current.repositoryFullName,
+          pullRequestNumber: current.pullRequestNumber,
+          headSha: current.headSha,
+          policyVersion: current.policyVersion,
+          createdAt: current.createdAt
+        });
+        const source = state?.queuedEvaluations
+          .slice()
+          .reverse()
+          .find(
+            (item) =>
+              item.envelope.repository?.fullName === current.repositoryFullName &&
+              (item.envelope.pullRequest?.number ??
+                item.envelope.checkRun?.pullRequests[0]?.number) === current.pullRequestNumber
+          );
+        const [owner = "local", name = current.repositoryFullName] =
+          current.repositoryFullName.split("/");
+        const repositoryNumericId =
+          source?.envelope.repository?.id ??
+          Number(stableInMemoryGithubRepositoryId(current.repositoryFullName));
+        const installationId =
+          source?.envelope.installationId ??
+          Number(
+            listGithubInstallations().find(
+              (installation) =>
+                installation.organizationId === current.organizationId &&
+                installation.status === "approved"
+            )?.githubInstallationId ?? 1
+          );
+        const deliveryId = `manual:${current.id}:r${revision}`;
+        const receivedAt = committedRecord.updatedAt;
+        const envelope: GithubWebhookEnvelope = {
+          deliveryId,
+          event: "pull_request",
+          action: "edited",
+          installationId: Number.isSafeInteger(installationId) ? installationId : 1,
+          repository: {
+            id: repositoryNumericId,
+            fullName: current.repositoryFullName,
+            owner,
+            name,
+            defaultBranch: current.baseBranch
+          },
+          pullRequest: {
+            id: source?.envelope.pullRequest?.id ?? current.pullRequestNumber,
+            number: current.pullRequestNumber,
+            title: source?.envelope.pullRequest?.title ?? `PR #${current.pullRequestNumber}`,
+            authorLogin: source?.envelope.pullRequest?.authorLogin ?? "manual-reevaluation",
+            baseBranch: current.baseBranch,
+            headBranch: source?.envelope.pullRequest?.headBranch ?? "unknown",
+            headSha: current.headSha,
+            state: source?.envelope.pullRequest?.state ?? "open",
+            merged: source?.envelope.pullRequest?.merged ?? false
+          },
+          receivedAt
+        };
+        const delivery: StoredWebhookDelivery = {
+          deliveryId,
+          event: envelope.event,
+          action: envelope.action ?? null,
+          organizationId: current.organizationId,
+          repositoryId: current.repositoryId,
+          repositoryFullName: current.repositoryFullName,
+          pullRequestNumber: current.pullRequestNumber,
+          headSha: current.headSha,
+          enqueued: false,
+          deliveryStatus: "received",
+          payloadJson: {
+            installationId: envelope.installationId,
+            repository: envelope.repository,
+            pullRequest: envelope.pullRequest,
+            receivedAt,
+            manualTrigger: {
+              reason: input.triggerReason,
+              recordId: current.id,
+              revision
+            }
+          },
+          createdAt: receivedAt
+        };
+        const policyVersionId = [...policySnapshotMap().values()].find(
+          (snapshot) =>
+            snapshot.organizationId === current.organizationId &&
+            snapshot.repositoryId === current.repositoryId &&
+            snapshot.version === current.policyVersion
+        )?.id;
+        const nextSnapshots = listEvaluationSnapshots().map((snapshot) => {
+          if (
+            snapshot.organizationId !== current.organizationId ||
+            snapshot.repositoryId !== current.repositoryId ||
+            snapshot.headSha !== current.headSha ||
+            (policyVersionId && snapshot.policyVersionId !== policyVersionId)
+          ) {
+            return snapshot;
+          }
+          const explanation = [
+            `${committedRecord.checkStatus}:${committedRecord.lifecycle}`,
+            ...committedRecord.verifiedFindings.map((finding) => finding.evidence)
+          ];
+          return {
+            ...snapshot,
+            mode: committedRecord.mode,
+            status: committedRecord.checkStatus,
+            completedAt: committedRecord.updatedAt,
+            explanation,
+            requiredEvidence: structuredClone(committedRecord.requiredEvidence),
+            requiredReviewers: structuredClone(committedRecord.requiredReviewers),
+            checkRun: {
+              ...snapshot.checkRun,
+              conclusion: checkConclusionForRecord(committedRecord),
+              outputSummary: explanation.join(" "),
+              updatedAt: committedRecord.updatedAt
+            }
+          };
+        });
+
+        if (state) {
+          state.records = [
+            committedRecord,
+            ...state.records.filter((record) => record.id !== current.id)
+          ];
+          state.auditEvents = [...state.auditEvents, ...structuredClone(input.auditEvents)];
+          if (input.override) {
+            state.overrides = [
+              structuredClone(input.override),
+              ...state.overrides.filter((override) => override.id !== input.override?.id)
+            ];
+          }
+          state.evaluationSnapshots = nextSnapshots;
+        } else {
+          records.set(current.id, committedRecord);
+          auditEvents.push(...structuredClone(input.auditEvents));
+          if (input.override) {
+            overrides.set(input.override.id, structuredClone(input.override));
+          }
+          evaluationSnapshots = nextSnapshots;
+        }
+        deliveryMap().set(deliveryId, delivery);
+        state?.deliveries.add(deliveryId);
+        return {
+          status: "committed",
+          record: committedRecord,
+          trigger: { delivery, envelope }
+        };
       }
     },
     auditEvents: {
@@ -682,9 +893,17 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
         return policyMap().get(repositoryId);
       },
       async saveActivePolicy(policy) {
+        const currentActive = policyMap().get(policy.repositoryId);
         policyMap().set(policy.repositoryId, policy);
         const history = policyHistoryMap();
         const existing = history.get(policy.repositoryId) ?? [];
+        // Idempotent re-save mirrors the Prisma path: re-saving the same
+        // content (same content-hash-derived version as the current active
+        // policy) must not append a duplicate history entry. Reverting to a
+        // *different* prior version still appends a new row (append-only).
+        if (currentActive?.version === policy.version) {
+          return policy;
+        }
         const row: RepositoryPolicyVersionRow = { ...policy, id: randomUUID() };
         history.set(policy.repositoryId, [...existing, row]);
         return policy;
@@ -882,30 +1101,118 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
     },
     webhookDeliveries: {
       async recordReceived(envelope) {
-        if (!state) {
-          return { duplicate: false, status: "received" };
+        const existing = deliveryMap().get(envelope.deliveryId);
+        const duplicate = Boolean(existing) || Boolean(state?.deliveries.has(envelope.deliveryId));
+        const matchingRecord = listRecords().find(
+          (record) => record.repositoryFullName === envelope.repository?.fullName
+        );
+        if (!existing) {
+          deliveryMap().set(envelope.deliveryId, {
+            deliveryId: envelope.deliveryId,
+            event: envelope.event,
+            action: envelope.action ?? null,
+            organizationId: matchingRecord?.organizationId ?? "org_local",
+            repositoryId: matchingRecord?.repositoryId ?? null,
+            repositoryFullName: envelope.repository?.fullName ?? null,
+            pullRequestNumber:
+              envelope.pullRequest?.number ?? envelope.checkRun?.pullRequests[0]?.number ?? null,
+            headSha: envelope.pullRequest?.headSha ?? envelope.checkRun?.headSha ?? null,
+            enqueued: false,
+            deliveryStatus: "received",
+            payloadJson: {
+              ...(envelope.installationId !== undefined
+                ? { installationId: envelope.installationId }
+                : {}),
+              ...(envelope.repository ? { repository: envelope.repository } : {}),
+              ...(envelope.pullRequest ? { pullRequest: envelope.pullRequest } : {}),
+              ...(envelope.checkRun ? { checkRun: envelope.checkRun } : {}),
+              ...(envelope.installation ? { installation: envelope.installation } : {}),
+              receivedAt: envelope.receivedAt
+            },
+            createdAt: envelope.receivedAt
+          });
         }
-        const duplicate = state.deliveries.has(envelope.deliveryId);
-        state.deliveries.add(envelope.deliveryId);
-        return { duplicate, status: duplicate ? "queued" : "received" };
+        state?.deliveries.add(envelope.deliveryId);
+        return {
+          duplicate,
+          status:
+            (existing?.deliveryStatus as WebhookDeliveryStatus | undefined) ??
+            (duplicate ? "queued" : "received")
+        };
       },
-      async markQueued(deliveryId) {
+      async markQueued(deliveryId, queueJobId) {
         state?.deliveries.add(deliveryId);
+        const existing = deliveryMap().get(deliveryId);
+        if (existing) {
+          deliveryMap().set(deliveryId, {
+            ...existing,
+            enqueued: true,
+            deliveryStatus: "queued",
+            queueJobId,
+            queuedAt: new Date().toISOString(),
+            lastEnqueueFailureClass: null,
+            lastEnqueueFailureMessage: null,
+            lastEnqueueFailedAt: null
+          });
+        }
       },
       async markCompleted(deliveryId) {
         state?.deliveries.add(deliveryId);
+        const existing = deliveryMap().get(deliveryId);
+        if (existing) {
+          deliveryMap().set(deliveryId, {
+            ...existing,
+            deliveryStatus: "completed",
+            completedAt: new Date().toISOString()
+          });
+        }
       },
-      async markEnqueueFailed(deliveryId) {
+      async markEnqueueFailed(deliveryId, error) {
         state?.deliveries.add(deliveryId);
+        const existing = deliveryMap().get(deliveryId);
+        if (existing) {
+          const message = error instanceof Error ? error.message : String(error);
+          deliveryMap().set(deliveryId, {
+            ...existing,
+            enqueued: false,
+            deliveryStatus: "enqueue_failed",
+            lastEnqueueFailureClass: error instanceof Error ? error.name : "UnknownError",
+            lastEnqueueFailureMessage: message.slice(0, 500),
+            lastEnqueueFailedAt: new Date().toISOString()
+          });
+        }
       },
-      async markReplayed() {
-        return;
+      async markReplayed(deliveryId, actor) {
+        const existing = deliveryMap().get(deliveryId);
+        if (existing) {
+          deliveryMap().set(deliveryId, {
+            ...existing,
+            replayCount: (existing.replayCount ?? 0) + 1,
+            lastReplayedAt: new Date().toISOString(),
+            lastReplayedBy: actor
+          });
+        }
       },
       async findReplayable(target, organizationId) {
-        if (!state) {
+        if (!hasCompleteWebhookReplayTarget(target)) {
           return undefined;
         }
-        if (!hasCompleteWebhookReplayTarget(target)) {
+        const stored = [...deliveryMap().values()]
+          .reverse()
+          .find((delivery) =>
+            target.deliveryId
+              ? delivery.deliveryId === target.deliveryId
+              : delivery.repositoryFullName === target.repositoryFullName &&
+                delivery.pullRequestNumber === target.pullRequestNumber
+          );
+        if (stored) {
+          if (organizationId && stored.organizationId !== organizationId) {
+            return undefined;
+          }
+          const envelope = envelopeForStoredDelivery(stored);
+          return envelope ? { delivery: stored, envelope } : undefined;
+        }
+        if (!state) {
           return undefined;
         }
         const candidates = [...state.queuedEvaluations].reverse();
@@ -945,8 +1252,16 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
           }
         };
       },
-      async listRecentFailures() {
-        return [];
+      async listRecentFailures(organizationId) {
+        return [...deliveryMap().values()]
+          .filter(
+            (delivery) =>
+              (!organizationId || delivery.organizationId === organizationId) &&
+              (delivery.deliveryStatus === "enqueue_failed" ||
+                (delivery.deliveryStatus === "received" &&
+                  delivery.deliveryId.startsWith("manual:")))
+          )
+          .map((delivery) => ({ ...delivery }));
       }
     },
     githubInstallations: {
@@ -1156,6 +1471,38 @@ export function auditEventsForRecordExport(
       ((event.targetType === "change_control_record" && recordIds.has(event.targetId)) ||
         (event.repositoryId ? repositoryIds.has(event.repositoryId) : false))
   );
+}
+
+function envelopeForStoredDelivery(
+  delivery: StoredWebhookDelivery
+): GithubWebhookEnvelope | undefined {
+  const payload = delivery.payloadJson as {
+    installationId?: number;
+    repository?: GithubWebhookEnvelope["repository"];
+    pullRequest?: GithubWebhookEnvelope["pullRequest"];
+    checkRun?: GithubWebhookEnvelope["checkRun"];
+    installation?: GithubWebhookEnvelope["installation"];
+    receivedAt?: string;
+  } | null;
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+  return {
+    deliveryId: delivery.deliveryId,
+    event: delivery.event,
+    ...(delivery.action ? { action: delivery.action } : {}),
+    ...(payload.installationId !== undefined ? { installationId: payload.installationId } : {}),
+    ...(payload.repository ? { repository: payload.repository } : {}),
+    ...(payload.pullRequest ? { pullRequest: payload.pullRequest } : {}),
+    ...(payload.checkRun ? { checkRun: payload.checkRun } : {}),
+    ...(payload.installation ? { installation: payload.installation } : {}),
+    receivedAt:
+      payload.receivedAt ??
+      (typeof delivery.createdAt === "string"
+        ? delivery.createdAt
+        : delivery.createdAt?.toISOString()) ??
+      new Date().toISOString()
+  };
 }
 
 function stableInMemoryGithubRepositoryId(value: string): bigint {

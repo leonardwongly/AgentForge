@@ -56,6 +56,8 @@ export type EvidenceRequirement = {
   aiDraft?: string | undefined;
 };
 
+export type ReviewerApprovalSource = "github_review" | "manual";
+
 export type ReviewerRequirement = {
   id: string;
   reviewer: string;
@@ -65,6 +67,7 @@ export type ReviewerRequirement = {
   triggeredByFindingId: string;
   clearsWhen?: "path_removed" | "evidence_approved" | "manual_clear" | undefined;
   approved: boolean;
+  approvalSource?: ReviewerApprovalSource | undefined;
   approvedBy?: string | undefined;
   approvedAt?: string | undefined;
 };
@@ -82,8 +85,16 @@ export type PolicyResult = {
   evaluatedAt: string;
 };
 
+export type PriorRequirementState = {
+  headSha: string;
+  policyVersion: string;
+  requiredEvidence: EvidenceRequirement[];
+  requiredReviewers: ReviewerRequirement[];
+};
+
 export type ChangeControlRecord = {
   id: string;
+  revision: number;
   organizationId: string;
   repositoryId: string;
   repositoryFullName: string;
@@ -218,6 +229,7 @@ export type AuditEventAction =
   | "evidence_rejected"
   | "reviewer_approved"
   | "record_reevaluated"
+  | "record_reevaluation_requested"
   | "check_published"
   | "record_exported"
   | "webhook_replayed"

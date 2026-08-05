@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   EvidenceKind,
   EvidenceRequirement,
@@ -5,6 +6,7 @@ import type {
   PolicyHit,
   PolicyMode,
   PolicyResult,
+  PriorRequirementState,
   PullRequestInput,
   ReviewerRequirement,
   VerifiedFact
@@ -16,17 +18,24 @@ import { minimatch } from "minimatch";
 import type { PolicyAction, PolicyConfig } from "./schema.js";
 import { normalizeEvidenceKinds, strictestMode } from "./schema.js";
 
+export type PolicyIdentityOptions = {
+  sourceContentHash?: string | undefined;
+};
+
 export function evaluateMergeGuard(
   pr: PullRequestInput,
   facts: VerifiedFact[],
-  policy: PolicyConfig
+  policy: PolicyConfig,
+  priorRequirementState?: PriorRequirementState,
+  identity: PolicyIdentityOptions = {}
 ): PolicyResult {
   const evaluatedAt = new Date().toISOString();
+  const policyVersion = buildPolicyVersion(policy, identity);
   if (!policyAppliesToPullRequest(pr, policy.agentforge.apply_to)) {
     return {
       mode: policy.agentforge.mode,
       status: "pass",
-      policyVersion: buildPolicyVersion(policy),
+      policyVersion,
       policyPackId: policy.policy_pack_id,
       policyPackVersion: policy.policy_pack_version,
       findings: [],
@@ -38,8 +47,15 @@ export function evaluateMergeGuard(
   }
 
   const policyHits = applyPolicyRules(facts, policy);
-  const evidence = deriveEvidenceRequirements(policyHits, pr);
-  const reviewers = routeReviewers(policyHits, pr);
+  const derivedEvidence = deriveEvidenceRequirements(policyHits, pr);
+  const derivedReviewers = routeReviewers(policyHits, pr);
+  const { evidence, reviewers } = mergePriorRequirementState({
+    pr,
+    policyVersion,
+    derivedEvidence,
+    derivedReviewers,
+    priorRequirementState
+  });
   const mode = resolveEvaluationMode(policy.agentforge.mode, policyHits);
 
   const hasUnresolvedBlockingHit = policyHits.some((hit) =>
@@ -61,7 +77,7 @@ export function evaluateMergeGuard(
           : wouldBlock
             ? "block"
             : "pass",
-    policyVersion: buildPolicyVersion(policy),
+    policyVersion,
     policyPackId: policy.policy_pack_id,
     policyPackVersion: policy.policy_pack_version,
     findings: facts,
@@ -70,6 +86,133 @@ export function evaluateMergeGuard(
     explanation: buildHumanReadableReasons(policyHits, evidence, reviewers, mode),
     evaluatedAt
   };
+}
+
+function mergePriorRequirementState(input: {
+  pr: PullRequestInput;
+  policyVersion: string;
+  derivedEvidence: EvidenceRequirement[];
+  derivedReviewers: ReviewerRequirement[];
+  priorRequirementState?: PriorRequirementState | undefined;
+}): { evidence: EvidenceRequirement[]; reviewers: ReviewerRequirement[] } {
+  const prior = input.priorRequirementState;
+  if (!prior || prior.headSha !== input.pr.headSha || prior.policyVersion !== input.policyVersion) {
+    return { evidence: input.derivedEvidence, reviewers: input.derivedReviewers };
+  }
+
+  return {
+    evidence: carryForwardManualEvidence(input.derivedEvidence, prior.requiredEvidence),
+    reviewers: carryForwardManualReviewerApprovals(input.derivedReviewers, prior.requiredReviewers)
+  };
+}
+
+function carryForwardManualEvidence(
+  derived: EvidenceRequirement[],
+  prior: EvidenceRequirement[]
+): EvidenceRequirement[] {
+  const byId = uniqueEligibleItemsById(
+    prior,
+    (item) => item.source === "manual_attestation" || item.source === "linked_artifact"
+  );
+
+  return derived.map((requirement) => {
+    const previous = byId.get(requirement.id);
+    if (
+      !previous ||
+      previous.kind !== requirement.kind ||
+      previous.requiredByFindingId !== requirement.requiredByFindingId
+    ) {
+      return requirement;
+    }
+
+    const carried: EvidenceRequirement = {
+      id: requirement.id,
+      kind: requirement.kind,
+      status: previous.status,
+      source: previous.source,
+      requiredByFindingId: requirement.requiredByFindingId
+    };
+    copyEvidenceMetadata(carried, previous);
+    if (requirement.aiDraft !== undefined) {
+      carried.aiDraft = requirement.aiDraft;
+    }
+    return carried;
+  });
+}
+
+function carryForwardManualReviewerApprovals(
+  derived: ReviewerRequirement[],
+  prior: ReviewerRequirement[]
+): ReviewerRequirement[] {
+  const byId = uniqueEligibleItemsById(
+    prior,
+    (item) => item.approved && item.approvalSource === "manual"
+  );
+
+  return derived.map((requirement) => {
+    const previous = byId.get(requirement.id);
+    if (
+      !previous ||
+      previous.reviewer !== requirement.reviewer ||
+      previous.reviewerType !== requirement.reviewerType ||
+      previous.triggeredByFindingId !== requirement.triggeredByFindingId
+    ) {
+      return requirement;
+    }
+
+    const carried: ReviewerRequirement = {
+      ...requirement,
+      approved: true,
+      approvalSource: "manual"
+    };
+    delete carried.approvedBy;
+    delete carried.approvedAt;
+    if (previous.approvedBy !== undefined) {
+      carried.approvedBy = previous.approvedBy;
+    }
+    if (previous.approvedAt !== undefined) {
+      carried.approvedAt = previous.approvedAt;
+    }
+    return carried;
+  });
+}
+
+function uniqueEligibleItemsById<T extends { id: string }>(
+  items: T[],
+  eligible: (item: T) => boolean
+): Map<string, T> {
+  const byId = new Map<string, T>();
+  const ambiguousIds = new Set<string>();
+  for (const item of items) {
+    if (!eligible(item) || ambiguousIds.has(item.id)) {
+      continue;
+    }
+    if (byId.has(item.id)) {
+      byId.delete(item.id);
+      ambiguousIds.add(item.id);
+      continue;
+    }
+    byId.set(item.id, item);
+  }
+  return byId;
+}
+
+function copyEvidenceMetadata(target: EvidenceRequirement, source: EvidenceRequirement): void {
+  if (source.providedBy !== undefined) {
+    target.providedBy = source.providedBy;
+  }
+  if (source.providedAt !== undefined) {
+    target.providedAt = source.providedAt;
+  }
+  if (source.approvedBy !== undefined) {
+    target.approvedBy = source.approvedBy;
+  }
+  if (source.approvedAt !== undefined) {
+    target.approvedAt = source.approvedAt;
+  }
+  if (source.contentSummary !== undefined) {
+    target.contentSummary = source.contentSummary;
+  }
 }
 
 export function applyPolicyRules(facts: VerifiedFact[], policy: PolicyConfig): PolicyHit[] {
@@ -407,11 +550,45 @@ function matchesScope(value: string, pattern: string): boolean {
   return minimatch(value, pattern, { dot: true, nocase: true });
 }
 
-function buildPolicyVersion(policy: PolicyConfig): string {
-  if (policy.policy_pack_id && policy.policy_pack_version) {
-    return `${policy.policy_pack_id}@${policy.policy_pack_version}`;
+export function effectivePolicyContentHash(
+  policy: PolicyConfig,
+  identity: PolicyIdentityOptions = {}
+): string {
+  const canonicalIdentity = {
+    effectivePolicy: canonicalPolicyValue(policy),
+    sourceContentHash: identity.sourceContentHash ?? null
+  };
+  return createHash("sha256").update(JSON.stringify(canonicalIdentity)).digest("hex");
+}
+
+export function buildPolicyVersion(
+  policy: PolicyConfig,
+  identity: PolicyIdentityOptions = {}
+): string {
+  const base =
+    policy.policy_pack_id && policy.policy_pack_version
+      ? `${policy.policy_pack_id}@${policy.policy_pack_version}`
+      : `schema-v${policy.version}`;
+  return `${base}+${effectivePolicyContentHash(policy, identity)}`;
+}
+
+export function policyContentHashFromVersion(version: string): string | undefined {
+  return /\+([0-9a-f]{64})$/u.exec(version)?.[1];
+}
+
+function canonicalPolicyValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(canonicalPolicyValue);
   }
-  return `schema-v${policy.version}`;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalPolicyValue(item)])
+    );
+  }
+  return value;
 }
 
 function humanize(value: string): string {

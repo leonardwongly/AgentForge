@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ChangeControlRecord, PullRequestInput } from "@agentforge/core";
+import type { GithubWebhookEnvelope } from "@agentforge/github";
 import { testInternals } from "../src/index.js";
 
 type InstallationRow = {
@@ -97,6 +99,7 @@ function createPrismaMock(
 ) {
   const repositoryUpserts: unknown[] = [];
   const repositoryArchiveCalls: unknown[] = [];
+  const webhookCreates: Array<Record<string, unknown>> = [];
   const prisma = {
     organization: {
       upsert: vi.fn(async (input: unknown) => input)
@@ -222,6 +225,7 @@ function createPrismaMock(
         const upsert = input as {
           where: {
             githubRepositoryId?: bigint;
+            organizationId?: string;
             organizationId_fullName?: { organizationId: string; fullName: string };
           };
           update: Partial<RepositoryRow>;
@@ -229,7 +233,11 @@ function createPrismaMock(
         };
         const existing = repositories.find((repository) => {
           if (upsert.where.githubRepositoryId !== undefined) {
-            return repository.githubRepositoryId === upsert.where.githubRepositoryId;
+            return (
+              repository.githubRepositoryId === upsert.where.githubRepositoryId &&
+              (upsert.where.organizationId === undefined ||
+                repository.organizationId === upsert.where.organizationId)
+            );
           }
           return (
             upsert.where.organizationId_fullName !== undefined &&
@@ -256,6 +264,16 @@ function createPrismaMock(
       })
     },
     webhookDelivery: {
+      findUnique: vi.fn(async ({ where }: { where: { deliveryId: string } }) => {
+        return deliveries.find((delivery) => delivery.deliveryId === where.deliveryId) ?? null;
+      }),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        webhookCreates.push(data);
+        return {
+          deliveryStatus: data.deliveryStatus ?? "received",
+          enqueued: data.enqueued ?? false
+        };
+      }),
       findMany: vi.fn(
         async ({
           take,
@@ -299,7 +317,83 @@ function createPrismaMock(
       )
     }
   };
-  return { prisma, repositoryArchiveCalls, repositoryUpserts, rows };
+  return {
+    prisma,
+    repositoryArchiveCalls,
+    repositoryUpserts,
+    rows,
+    webhookCreates
+  };
+}
+
+function pullRequestEnvelope(input: {
+  deliveryId: string;
+  repositoryId: number;
+  fullName?: string;
+  installationId?: number;
+}): GithubWebhookEnvelope {
+  const fullName = input.fullName ?? "acme/payments";
+  const [owner = "acme", name = "payments"] = fullName.split("/");
+  return {
+    deliveryId: input.deliveryId,
+    event: "pull_request",
+    action: "opened",
+    ...(input.installationId !== undefined ? { installationId: input.installationId } : {}),
+    repository: {
+      id: input.repositoryId,
+      fullName,
+      owner,
+      name,
+      defaultBranch: "main"
+    },
+    pullRequest: {
+      id: 9001,
+      number: 42,
+      title: "Harden tenancy",
+      authorLogin: "sam",
+      baseBranch: "main",
+      headBranch: "fix/tenancy",
+      headSha: "sha-tenant",
+      state: "open",
+      merged: false
+    },
+    receivedAt: "2026-05-25T00:00:00.000Z"
+  };
+}
+
+function recordForRepository(repositoryId: string): ChangeControlRecord {
+  return {
+    id: "record-existing-repository",
+    revision: 0,
+    organizationId: "org-a",
+    repositoryId,
+    repositoryFullName: "acme/payments",
+    pullRequestNumber: 42,
+    headSha: "sha-record",
+    baseBranch: "main",
+    mode: "warn",
+    policyVersion: "fintech@1.0.0",
+    verifiedFindings: [],
+    requiredEvidence: [],
+    requiredReviewers: [],
+    checkStatus: "pass",
+    lifecycle: "passed",
+    createdAt: "2026-05-25T00:00:00.000Z",
+    updatedAt: "2026-05-25T00:00:00.000Z"
+  };
+}
+
+function pullRequestForRecord(): PullRequestInput {
+  return {
+    repositoryFullName: "acme/payments",
+    pullRequestNumber: 42,
+    title: "Reuse real repository id",
+    authorLogin: "sam",
+    baseBranch: "main",
+    headBranch: "fix/record-save",
+    headSha: "sha-record",
+    changedFiles: []
+  };
 }
 
 describe("GitHub installation tenancy", () => {
@@ -515,6 +609,114 @@ describe("GitHub installation tenancy", () => {
   });
 });
 
+describe("webhook delivery tenant attribution", () => {
+  it("uses the immutable GitHub repository id when tenants have duplicate full names", async () => {
+    const repositories: RepositoryRow[] = [
+      {
+        id: "repo-a",
+        organizationId: "org-a",
+        githubRepositoryId: 101n,
+        fullName: "shared/payments",
+        enabled: true,
+        archivedAt: null,
+        mode: null
+      },
+      {
+        id: "repo-b",
+        organizationId: "org-b",
+        githubRepositoryId: 202n,
+        fullName: "shared/payments",
+        enabled: true,
+        archivedAt: null,
+        mode: null
+      }
+    ];
+    const { prisma, webhookCreates } = createPrismaMock([], [], repositories);
+
+    await testInternals.recordWebhookDeliveryReceived(
+      prisma as never,
+      pullRequestEnvelope({
+        deliveryId: "delivery-duplicate-name",
+        repositoryId: 202,
+        fullName: "shared/payments"
+      })
+    );
+
+    expect(webhookCreates).toHaveLength(1);
+    expect(webhookCreates[0]).toMatchObject({
+      organizationId: "org-b",
+      repositoryId: "repo-b",
+      repositoryFullName: "shared/payments"
+    });
+  });
+
+  it("attributes only approved non-archived installations and fails closed for pending ones", async () => {
+    const installations = [
+      installationRow({
+        id: "installation-pending",
+        organizationId: "org-b",
+        githubInstallationId: 55n,
+        status: "pending_approval"
+      }),
+      installationRow({
+        id: "installation-approved",
+        organizationId: "org-b",
+        githubInstallationId: 66n,
+        status: "approved"
+      })
+    ];
+    const repositories: RepositoryRow[] = [
+      {
+        id: "repo-a",
+        organizationId: "org-a",
+        githubRepositoryId: 101n,
+        fullName: "shared/payments",
+        enabled: true,
+        archivedAt: null,
+        mode: null
+      },
+      {
+        id: "repo-b",
+        organizationId: "org-b",
+        githubRepositoryId: 202n,
+        fullName: "shared/payments",
+        enabled: true,
+        archivedAt: null,
+        mode: null
+      }
+    ];
+    const { prisma, webhookCreates } = createPrismaMock(installations, [], repositories);
+
+    await testInternals.recordWebhookDeliveryReceived(
+      prisma as never,
+      pullRequestEnvelope({
+        deliveryId: "delivery-pending-installation",
+        repositoryId: 101,
+        fullName: "shared/payments",
+        installationId: 55
+      })
+    );
+    await testInternals.recordWebhookDeliveryReceived(
+      prisma as never,
+      pullRequestEnvelope({
+        deliveryId: "delivery-approved-installation",
+        repositoryId: 202,
+        fullName: "shared/payments",
+        installationId: 66
+      })
+    );
+
+    expect(webhookCreates[0]).toMatchObject({
+      organizationId: null,
+      repositoryId: null
+    });
+    expect(webhookCreates[1]).toMatchObject({
+      organizationId: "org-b",
+      repositoryId: "repo-b"
+    });
+  });
+});
+
 describe("GitHub installation webhook transitions", () => {
   it("archives installations only for installation delete or suspend webhooks", async () => {
     const { prisma, rows } = createPrismaMock([
@@ -701,8 +903,13 @@ describe("repository archive preservation", () => {
       defaultBranch: "main"
     };
 
-    await testInternals.ensureRepository(prisma as never, input);
-    await testInternals.ensureRepository(prisma as never, input, { forceUnarchive: true });
+    await testInternals.ensureRepository(prisma as never, input, {
+      allowSyntheticGithubRepositoryId: true
+    });
+    await testInternals.ensureRepository(prisma as never, input, {
+      forceUnarchive: true,
+      allowSyntheticGithubRepositoryId: true
+    });
 
     expect(repositoryUpserts[0]).toMatchObject({
       update: { fullName: "acme/payments", defaultBranch: "main" }
@@ -811,5 +1018,172 @@ describe("repository archive preservation", () => {
       enabled: true,
       archivedAt: null
     });
+  });
+});
+
+describe("repository identity boundaries", () => {
+  it("reuses a scoped existing repository with a real GitHub id when saving a record", async () => {
+    const repository = {
+      id: "repo-real",
+      organizationId: "org-a",
+      githubRepositoryId: 4242n,
+      fullName: "acme/payments",
+      owner: "acme",
+      name: "payments",
+      defaultBranch: "main",
+      protected: false,
+      enabled: true,
+      archivedAt: null,
+      archiveReason: null,
+      currentPolicyVersionId: null,
+      mode: null,
+      createdAt: new Date("2026-05-24T00:00:00.000Z"),
+      updatedAt: new Date("2026-05-24T00:00:00.000Z")
+    };
+    const record = recordForRepository(repository.id);
+    const repositoryUpsert = vi.fn(() => {
+      throw new Error("records.save must not synthesize or upsert this repository");
+    });
+    const repositoryFindFirst = vi.fn(
+      async ({ where }: { where: { id: string; organizationId: string } }) =>
+        where.id === repository.id && where.organizationId === repository.organizationId
+          ? repository
+          : null
+    );
+    const pullRequestUpsert = vi.fn(async () => ({ id: "pr-existing-repository" }));
+    const prisma = {
+      organization: {
+        upsert: vi.fn(async () => ({ id: "org-a" }))
+      },
+      repository: {
+        findFirst: repositoryFindFirst,
+        upsert: repositoryUpsert
+      },
+      pullRequest: {
+        upsert: pullRequestUpsert
+      },
+      changeControlRecord: {
+        upsert: vi.fn(async () => ({
+          id: record.id,
+          pullRequestId: "pr-existing-repository",
+          repositoryFullName: record.repositoryFullName,
+          pullRequestNumber: record.pullRequestNumber,
+          headSha: record.headSha,
+          baseBranch: record.baseBranch,
+          mode: record.mode,
+          policyVersion: record.policyVersion,
+          policyPackId: null,
+          policyPackVersion: null,
+          checkStatus: record.checkStatus,
+          lifecycle: record.lifecycle,
+          verifiedFindingsJson: [],
+          requiredEvidenceJson: [],
+          requiredReviewersJson: [],
+          decisionJson: null,
+          createdAt: new Date(record.createdAt),
+          updatedAt: new Date(record.updatedAt)
+        }))
+      },
+      policyVersion: {
+        findFirst: vi.fn(async () => ({
+          id: "policy-existing",
+          organizationId: "org-a",
+          repositoryId: repository.id,
+          policyPackId: null,
+          version: record.policyVersion,
+          mode: record.mode,
+          contentYaml: "version: 1",
+          contentHash: "hash",
+          createdBy: "system"
+        }))
+      },
+      evaluation: {
+        create: vi.fn(async () => ({ id: "evaluation-existing" }))
+      },
+      checkRun: {
+        create: vi.fn(async () => ({ id: "check-existing" }))
+      }
+    };
+
+    const saved = await testInternals.saveChangeControlRecord(
+      prisma as never,
+      record,
+      pullRequestForRecord()
+    );
+
+    expect(repositoryFindFirst).toHaveBeenCalledWith({
+      where: { id: repository.id, organizationId: "org-a" }
+    });
+    expect(repositoryUpsert).not.toHaveBeenCalled();
+    expect(pullRequestUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          repositoryId_number: {
+            repositoryId: repository.id,
+            number: record.pullRequestNumber
+          }
+        }
+      })
+    );
+    expect(saved).toMatchObject({
+      organizationId: "org-a",
+      repositoryId: repository.id
+    });
+  });
+
+  it("refuses to transfer an immutable GitHub repository id between organizations", async () => {
+    const repositories: RepositoryRow[] = [
+      {
+        id: "repo-owned-by-a",
+        organizationId: "org-a",
+        githubRepositoryId: 303n,
+        fullName: "acme/payments",
+        enabled: true,
+        archivedAt: null,
+        mode: null
+      }
+    ];
+    const { prisma, repositoryUpserts } = createPrismaMock([], [], repositories);
+
+    await expect(
+      testInternals.ensureRepository(prisma as never, {
+        organizationId: "org-b",
+        repositoryId: "repo-requested-by-b",
+        fullName: "acme/payments-renamed",
+        defaultBranch: "main",
+        githubRepositoryId: 303n
+      })
+    ).rejects.toThrow("already bound to a different organization");
+
+    expect(repositoryUpserts).toHaveLength(0);
+    expect(repositories[0]).toMatchObject({
+      organizationId: "org-a",
+      fullName: "acme/payments"
+    });
+  });
+
+  it("requires explicit local-creation permission before synthesizing a GitHub repository id", async () => {
+    const { prisma, repositoryUpserts } = createPrismaMock();
+    const input = {
+      organizationId: "org-local",
+      repositoryId: "repo-local",
+      fullName: "local/sample",
+      defaultBranch: "main"
+    };
+
+    await expect(testInternals.ensureRepository(prisma as never, input)).rejects.toThrow(
+      "real GitHub repository id is required"
+    );
+    expect(repositoryUpserts).toHaveLength(0);
+
+    await expect(
+      testInternals.ensureRepository(prisma as never, input, {
+        allowSyntheticGithubRepositoryId: true
+      })
+    ).resolves.toMatchObject({
+      id: "repo-local",
+      organizationId: "org-local"
+    });
+    expect(repositoryUpserts).toHaveLength(1);
   });
 });

@@ -53,5 +53,7 @@ export function previewPolicyPackImpact(input: {
   facts: VerifiedFact[];
 }): PolicyResult {
   const parsed = parsePolicyYaml(input.pack.contentYaml);
-  return evaluateMergeGuard(input.pr, input.facts, parsed.config);
+  return evaluateMergeGuard(input.pr, input.facts, parsed.config, undefined, {
+    sourceContentHash: parsed.contentHash
+  });
 }

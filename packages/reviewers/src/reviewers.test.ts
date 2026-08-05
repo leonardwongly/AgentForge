@@ -38,7 +38,10 @@ describe("reviewer router", () => {
       ]
     });
     expect(reviewers).toHaveLength(1);
-    expect(reviewers[0]?.approved).toBe(true);
+    expect(reviewers[0]).toMatchObject({
+      approved: true,
+      approvalSource: "github_review"
+    });
   });
 
   it("supports suggested reviewers", () => {

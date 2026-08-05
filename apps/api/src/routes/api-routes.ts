@@ -35,6 +35,7 @@ import {
   sanitizeChangeControlRecord,
   withEvidenceDrafts
 } from "@agentforge/records";
+import { streamAuditEvents } from "@agentforge/notifications";
 import { previewCodeowners } from "@agentforge/reviewers";
 import { summarizeSafeSnippet, type MetadataStoragePolicy } from "@agentforge/security";
 import {
@@ -51,6 +52,8 @@ import type { AppState } from "../app.js";
 import type { loadConfig } from "@agentforge/config";
 import type {
   ExportJob,
+  ManualCcrMutationInput,
+  ManualCcrMutationResult,
   ReplayableDelivery,
   RepositoryPolicyState,
   RepositoryPolicyVersionSummary,
@@ -185,9 +188,14 @@ type EvidenceSubmission = {
   evidenceId?: string | undefined;
   kind?: string | undefined;
   content: string;
+  expectedRevision?: number | undefined;
 };
-type EvidenceRejection = { recordId?: string | undefined; reason: string };
-type RecordScopedAction = { recordId?: string | undefined };
+type EvidenceRejection = {
+  recordId: string;
+  expectedRevision?: number | undefined;
+  reason: string;
+};
+type RecordScopedAction = { recordId: string; expectedRevision?: number | undefined };
 type PolicyUpdateInput = { contentYaml: string };
 type PolicyRevertInput = { targetVersionId: string };
 type PolicyPreviewInput = {
@@ -200,18 +208,20 @@ type CodeownersPreviewInput = { content: string; changedPaths?: string[] | undef
 type ResolvedApiRouteContext = {
   apiCache: { del: (key: string) => Promise<unknown> };
   audit: (input: AuditInput) => Promise<unknown>;
-  auditReevaluation: (
-    record: ChangeControlRecord,
-    actor: ApiActor,
-    previousStatus: ChangeControlRecord["checkStatus"],
-    requestId?: string
-  ) => Promise<unknown>;
   approveGithubInstallation: (input: {
     id: string;
     organizationId: string;
     actor: string;
   }) => Promise<GithubInstallation | undefined>;
   collectPrometheusMetrics: () => Promise<string>;
+  commitManualCcrMutation: (input: ManualCcrMutationInput) => Promise<{
+    result: ManualCcrMutationResult;
+    reevaluation?: {
+      deliveryId: string;
+      status: "queued" | "enqueue_failed";
+      recoverable?: boolean | undefined;
+    };
+  }>;
   config: ApiConfig;
   defaultDataHandlingSettings: () => Promise<Record<string, unknown>>;
   enqueueMergeGuardEvaluation: (input: {
@@ -282,7 +292,10 @@ type ResolvedApiRouteContext = {
     state: AppState;
     evaluationQueue: EvaluationQueue;
   }) => Promise<QueueStatus>;
-  recomputeRequirementStatus: (record: ChangeControlRecord) => ChangeControlRecord;
+  recomputeRequirementStatus: (
+    record: ChangeControlRecord,
+    now?: string
+  ) => ChangeControlRecord;
   rejectGithubInstallation: (input: {
     id: string;
     organizationId: string;
@@ -295,7 +308,6 @@ type ResolvedApiRouteContext = {
     githubConnected: boolean;
     ownerMappingsConfigured: boolean;
   }) => unknown;
-  recordsForAction: (organizationId: string, recordId?: string) => Promise<ChangeControlRecord[]>;
   recordsVisibleTo: (actor: ApiActor) => Promise<ChangeControlRecord[]>;
   recordRequiresAction: (record: ChangeControlRecord) => boolean;
   filterAndSortRecords: (
@@ -360,6 +372,7 @@ type ResolvedApiRouteContext = {
   recordScopedActionSchema: RouteSchema<RecordScopedAction>;
   overrideRequestSchema: RouteSchema<{
     actorRole?: string | undefined;
+    expectedRevision?: number | undefined;
     reason?: string | undefined;
     scope?: "pr" | "finding" | "evidence" | "reviewer" | undefined;
   }>;
@@ -369,6 +382,79 @@ type ResolvedApiRouteContext = {
 type ApiRouteContext = {
   [Key in keyof ResolvedApiRouteContext]: unknown;
 };
+
+function manualMutationAuditTrail(input: {
+  record: ChangeControlRecord;
+  nextRecord: ChangeControlRecord;
+  actor: ApiActor;
+  requestId: string;
+  triggerReason: ManualCcrMutationInput["triggerReason"];
+  actionEvent?: AuditEventRecord | undefined;
+}): AuditEventRecord[] {
+  const deliveryId = `manual:${input.record.id}:r${input.record.revision + 1}`;
+  const common = {
+    organizationId: input.record.organizationId,
+    repositoryId: input.record.repositoryId,
+    pullRequestId: input.record.id,
+    actor: input.actor.login,
+    actorRole: input.actor.role,
+    targetType: "change_control_record",
+    targetId: input.record.id,
+    requestId: input.requestId,
+    policyVersion: input.record.policyVersion,
+    policyPackId: input.record.policyPackId,
+    policyPackVersion: input.record.policyPackVersion
+  } as const;
+  const reevaluated = createAuditEvent({
+    ...common,
+    action: "record_reevaluated",
+    metadataJson: {
+      recordId: input.record.id,
+      previousStatus: input.record.checkStatus,
+      checkStatus: input.nextRecord.checkStatus,
+      lifecycle: input.nextRecord.lifecycle,
+      policyVersion: input.record.policyVersion,
+      actorRole: input.actor.role
+    }
+  });
+  const requested = createAuditEvent({
+    ...common,
+    action: "record_reevaluation_requested",
+    correlationId: deliveryId,
+    metadataJson: {
+      recordId: input.record.id,
+      reason: input.triggerReason,
+      policyVersion: input.record.policyVersion,
+      deliveryId,
+      expectedRevision: input.record.revision,
+      actorRole: input.actor.role
+    }
+  });
+  return [
+    ...(input.actionEvent ? [input.actionEvent] : []),
+    reevaluated,
+    requested
+  ];
+}
+
+function manualMutationFailure(
+  reply: FastifyReply,
+  result: Exclude<ManualCcrMutationResult, { status: "committed" }>
+) {
+  if (result.status === "conflict") {
+    return reply.code(409).send({
+      error: "Change Control Record changed; reload it before retrying.",
+      currentRevision: result.currentRevision
+    });
+  }
+  if (result.status === "trigger_unavailable") {
+    return reply.code(409).send({
+      error:
+        "A current approved GitHub installation and replayable repository delivery are required before this mutation can be committed."
+    });
+  }
+  return reply.code(404).send({ error: "Change Control Record not found" });
+}
 
 function authzErrorCode(failure: AuthzFailure): string {
   return failure.statusCode === 401 ? "api_actor_required" : "api_actor_not_authorized";
@@ -428,10 +514,10 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
   const {
     apiCache,
     audit,
-    auditReevaluation,
     approveGithubInstallation,
     codeownersPreviewSchema,
     collectPrometheusMetrics,
+    commitManualCcrMutation,
     compliancePackageRequestSchema,
     config,
     dashboardSummary,
@@ -484,7 +570,6 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
     recordPageQuerySchema,
     recordScopedActionSchema,
     overrideRequestSchema,
-    recordsForAction,
     recordsVisibleTo,
     recomputeRequirementStatus,
     rejectGithubInstallation,
@@ -819,6 +904,30 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         pullRequestNumber: replayable.delivery.pullRequestNumber,
         payloadIncluded: false
       });
+    });
+
+    // SIEM-style streaming of tamper-evident audit events (G7). Best-effort;
+    // requires AUDIT_STREAM_WEBHOOK_URL and a platform-admin actor.
+    app.post("/api/admin/audit-stream", async (request, reply) => {
+      const actor = await requireApiActor(request);
+      if (isAuthzFailure(actor)) {
+        return handleAuthzFailure(request, reply, actor);
+      }
+      const allowed = requireRole(actor, ["platform_admin"], "Audit stream");
+      if (isAuthzFailure(allowed)) {
+        return handleAuthzFailure(request, reply, allowed);
+      }
+      if (!config.auditStreamWebhookUrl) {
+        return reply.code(400).send({ error: "AUDIT_STREAM_WEBHOOK_URL is not configured." });
+      }
+      const events = await listAuditEvents(actor.organizationId);
+      const result = await streamAuditEvents(config.auditStreamWebhookUrl, events);
+      return {
+        streamed: result.ok,
+        eventCount: events.length,
+        status: result.status,
+        error: result.error
+      };
     });
   });
 
@@ -1768,23 +1877,24 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (evidence.status === "approved") {
         return reply.code(409).send({ error: "Approved evidence cannot be replaced." });
       }
-      const previousStatus = record.checkStatus;
-      record.requiredEvidence = record.requiredEvidence.map((item) =>
+      const now = new Date().toISOString();
+      const nextRecord = structuredClone(record);
+      nextRecord.requiredEvidence = nextRecord.requiredEvidence.map((item) =>
         item.id === evidence.id
           ? {
               ...item,
               status: "provided",
               source: "manual_attestation",
               providedBy: actor.login,
-              providedAt: new Date().toISOString(),
+              providedAt: now,
               approvedBy: undefined,
               approvedAt: undefined,
               contentSummary: summarizeSafeSnippet(body.content)
             }
           : item
       );
-      const savedRecord = await saveRecord(recomputeRequirementStatus(record));
-      await audit({
+      const recomputed = recomputeRequirementStatus(nextRecord, now);
+      const actionEvent = createAuditEvent({
         organizationId: record.organizationId,
         repositoryId: record.repositoryId,
         pullRequestId: record.id,
@@ -1794,6 +1904,9 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         targetType: "evidence_requirement",
         targetId: evidence.id,
         requestId: request.id,
+        policyVersion: record.policyVersion,
+        policyPackId: record.policyPackId,
+        policyPackVersion: record.policyPackVersion,
         metadataJson: {
           kind: evidence.kind,
           recordId: record.id,
@@ -1801,11 +1914,35 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           actorRole: actor.role
         }
       });
-      await auditReevaluation(savedRecord, actor, previousStatus, request.id);
-      return {
-        evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id)),
-        record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
-      };
+      const mutation = await commitManualCcrMutation({
+        organizationId: record.organizationId,
+        recordId: record.id,
+        expectedRevision: body.expectedRevision ?? record.revision,
+        expectedHeadSha: record.headSha,
+        expectedPolicyVersion: record.policyVersion,
+        nextRecord: recomputed,
+        auditEvents: manualMutationAuditTrail({
+          record,
+          nextRecord: recomputed,
+          actor,
+          requestId: request.id,
+          triggerReason: "evidence_provided",
+          actionEvent
+        }),
+        triggerReason: "evidence_provided"
+      });
+      if (mutation.result.status !== "committed") {
+        return manualMutationFailure(reply, mutation.result);
+      }
+      return reply
+        .code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 200)
+        .send({
+          evidence: safe(
+            mutation.result.record.requiredEvidence.find((item) => item.id === evidence.id)
+          ),
+          record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
+          reevaluation: mutation.reevaluation
+        });
     });
 
     app.patch("/api/evidence/:id/approve", async (request, reply) => {
@@ -1831,54 +1968,77 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           }))
         });
       }
-      for (const record of await recordsForAction(actor.organizationId, parsedBody.data.recordId)) {
-        const tenantAccess = requireOrganizationAccess(
-          actor,
-          record.organizationId,
-          "Evidence approval"
-        );
-        if (!tenantAccess.ok) {
-          return handleAuthzFailure(request, reply, tenantAccess);
-        }
-        const evidence = record.requiredEvidence.find(
-          (item) => item.id === (request.params as { id: string }).id
-        );
-        if (evidence) {
-          if (evidence.status === "missing" || evidence.status === "rejected") {
-            return reply
-              .code(409)
-              .send({ error: "Evidence must be provided before it can be approved." });
-          }
-          const approvedAt = new Date().toISOString();
-          const previousStatus = record.checkStatus;
-          for (const item of record.requiredEvidence) {
-            if (item.id === evidence.id) {
-              item.status = "approved";
-              item.approvedBy = actor.login;
-              item.approvedAt = approvedAt;
-            }
-          }
-          const savedRecord = await saveRecord(recomputeRequirementStatus(record));
-          await audit({
-            organizationId: record.organizationId,
-            repositoryId: record.repositoryId,
-            pullRequestId: record.id,
-            actor: actor.login,
-            actorRole: actor.role,
-            action: "evidence_approved",
-            targetType: "evidence_requirement",
-            targetId: evidence.id,
-            requestId: request.id,
-            metadataJson: { kind: evidence.kind, recordId: record.id, actorRole: actor.role }
-          });
-          await auditReevaluation(savedRecord, actor, previousStatus, request.id);
-          return {
-            evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id)),
-            record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
-          };
-        }
+      const record = await getRecord(parsedBody.data.recordId);
+      if (!record || record.organizationId !== actor.organizationId) {
+        return reply.code(404).send({ error: "Change Control Record not found" });
       }
-      return reply.code(404).send({ error: "Evidence requirement not found" });
+      const tenantAccess = requireOrganizationAccess(actor, record.organizationId, "Evidence approval");
+      if (!tenantAccess.ok) {
+        return handleAuthzFailure(request, reply, tenantAccess);
+      }
+      const evidence = record.requiredEvidence.find(
+        (item) => item.id === (request.params as { id: string }).id
+      );
+      if (!evidence) {
+        return reply.code(404).send({ error: "Evidence requirement not found" });
+      }
+      if (evidence.status === "missing" || evidence.status === "rejected") {
+        return reply
+          .code(409)
+          .send({ error: "Evidence must be provided before it can be approved." });
+      }
+      const approvedAt = new Date().toISOString();
+      const nextRecord = structuredClone(record);
+      nextRecord.requiredEvidence = nextRecord.requiredEvidence.map((item) =>
+        item.id === evidence.id
+          ? { ...item, status: "approved", approvedBy: actor.login, approvedAt }
+          : item
+      );
+      const recomputed = recomputeRequirementStatus(nextRecord, approvedAt);
+      const actionEvent = createAuditEvent({
+        organizationId: record.organizationId,
+        repositoryId: record.repositoryId,
+        pullRequestId: record.id,
+        actor: actor.login,
+        actorRole: actor.role,
+        action: "evidence_approved",
+        targetType: "evidence_requirement",
+        targetId: evidence.id,
+        requestId: request.id,
+        policyVersion: record.policyVersion,
+        policyPackId: record.policyPackId,
+        policyPackVersion: record.policyPackVersion,
+        metadataJson: { kind: evidence.kind, recordId: record.id, actorRole: actor.role }
+      });
+      const mutation = await commitManualCcrMutation({
+        organizationId: record.organizationId,
+        recordId: record.id,
+        expectedRevision: parsedBody.data.expectedRevision ?? record.revision,
+        expectedHeadSha: record.headSha,
+        expectedPolicyVersion: record.policyVersion,
+        nextRecord: recomputed,
+        auditEvents: manualMutationAuditTrail({
+          record,
+          nextRecord: recomputed,
+          actor,
+          requestId: request.id,
+          triggerReason: "evidence_approved",
+          actionEvent
+        }),
+        triggerReason: "evidence_approved"
+      });
+      if (mutation.result.status !== "committed") {
+        return manualMutationFailure(reply, mutation.result);
+      }
+      return reply
+        .code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 200)
+        .send({
+          evidence: safe(
+            mutation.result.record.requiredEvidence.find((item) => item.id === evidence.id)
+          ),
+          record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
+          reevaluation: mutation.reevaluation
+        });
     });
 
     app.patch("/api/evidence/:id/reject", async (request, reply) => {
@@ -1904,58 +2064,90 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           }))
         });
       }
-      for (const record of await recordsForAction(actor.organizationId, parsedBody.data.recordId)) {
-        const tenantAccess = requireOrganizationAccess(
-          actor,
-          record.organizationId,
-          "Evidence rejection"
-        );
-        if (!tenantAccess.ok) {
-          return handleAuthzFailure(request, reply, tenantAccess);
-        }
-        const evidence = record.requiredEvidence.find(
-          (item) => item.id === (request.params as { id: string }).id
-        );
-        if (evidence) {
-          if (evidence.status !== "provided" && evidence.status !== "approved") {
-            return reply
-              .code(409)
-              .send({ error: "Only provided or approved evidence can be rejected." });
-          }
-          const previousStatus = record.checkStatus;
-          const rejectedAt = new Date().toISOString();
-          const reasonSummary = summarizeSafeSnippet(parsedBody.data.reason);
-          evidence.status = "rejected";
-          evidence.approvedBy = undefined;
-          evidence.approvedAt = undefined;
-          evidence.contentSummary = `Rejected: ${reasonSummary}`;
-          evidence.providedAt = evidence.providedAt ?? rejectedAt;
-          const savedRecord = await saveRecord(recomputeRequirementStatus(record));
-          await audit({
-            organizationId: record.organizationId,
-            repositoryId: record.repositoryId,
-            pullRequestId: record.id,
-            actor: actor.login,
-            actorRole: actor.role,
-            action: "evidence_rejected",
-            targetType: "evidence_requirement",
-            targetId: evidence.id,
-            requestId: request.id,
-            metadataJson: {
-              kind: evidence.kind,
-              reason: reasonSummary,
-              recordId: record.id,
-              actorRole: actor.role
-            }
-          });
-          await auditReevaluation(savedRecord, actor, previousStatus, request.id);
-          return {
-            evidence: safe(savedRecord.requiredEvidence.find((item) => item.id === evidence.id)),
-            record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
-          };
-        }
+      const record = await getRecord(parsedBody.data.recordId);
+      if (!record || record.organizationId !== actor.organizationId) {
+        return reply.code(404).send({ error: "Change Control Record not found" });
       }
-      return reply.code(404).send({ error: "Evidence requirement not found" });
+      const tenantAccess = requireOrganizationAccess(actor, record.organizationId, "Evidence rejection");
+      if (!tenantAccess.ok) {
+        return handleAuthzFailure(request, reply, tenantAccess);
+      }
+      const evidence = record.requiredEvidence.find(
+        (item) => item.id === (request.params as { id: string }).id
+      );
+      if (!evidence) {
+        return reply.code(404).send({ error: "Evidence requirement not found" });
+      }
+      if (evidence.status !== "provided" && evidence.status !== "approved") {
+        return reply
+          .code(409)
+          .send({ error: "Only provided or approved evidence can be rejected." });
+      }
+      const rejectedAt = new Date().toISOString();
+      const reasonSummary = summarizeSafeSnippet(parsedBody.data.reason);
+      const nextRecord = structuredClone(record);
+      nextRecord.requiredEvidence = nextRecord.requiredEvidence.map((item) =>
+        item.id === evidence.id
+          ? {
+              ...item,
+              status: "rejected",
+              approvedBy: undefined,
+              approvedAt: undefined,
+              contentSummary: `Rejected: ${reasonSummary}`,
+              providedAt: item.providedAt ?? rejectedAt
+            }
+          : item
+      );
+      const recomputed = recomputeRequirementStatus(nextRecord, rejectedAt);
+      const actionEvent = createAuditEvent({
+        organizationId: record.organizationId,
+        repositoryId: record.repositoryId,
+        pullRequestId: record.id,
+        actor: actor.login,
+        actorRole: actor.role,
+        action: "evidence_rejected",
+        targetType: "evidence_requirement",
+        targetId: evidence.id,
+        requestId: request.id,
+        policyVersion: record.policyVersion,
+        policyPackId: record.policyPackId,
+        policyPackVersion: record.policyPackVersion,
+        metadataJson: {
+          kind: evidence.kind,
+          reason: reasonSummary,
+          recordId: record.id,
+          actorRole: actor.role
+        }
+      });
+      const mutation = await commitManualCcrMutation({
+        organizationId: record.organizationId,
+        recordId: record.id,
+        expectedRevision: parsedBody.data.expectedRevision ?? record.revision,
+        expectedHeadSha: record.headSha,
+        expectedPolicyVersion: record.policyVersion,
+        nextRecord: recomputed,
+        auditEvents: manualMutationAuditTrail({
+          record,
+          nextRecord: recomputed,
+          actor,
+          requestId: request.id,
+          triggerReason: "evidence_rejected",
+          actionEvent
+        }),
+        triggerReason: "evidence_rejected"
+      });
+      if (mutation.result.status !== "committed") {
+        return manualMutationFailure(reply, mutation.result);
+      }
+      return reply
+        .code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 200)
+        .send({
+          evidence: safe(
+            mutation.result.record.requiredEvidence.find((item) => item.id === evidence.id)
+          ),
+          record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
+          reevaluation: mutation.reevaluation
+        });
     });
 
     app.patch("/api/reviewers/:id/approve", async (request, reply) => {
@@ -1973,57 +2165,91 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           }))
         });
       }
-      for (const record of await recordsForAction(actor.organizationId, parsedBody.data.recordId)) {
-        const tenantAccess = requireOrganizationAccess(
-          actor,
-          record.organizationId,
-          "Reviewer approval"
-        );
-        if (!tenantAccess.ok) {
-          return handleAuthzFailure(request, reply, tenantAccess);
-        }
-        const reviewer = record.requiredReviewers.find(
-          (item) => item.id === (request.params as { id: string }).id
-        );
-        if (reviewer) {
-          const canApprove =
-            actor.login === reviewer.reviewer ||
-            ["engineering_manager", "platform_admin", "security_reviewer"].includes(actor.role);
-          if (!canApprove) {
-            return reply
-              .code(403)
-              .send({ error: "Reviewer approval requires the reviewer or an authorized role." });
-          }
-          reviewer.approved = true;
-          reviewer.approvedBy = actor.login;
-          reviewer.approvedAt = new Date().toISOString();
-          const previousStatus = record.checkStatus;
-          const savedRecord = await saveRecord(recomputeRequirementStatus(record));
-          await audit({
-            organizationId: record.organizationId,
-            repositoryId: record.repositoryId,
-            pullRequestId: record.id,
-            actor: actor.login,
-            actorRole: actor.role,
-            action: "reviewer_approved",
-            targetType: "reviewer_requirement",
-            targetId: reviewer.id,
-            requestId: request.id,
-            metadataJson: {
-              reviewer: reviewer.reviewer,
-              tier: reviewer.tier,
-              recordId: record.id,
-              actorRole: actor.role
-            }
-          });
-          await auditReevaluation(savedRecord, actor, previousStatus, request.id);
-          return {
-            reviewer: safe(savedRecord.requiredReviewers.find((item) => item.id === reviewer.id)),
-            record: sanitizeChangeControlRecord(savedRecord, storagePolicy)
-          };
-        }
+      const record = await getRecord(parsedBody.data.recordId);
+      if (!record || record.organizationId !== actor.organizationId) {
+        return reply.code(404).send({ error: "Change Control Record not found" });
       }
-      return reply.code(404).send({ error: "Reviewer requirement not found" });
+      const tenantAccess = requireOrganizationAccess(actor, record.organizationId, "Reviewer approval");
+      if (!tenantAccess.ok) {
+        return handleAuthzFailure(request, reply, tenantAccess);
+      }
+      const reviewer = record.requiredReviewers.find(
+        (item) => item.id === (request.params as { id: string }).id
+      );
+      if (!reviewer) {
+        return reply.code(404).send({ error: "Reviewer requirement not found" });
+      }
+      const canApprove =
+        actor.login === reviewer.reviewer ||
+        ["engineering_manager", "platform_admin", "security_reviewer"].includes(actor.role);
+      if (!canApprove) {
+        return reply
+          .code(403)
+          .send({ error: "Reviewer approval requires the reviewer or an authorized role." });
+      }
+      const approvedAt = new Date().toISOString();
+      const nextRecord = structuredClone(record);
+      nextRecord.requiredReviewers = nextRecord.requiredReviewers.map((item) =>
+        item.id === reviewer.id
+          ? {
+              ...item,
+              approved: true,
+              approvalSource: "manual",
+              approvedBy: actor.login,
+              approvedAt
+            }
+          : item
+      );
+      const recomputed = recomputeRequirementStatus(nextRecord, approvedAt);
+      const actionEvent = createAuditEvent({
+        organizationId: record.organizationId,
+        repositoryId: record.repositoryId,
+        pullRequestId: record.id,
+        actor: actor.login,
+        actorRole: actor.role,
+        action: "reviewer_approved",
+        targetType: "reviewer_requirement",
+        targetId: reviewer.id,
+        requestId: request.id,
+        policyVersion: record.policyVersion,
+        policyPackId: record.policyPackId,
+        policyPackVersion: record.policyPackVersion,
+        metadataJson: {
+          reviewer: reviewer.reviewer,
+          tier: reviewer.tier,
+          recordId: record.id,
+          actorRole: actor.role
+        }
+      });
+      const mutation = await commitManualCcrMutation({
+        organizationId: record.organizationId,
+        recordId: record.id,
+        expectedRevision: parsedBody.data.expectedRevision ?? record.revision,
+        expectedHeadSha: record.headSha,
+        expectedPolicyVersion: record.policyVersion,
+        nextRecord: recomputed,
+        auditEvents: manualMutationAuditTrail({
+          record,
+          nextRecord: recomputed,
+          actor,
+          requestId: request.id,
+          triggerReason: "reviewer_approved",
+          actionEvent
+        }),
+        triggerReason: "reviewer_approved"
+      });
+      if (mutation.result.status !== "committed") {
+        return manualMutationFailure(reply, mutation.result);
+      }
+      return reply
+        .code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 200)
+        .send({
+          reviewer: safe(
+            mutation.result.record.requiredReviewers.find((item) => item.id === reviewer.id)
+          ),
+          record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
+          reevaluation: mutation.reevaluation
+        });
     });
 
     app.post("/api/pull-requests/:id/override", async (request, reply) => {
@@ -2053,7 +2279,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       try {
         const policy = await getRecordPolicyConfig(record);
         const output = applyOverride({
-          record,
+          record: structuredClone(record),
           policy: {
             allowedRoles: policy.overrides.allowed_roles,
             requireReason: policy.overrides.require_reason,
@@ -2068,23 +2294,46 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           },
           pullRequestId: record.id
         });
-        const savedRecord = await saveRecord(output.record);
-        await saveOverrideRecord(output.overrideRecord);
         if (output.auditEvent) {
           output.auditEvent.requestId = request.id;
           output.auditEvent.metadataJson = {
             ...(output.auditEvent.metadataJson ?? {}),
-            requestId: request.id
+            recordId: record.id,
+            requestId: request.id,
+            actorRole: actor.role
           };
-          await saveAuditEvent(output.auditEvent);
         }
-        return reply.code(201).send({
-          override: safe(output.overrideRecord),
-          record: sanitizeChangeControlRecord(savedRecord, storagePolicy),
-          auditEvent: output.auditEvent,
-          prVisibleMessage:
-            "Merge Guard override recorded. Merge was allowed after authorized override with reason."
+        const mutation = await commitManualCcrMutation({
+          organizationId: record.organizationId,
+          recordId: record.id,
+          expectedRevision: body.expectedRevision ?? record.revision,
+          expectedHeadSha: record.headSha,
+          expectedPolicyVersion: record.policyVersion,
+          nextRecord: output.record,
+          auditEvents: manualMutationAuditTrail({
+            record,
+            nextRecord: output.record,
+            actor,
+            requestId: request.id,
+            triggerReason: "override_created",
+            actionEvent: output.auditEvent
+          }),
+          override: output.overrideRecord,
+          triggerReason: "override_created"
         });
+        if (mutation.result.status !== "committed") {
+          return manualMutationFailure(reply, mutation.result);
+        }
+        return reply
+          .code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 201)
+          .send({
+            override: safe(output.overrideRecord),
+            record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
+            auditEvent: output.auditEvent,
+            reevaluation: mutation.reevaluation,
+            prVisibleMessage:
+              "Merge Guard override recorded. Merge was allowed after authorized override with reason."
+          });
       } catch (error) {
         return reply
           .code(403)

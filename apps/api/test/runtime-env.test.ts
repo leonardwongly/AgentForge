@@ -71,6 +71,8 @@ function configWithAuth(auth: Partial<AgentForgeConfig["auth"]> = {}): AgentForg
     exportStorageBucket: undefined,
     exportStorageRegion: undefined,
     sessionSecret: undefined,
+    notificationWebhookUrl: undefined,
+    auditStreamWebhookUrl: undefined,
     auth: {
       apiTrustProxyHeaders: false,
       apiAllowLocalActorHeaders: false,
