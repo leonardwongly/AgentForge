@@ -16,3 +16,5 @@ export * from "./invariant-dsl.js";
 export * from "./sandbox.js";
 export * from "./lock.js";
 export * from "./private.js";
+export * from "./wire.js";
+export * from "./wire-transport.js";
