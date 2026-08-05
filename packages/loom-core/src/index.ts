@@ -30,3 +30,4 @@ export * from "./session.js";
 export * from "./effects.js";
 export * from "./workgraph.js";
 export * from "./witness.js";
+export * from "./recipe.js";
