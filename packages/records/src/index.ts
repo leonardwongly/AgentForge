@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   AuditEventAction,
   AuditEventRecord,
@@ -50,6 +50,27 @@ export type PolicyTuningCitation = {
   findingTypes: string[];
 };
 
+export type DetectorMetric = {
+  /** The `VerifiedFact.type` this row describes (e.g. `sensitive_path_changed`). */
+  detector: string;
+  /** Total findings of this detector across the window. */
+  findingCount: number;
+  /** Distinct records that produced at least one finding of this detector. */
+  affectedRecordCount: number;
+  /** Records that produced a finding of this detector and were later overridden. */
+  overrideCount: number;
+  /** Precision proxy: 1 - (overrideCount / findingCount). Overrides are treated as
+   *  the closest available signal for false positives; true recall needs a labeled
+   *  corpus and is reported separately when available. */
+  precision: number;
+};
+
+export type GovernanceHealth = {
+  /** Composite 0-100 score derived from override, evidence, and reviewer metrics. */
+  score: number;
+  grade: "A" | "B" | "C" | "D";
+};
+
 export type PolicyTuningReport = {
   generatedAt: string;
   recordCount: number;
@@ -65,6 +86,8 @@ export type PolicyTuningReport = {
     medianReviewerApprovalHours?: number | undefined;
     observeOrWarnOpenRequirementCount: number;
   };
+  governanceHealth: GovernanceHealth;
+  detectorMetrics: DetectorMetric[];
   insights: PolicyTuningInsight[];
 };
 
@@ -227,6 +250,7 @@ export function createChangeControlRecord(input: {
   return sanitizeChangeControlRecord(
     {
       id: randomUUID(),
+      revision: 0,
       organizationId: input.organizationId,
       repositoryId: input.repositoryId,
       repositoryFullName: input.pr.repositoryFullName,
@@ -453,6 +477,8 @@ export function generatePolicyTuningReport(
       newestRecordAt: sorted[0]?.updatedAt
     },
     metrics,
+    governanceHealth: computeGovernanceHealth(metrics),
+    detectorMetrics: computeDetectorMetrics(sorted),
     insights: [
       overrideNoiseInsight(sorted, overrides, metrics.overrideRate),
       evidenceQualityInsight(sorted, rejectedEvidence, openEvidence, metrics),
@@ -463,6 +489,209 @@ export function generatePolicyTuningReport(
       .filter((insight): insight is PolicyTuningInsight => Boolean(insight))
       .sort((a, b) => severityRank(a.severity) - severityRank(b.severity))
   };
+}
+
+// Composite governance health: a weighted penalty from override, open/rejected
+// evidence, and pending-reviewer rates. Higher is healthier.
+export function computeGovernanceHealth(
+  metrics: PolicyTuningReport["metrics"]
+): GovernanceHealth {
+  const penalty =
+    metrics.overrideRate * 0.4 +
+    metrics.openEvidenceRate * 0.3 +
+    metrics.pendingReviewerRate * 0.2 +
+    metrics.rejectedEvidenceRate * 0.1;
+  const score = Math.max(0, Math.min(100, Math.round(100 - penalty)));
+  const grade = score >= 90 ? "A" : score >= 75 ? "B" : score >= 60 ? "C" : "D";
+  return { score, grade };
+}
+
+// Per-detector precision reporting. Overrides are the closest available proxy
+// for false positives (a record was flagged but a human chose to proceed), so
+// precision is reported as 1 - (overrideCount / findingCount). True recall
+// requires a labeled corpus and is intentionally not derived from CCRs alone.
+export function computeDetectorMetrics(records: ChangeControlRecord[]): DetectorMetric[] {
+  const byDetector = new Map<string, { findings: number; records: Set<string>; overrides: number }>();
+  for (const record of records) {
+    const isOverride = record.lifecycle === "overridden";
+    const seen = new Set<string>();
+    for (const finding of record.verifiedFindings) {
+      const entry = byDetector.get(finding.type) ?? { findings: 0, records: new Set<string>(), overrides: 0 };
+      entry.findings += 1;
+      entry.records.add(record.id);
+      if (isOverride && !seen.has(finding.type)) {
+        entry.overrides += 1;
+        seen.add(finding.type);
+      }
+      byDetector.set(finding.type, entry);
+    }
+  }
+  return [...byDetector.entries()]
+    .map(([detector, entry]) => ({
+      detector,
+      findingCount: entry.findings,
+      affectedRecordCount: entry.records.size,
+      overrideCount: entry.overrides,
+      precision: entry.findings > 0 ? roundTo(1 - entry.overrides / entry.findings, 3) : 1
+    }))
+    .sort((a, b) => b.findingCount - a.findingCount);
+}
+
+function roundTo(value: number, digits: number): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
+export const AUDIT_CHAIN_GENESIS = "0";
+
+export type AuditChainEntry = {
+  index: number;
+  prevHash: string;
+  hash: string;
+};
+
+export type AuditChainVerification = {
+  valid: boolean;
+  brokenAt?: number | undefined;
+  reason?: string | undefined;
+};
+
+// Tamper-evident audit trail. Each event is bound to the previous event's hash
+// so any insertion, deletion, or modification breaks the chain and is detected
+// by `verifyAuditChain`. The hash covers a canonical, sorted serialization of
+// the event's own fields (excluding the chain entry itself) plus the previous
+// hash, so the chain is deterministic and independently verifiable.
+export function chainAuditEvents(
+  events: AuditEventRecord[],
+  options: { genesisHash?: string; now?: string } = {}
+): AuditEventRecord[] {
+  const genesis = options.genesisHash ?? AUDIT_CHAIN_GENESIS;
+  let prevHash = genesis;
+  return events.map((event, index) => {
+    const payload = canonicalAuditPayload(event);
+    const hash = sha256(`${prevHash}\n${payload}`);
+    const chained: AuditEventRecord = {
+      ...event,
+      metadataJson: {
+        ...(event.metadataJson ?? {}),
+        auditChain: { index, prevHash, hash }
+      }
+    };
+    prevHash = hash;
+    return chained;
+  });
+}
+
+export function verifyAuditChain(
+  events: AuditEventRecord[],
+  options: { genesisHash?: string; expectedDigest?: string } = {}
+): AuditChainVerification {
+  const genesis = options.genesisHash ?? AUDIT_CHAIN_GENESIS;
+  let prevHash = genesis;
+  for (let i = 0; i < events.length; i += 1) {
+    const event = events[i];
+    if (!event) {
+      return { valid: false, brokenAt: i, reason: "missing event" };
+    }
+    const chain = auditChainOf(event);
+    if (!chain) {
+      return { valid: false, brokenAt: i, reason: "missing chain entry" };
+    }
+    if (chain.index !== i) {
+      return { valid: false, brokenAt: i, reason: "chain index mismatch" };
+    }
+    if (chain.prevHash !== prevHash) {
+      return { valid: false, brokenAt: i, reason: "previous hash mismatch" };
+    }
+    const recomputed = sha256(`${prevHash}\n${canonicalAuditPayload(event)}`);
+    if (recomputed !== chain.hash) {
+      return { valid: false, brokenAt: i, reason: "hash mismatch (tampered)" };
+    }
+    prevHash = chain.hash;
+  }
+  // A trailing-event removal is only detectable against a known expected
+  // digest (the last hash of the authoritative chain).
+  if (options.expectedDigest !== undefined) {
+    const last = events.at(-1);
+    const digest = last ? auditChainOf(last)?.hash : genesis;
+    if (digest !== options.expectedDigest) {
+      return {
+        valid: false,
+        brokenAt: Math.max(events.length - 1, 0),
+        reason: "chain digest does not match expected digest (event removed)"
+      };
+    }
+  }
+  return { valid: true };
+}
+
+export function auditChainDigest(events: AuditEventRecord[]): string {
+  if (events.length === 0) {
+    return AUDIT_CHAIN_GENESIS;
+  }
+  const last = events.at(-1);
+  if (!last) {
+    return AUDIT_CHAIN_GENESIS;
+  }
+  return auditChainOf(last)?.hash ?? "";
+}
+
+function auditChainOf(event: AuditEventRecord): AuditChainEntry | undefined {
+  const entry = event.metadataJson?.auditChain;
+  if (
+    entry &&
+    typeof entry === "object" &&
+    typeof (entry as AuditChainEntry).index === "number" &&
+    typeof (entry as AuditChainEntry).prevHash === "string" &&
+    typeof (entry as AuditChainEntry).hash === "string"
+  ) {
+    return entry as AuditChainEntry;
+  }
+  return undefined;
+}
+
+function canonicalAuditPayload(event: AuditEventRecord): string {
+  const metadata = { ...(event.metadataJson ?? {}) };
+  delete metadata.auditChain;
+  const payload = {
+    id: event.id,
+    schemaVersion: event.schemaVersion,
+    organizationId: event.organizationId,
+    repositoryId: event.repositoryId,
+    pullRequestId: event.pullRequestId,
+    actor: event.actor,
+    actorRole: event.actorRole,
+    action: event.action,
+    targetType: event.targetType,
+    targetId: event.targetId,
+    source: event.source,
+    requestId: event.requestId,
+    correlationId: event.correlationId,
+    policyVersion: event.policyVersion,
+    policyPackId: event.policyPackId,
+    policyPackVersion: event.policyPackVersion,
+    metadataJson: metadata,
+    createdAt: event.createdAt
+  };
+  return stableStringify(payload);
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256(input: string): string {
+  return createHash("sha256").update(input, "utf8").digest("hex");
 }
 
 // Convert a read-only tuning report into explicit, unapplied proposals a
@@ -778,6 +1007,7 @@ export function requiredAuditMetadataFields(action: AuditEventAction): string[] 
     evidence_rejected: ["kind", "reason", "recordId"],
     reviewer_approved: ["reviewer", "tier", "recordId"],
     record_reevaluated: ["previousStatus", "checkStatus", "lifecycle", "policyVersion", "recordId"],
+    record_reevaluation_requested: ["reason", "policyVersion", "recordId", "deliveryId"],
     check_published: ["conclusion", "status", "mode", "policyVersion", "recordId"],
     record_exported: ["format", "recordCount"],
     webhook_replayed: ["deliveryId", "replayJobId"],

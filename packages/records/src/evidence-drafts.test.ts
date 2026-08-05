@@ -5,6 +5,7 @@ import { withEvidenceDrafts } from "./index.js";
 function baseRecord(): ChangeControlRecord {
   return {
     id: "r1",
+    revision: 0,
     organizationId: "org",
     repositoryId: "repo",
     repositoryFullName: "acme/app",

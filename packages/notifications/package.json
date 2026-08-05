@@ -1,0 +1,18 @@
+{
+  "name": "@agentforge/notifications",
+  "version": "1.1.0",
+  "type": "module",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "cd ../.. && vitest run packages/notifications/src/*.test.ts"
+  },
+  "dependencies": {
+    "@agentforge/core": "workspace:*",
+    "@agentforge/records": "workspace:*"
+  }
+}

@@ -12,6 +12,8 @@ const report: PolicyTuningReport = {
     pendingReviewerRate: 0,
     observeOrWarnOpenRequirementCount: 0
   },
+  governanceHealth: { score: 84, grade: "B" },
+  detectorMetrics: [],
   insights: [
     {
       id: "override_noise",
