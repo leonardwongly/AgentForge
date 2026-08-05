@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stateAddress, type Cell, type State } from "@agentforge/loom-core";
 import { describe, expect, it } from "vitest";
-import { execGitReader, nodeIdentForPath, stateFromGitRef, transformSetFromGit } from "./git.js";
+import { execGitReader, nodeIdentForPath, stateFromGitRef, streamStateFromGitRef, transformSetFromGit } from "./git.js";
 import type { GitReader, GitTreeEntry } from "./types.js";
 
 const BASE_REF = "base";
@@ -232,6 +232,20 @@ describe("path identity across refs", () => {
     // Identity is carried across the rename.
     expect(resultCell.ident).toBe(baseCell.ident);
     expect(set.result.cells["src/old.ts"]).toBeUndefined();
+  });
+});
+
+describe("streamStateFromGitRef", () => {
+  it("yields the same cells as the eager importer, one at a time", async () => {
+    const eager = await stateFromGitRef(fakeReader(), BASE_REF);
+    const streamed: Record<string, Cell> = {};
+    for await (const { path, cell } of streamStateFromGitRef(fakeReader(), BASE_REF)) {
+      streamed[path] = cell;
+    }
+    expect(Object.keys(streamed).sort()).toEqual(Object.keys(eager.cells).sort());
+    for (const path of Object.keys(eager.cells)) {
+      expect(streamed[path]).toEqual(eager.cells[path]);
+    }
   });
 });
 

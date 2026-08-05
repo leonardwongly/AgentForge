@@ -169,6 +169,62 @@ function tryUtf8(bytes: Uint8Array): string | undefined {
   }
 }
 
+/**
+ * Streaming variant of {@link stateFromGitRef}: yields `{ path, cell }` one at
+ * a time so a large repository can be imported incrementally without holding
+ * every blob in memory at once. Facet handling (submodules, binary, and
+ * `.gitattributes` overrides) matches the eager importer.
+ */
+export async function* streamStateFromGitRef(
+  reader: GitReader,
+  ref: string
+): AsyncGenerator<{ readonly path: string; readonly cell: Cell }> {
+  const entries = await reader.lsTree(ref);
+  const attributes = await readGitAttributes(reader, ref);
+  for (const entry of entries) {
+    if (entry.type === "tree") {
+      continue;
+    }
+    if (entry.type === "commit") {
+      yield {
+        path: entry.path,
+        cell: { facet: "bytes", ident: nodeIdentForPath(entry.path), text: entry.objectId ?? "" }
+      };
+      continue;
+    }
+    const forcedFacet = attributes === undefined ? undefined : facetFromAttributes(attributes, entry.path);
+    if (entry.objectId !== undefined && reader.readBlobBytes !== undefined) {
+      const bytes = await reader.readBlobBytes(entry.objectId);
+      const text = tryUtf8(bytes);
+      if (forcedFacet === "bytes" || (forcedFacet === undefined && text === undefined)) {
+        yield {
+          path: entry.path,
+          cell: {
+            facet: "bytes",
+            ident: nodeIdentForPath(entry.path),
+            text: Buffer.from(bytes).toString("base64")
+          }
+        };
+      } else {
+        yield { path: entry.path, cell: { facet: "text", ident: nodeIdentForPath(entry.path), text: text ?? "" } };
+      }
+      continue;
+    }
+    const text =
+      entry.objectId !== undefined && reader.readBlob !== undefined
+        ? await reader.readBlob(entry.objectId)
+        : await reader.readFile(ref, entry.path);
+    yield {
+      path: entry.path,
+      cell: {
+        facet: forcedFacet === "bytes" ? "bytes" : "text",
+        ident: nodeIdentForPath(entry.path),
+        text: forcedFacet === "bytes" ? Buffer.from(text, "utf8").toString("base64") : text
+      }
+    };
+  }
+}
+
 /** Build the {base, result} state pair the Loom ratify path consumes. */
 export async function transformSetFromGit(
   reader: GitReader,
