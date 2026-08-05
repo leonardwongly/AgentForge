@@ -26,6 +26,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, w
 import { join } from "node:path";
 
 import { address, verifyAddress } from "./addressing.js";
+import { cidV1, decodeDagCbor, encodeDagCbor, MULTICODEC } from "./codec.js";
 import type { Cid, LineScope } from "./types.js";
 
 // ---- Content-addressed object store ----------------------------------------
@@ -36,6 +37,14 @@ export interface DurableObjectStore {
   /** Read and verify the object at `cid`; returns undefined if absent or corrupt. */
   get<T>(cid: Cid): T | undefined;
   has(cid: Cid): boolean;
+  /** Store raw bytes under a `raw`-codec CIDv1. */
+  putRaw(bytes: Uint8Array): Cid;
+  getRaw(cid: Cid): Uint8Array | undefined;
+  hasRaw(cid: Cid): boolean;
+  /** Encode a structured object as DAG-CBOR and store under a `dag-cbor` CIDv1. */
+  putDagCbor(value: unknown): Cid;
+  getDagCbor<T>(cid: Cid): T | undefined;
+  hasDagCbor(cid: Cid): boolean;
 }
 
 export class FileObjectStore implements DurableObjectStore {
@@ -74,6 +83,72 @@ export class FileObjectStore implements DurableObjectStore {
 
   has(cid: Cid): boolean {
     return existsSync(join(this.objectsDir, `${cid}.json`));
+  }
+
+  /** Store raw bytes under a `raw`-codec CIDv1 (immutable dedup). */
+  putRaw(bytes: Uint8Array): Cid {
+    const cid = cidV1(MULTICODEC.raw, bytes);
+    const target = join(this.objectsDir, `${cid}.bin`);
+    if (existsSync(target)) {
+      return cid;
+    }
+    const tmp = join(this.objectsDir, `.${cid}.${process.pid}.${randomUUID()}.tmp`);
+    writeFileSync(tmp, bytes, { flag: "wx" });
+    renameSync(tmp, target);
+    return cid;
+  }
+
+  /** Read raw bytes and verify they hash to the requested CID; undefined if absent/corrupt. */
+  getRaw(cid: Cid): Uint8Array | undefined {
+    const target = join(this.objectsDir, `${cid}.bin`);
+    if (!existsSync(target)) {
+      return undefined;
+    }
+    try {
+      const bytes = readFileSync(target);
+      return cidV1(MULTICODEC.raw, bytes) === cid ? bytes : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  hasRaw(cid: Cid): boolean {
+    return existsSync(join(this.objectsDir, `${cid}.bin`));
+  }
+
+  /** Encode a structured object as DAG-CBOR, store under a `dag-cbor` CIDv1. */
+  putDagCbor(value: unknown): Cid {
+    const bytes = encodeDagCbor(value);
+    const cid = cidV1(MULTICODEC.dagCbor, bytes);
+    const target = join(this.objectsDir, `${cid}.cbor`);
+    if (existsSync(target)) {
+      return cid;
+    }
+    const tmp = join(this.objectsDir, `.${cid}.${process.pid}.${randomUUID()}.tmp`);
+    writeFileSync(tmp, bytes, { flag: "wx" });
+    renameSync(tmp, target);
+    return cid;
+  }
+
+  /** Read and decode a DAG-CBOR object, verifying its CID; undefined if absent/corrupt. */
+  getDagCbor<T>(cid: Cid): T | undefined {
+    const target = join(this.objectsDir, `${cid}.cbor`);
+    if (!existsSync(target)) {
+      return undefined;
+    }
+    try {
+      const bytes = readFileSync(target);
+      if (cidV1(MULTICODEC.dagCbor, bytes) !== cid) {
+        return undefined;
+      }
+      return decodeDagCbor(bytes) as T;
+    } catch {
+      return undefined;
+    }
+  }
+
+  hasDagCbor(cid: Cid): boolean {
+    return existsSync(join(this.objectsDir, `${cid}.cbor`));
   }
 }
 
