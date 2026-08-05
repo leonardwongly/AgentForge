@@ -22,7 +22,16 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { join } from "node:path";
 
 import { address, verifyAddress } from "./addressing.js";
@@ -174,6 +183,31 @@ export class FileObjectStore implements DurableObjectStore {
   delete(cid: Cid): void {
     for (const ext of ["json", "bin", "cbor"]) {
       rmSync(join(this.objectsDir, `${cid}.${ext}`), { force: true });
+    }
+  }
+
+  /** Snapshot every object file into `backupDir` (for backup/restore). */
+  backupTo(backupDir: string): void {
+    mkdirSync(backupDir, { recursive: true });
+    for (const file of readdirSync(this.objectsDir)) {
+      copyFileSync(join(this.objectsDir, file), join(backupDir, file));
+    }
+  }
+
+  /** Restore every object file from `backupDir`. */
+  restoreFrom(backupDir: string): void {
+    mkdirSync(this.objectsDir, { recursive: true });
+    for (const file of readdirSync(backupDir)) {
+      copyFileSync(join(backupDir, file), join(this.objectsDir, file));
+    }
+  }
+
+  /** Remove orphaned temp files left by a crash between write and rename. */
+  recover(): void {
+    for (const file of readdirSync(this.objectsDir)) {
+      if (file.endsWith(".tmp")) {
+        rmSync(join(this.objectsDir, file), { force: true });
+      }
     }
   }
 }
