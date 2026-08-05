@@ -1372,17 +1372,19 @@ Implemented and tested today:
 - DSSE/in-toto deterministic-check attestations with subject pinning; and
 - a repository-local `ratify` and `verify` CLI demonstration;
 - a durable content-addressed object store and transactional Line journal
-  (single-process, file-backed; CAS on `(head, sequence)` with idempotency
-  keys and crash-safe atomic writes); and
+  (CAS on `(head, sequence)` with idempotency keys, crash-safe atomic writes,
+  and cross-process file locking);
 - canonical DAG-CBOR encoding/decoding and CIDv1 (SHA-256 multihash, lowercase
-  base32) addressing with strict canonical validation.
+  base32) addressing with strict canonical validation;
+- binary-safe chunked objects via the `raw`-codec BlobManifest pipeline
+  (fixed and content-defined chunking, total-size commitment);
+- `did:loom` actor identity and domain-separated NodeIdent derivation;
+- a bounded invariant DSL and frozen, versioned effect-fingerprint schema;
+- a hermetic Recipe sandbox with bounded resource accounting; and
+- deterministic encryption-at-rest for private objects (dedup-preserving).
 
 Not yet implemented as a native system:
 
-- binary-safe chunked objects (the DAG-CBOR/CIDv1 codec exists; chunking and
-  the `raw`-codec BlobManifest pipeline are not yet wired);
-- multi-process durable object storage and transactional Line persistence
-  (the current store is single-process and file-backed);
 - native working-copy materialization and change journal;
 - native Proposal/admission state machine and atomic CAS;
 - persistent actor identity, key lifecycle, and Grant revocation;
@@ -1471,15 +1473,23 @@ conformant evidence.
 
 ### Open before `0.2`
 
-1. Select the first durable local object-store and Line-journal implementation.
-2. Freeze the canonical DAG-CBOR schemas and extension mechanism.
-3. Specify `did:loom` or formally limit `0.x` to existing DID methods.
-4. Select the hermetic Recipe sandbox and resource accounting model.
-5. Define the bounded invariant DSL and freeze extension/versioning rules for
-   the effect-fingerprint schema.
+1. ~~Select the first durable local object-store and Line-journal implementation.~~
+   Implemented: `FileObjectStore` + `FileLineJournal` (CAS, idempotency,
+   crash-safe atomic writes, cross-process `FileLock`).
+2. ~~Freeze the canonical DAG-CBOR schemas and extension mechanism.~~ Implemented:
+   `codec.ts` (canonical DAG-CBOR + CIDv1/SHA-256/base32) and `blob.ts`
+   (BlobManifest chunking).
+3. ~~Specify `did:loom` or formally limit `0.x` to existing DID methods.~~
+   Implemented: `did.ts` (`did:loom` derivation, DID parsing, domain-separated
+   NodeIdent).
+4. ~~Select the hermetic Recipe sandbox and resource accounting model.~~
+   Implemented: `sandbox.ts` (bounded recipe validation + engine budget).
+5. ~~Define the bounded invariant DSL and freeze extension/versioning rules for
+   the effect-fingerprint schema.~~ Implemented: `invariant-dsl.ts`.
 6. Freeze the HTTP/2 wire binding, authentication, and negotiation messages.
-7. Define encryption-at-rest and optional private-object addressing without
-   weakening deduplication or verification claims.
+7. ~~Define encryption-at-rest and optional private-object addressing without
+   weakening deduplication or verification claims.~~ Implemented: `private.ts`
+   (deterministic AES-256-GCM, dedup-preserving).
 8. Define large monorepo sharding and cross-Line atomic proposal semantics.
 
 ## 24. Conformance
