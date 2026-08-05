@@ -9,7 +9,8 @@
  * fork is detected.
  */
 
-import { WitnessSet, type WitnessSignature } from "./witness.js";
+import type { WitnessSet} from "./witness.js";
+import { type WitnessSignature } from "./witness.js";
 
 export interface VerificationBundle {
   readonly checkpointCid: string;
