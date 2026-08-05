@@ -134,6 +134,27 @@ describe("stateFromGitRef", () => {
     expect("mode" in cell).toBe(false);
   });
 
+  it("preserves submodules (commit entries) as bytes cells with their pinned OID", async () => {
+    const submoduleOid = "a".repeat(40);
+    const reader: GitReader = {
+      lsTree: async () => [
+        { path: "vendor/lib", mode: "160000", type: "commit", objectId: submoduleOid },
+        { path: "src/app.ts", mode: "100644", type: "blob", objectId: "b".repeat(40) }
+      ],
+      readBlob: async () => "export const v = 1;\n",
+      readFile: async () => {
+        throw new Error("path-based read must not be used");
+      }
+    };
+
+    const state = await stateFromGitRef(reader, "HEAD");
+    const submodule = cellAt(state, "vendor/lib");
+    expect(submodule.facet).toBe("bytes");
+    expect(submodule.text).toBe(submoduleOid);
+    // The regular blob is still a text cell.
+    expect(cellAt(state, "src/app.ts").facet).toBe("text");
+  });
+
   it("prefers immutable object-ID reads when the reader provides them", async () => {
     const objectId = "1".repeat(40);
     const requestedObjectIds: string[] = [];
@@ -253,14 +274,18 @@ describe("execGitReader", () => {
     }
   });
 
-  it("rejects invalid UTF-8 blobs instead of decoding replacement characters", async () => {
+  it("preserves binary (non-UTF-8) blobs as bytes cells instead of throwing", async () => {
     const repoDir = await createCommittedGitRepository([
       ["invalid.bin", Uint8Array.from([0x76, 0x61, 0x6c, 0x80, 0x75, 0x65])]
     ]);
 
     try {
-      await expect(stateFromGitRef(execGitReader(repoDir), "HEAD")).rejects.toThrow(
-        /^loom-git-bridge: blob [0-9a-f]{40,64} is not valid UTF-8$/
+      const state = await stateFromGitRef(execGitReader(repoDir), "HEAD");
+      const cell = cellAt(state, "invalid.bin");
+      expect(cell.facet).toBe("bytes");
+      // The raw bytes round-trip through base64.
+      expect(Buffer.from(cell.text, "base64")).toEqual(
+        Buffer.from([0x76, 0x61, 0x6c, 0x80, 0x75, 0x65])
       );
     } finally {
       await rm(repoDir, { force: true, recursive: true });

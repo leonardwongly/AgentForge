@@ -68,7 +68,7 @@ function parseLsTree(output: Buffer): ReadonlyArray<GitTreeEntry> {
     entries.push({
       path,
       mode,
-      type: gitType === "blob" ? "blob" : "tree",
+      type: gitType === "blob" ? "blob" : gitType === "commit" ? "commit" : "tree",
       objectId
     });
   }
@@ -86,15 +86,40 @@ export function nodeIdentForPath(path: string): NodeIdent {
 }
 
 /**
- * Build a Loom {@link State} from a single git ref. Only blob entries become
- * Cells; tree entries are skipped. `mode` is intentionally omitted (optional
- * under exactOptionalPropertyTypes) to keep the v1 Cell minimal.
+ * Build a Loom {@link State} from a single git ref. Text blobs become `text`
+ * Cells; binary blobs and submodules become `bytes` Cells so they are preserved
+ * and round-trip instead of being dropped or throwing on strict UTF-8 decode.
+ * Tree entries are skipped.
  */
 export async function stateFromGitRef(reader: GitReader, ref: string): Promise<State> {
   const entries = await reader.lsTree(ref);
   const cells = Object.create(null) as Record<string, Cell>;
   for (const entry of entries) {
-    if (entry.type !== "blob") {
+    if (entry.type === "tree") {
+      continue;
+    }
+    if (entry.type === "commit") {
+      // Submodule: preserve the pinned commit OID so it round-trips.
+      cells[entry.path] = {
+        facet: "bytes",
+        ident: nodeIdentForPath(entry.path),
+        text: entry.objectId ?? ""
+      };
+      continue;
+    }
+    // blob
+    if (entry.objectId !== undefined && reader.readBlobBytes !== undefined) {
+      const bytes = await reader.readBlobBytes(entry.objectId);
+      const text = tryUtf8(bytes);
+      if (text !== undefined) {
+        cells[entry.path] = { facet: "text", ident: nodeIdentForPath(entry.path), text };
+      } else {
+        cells[entry.path] = {
+          facet: "bytes",
+          ident: nodeIdentForPath(entry.path),
+          text: Buffer.from(bytes).toString("base64")
+        };
+      }
       continue;
     }
     const text =
@@ -108,6 +133,15 @@ export async function stateFromGitRef(reader: GitReader, ref: string): Promise<S
     };
   }
   return { kind: "state", cells };
+}
+
+/** Decode bytes as strict UTF-8; returns undefined for non-UTF-8 (binary) content. */
+function tryUtf8(bytes: Uint8Array): string | undefined {
+  try {
+    return decodeUtf8(bytes, "blob");
+  } catch {
+    return undefined;
+  }
 }
 
 /** Build the {base, result} state pair the Loom ratify path consumes. */
@@ -146,11 +180,19 @@ export function execGitReader(repoDir: string): GitReader {
     return Promise.resolve(decodeUtf8(runGit(["cat-file", "blob", objectId]), `blob ${objectId}`));
   }
 
+  function readBlobBytes(objectId: string): Promise<Uint8Array> {
+    if (!FULL_OBJECT_ID.test(objectId)) {
+      throw new Error("loom-git-bridge: invalid full Git object ID");
+    }
+    return Promise.resolve(runGit(["cat-file", "blob", objectId]));
+  }
+
   return {
     lsTree(ref: string): Promise<ReadonlyArray<GitTreeEntry>> {
       return Promise.resolve(parseLsTree(runGit(["ls-tree", "-r", "-z", "--full-tree", ref])));
     },
     readBlob,
+    readBlobBytes,
     readFile(ref: string, path: string): Promise<string> {
       const subject = `blob ${ref}:${path}`;
       return Promise.resolve(decodeUtf8(runGit(["show", `${ref}:${path}`]), subject));

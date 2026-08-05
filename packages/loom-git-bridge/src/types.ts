@@ -15,7 +15,7 @@ import type { State } from "@agentforge/loom-core";
 export interface GitTreeEntry {
   readonly path: string;
   readonly mode: string;
-  readonly type: "blob" | "tree";
+  readonly type: "blob" | "tree" | "commit";
   /** Immutable object name. Optional only for compatibility with legacy readers. */
   readonly objectId?: string;
 }
@@ -25,6 +25,8 @@ export interface GitReader {
   lsTree(ref: string): Promise<ReadonlyArray<GitTreeEntry>>;
   /** Read a blob by the immutable object ID returned by lsTree. */
   readBlob?(objectId: string): Promise<string>;
+  /** Read raw blob bytes (for binary content); optional for legacy readers. */
+  readBlobBytes?(objectId: string): Promise<Uint8Array>;
   /**
    * Legacy path-based read. stateFromGitRef uses this only when object-ID reads
    * are unavailable, preserving compatibility with existing in-memory readers.
