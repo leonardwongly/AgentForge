@@ -18,3 +18,4 @@ export * from "./lock.js";
 export * from "./private.js";
 export * from "./wire.js";
 export * from "./wire-transport.js";
+export * from "./proposal.js";
