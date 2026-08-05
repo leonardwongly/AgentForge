@@ -1373,11 +1373,14 @@ Implemented and tested today:
 - a repository-local `ratify` and `verify` CLI demonstration;
 - a durable content-addressed object store and transactional Line journal
   (single-process, file-backed; CAS on `(head, sequence)` with idempotency
-  keys and crash-safe atomic writes).
+  keys and crash-safe atomic writes); and
+- canonical DAG-CBOR encoding/decoding and CIDv1 (SHA-256 multihash, lowercase
+  base32) addressing with strict canonical validation.
 
 Not yet implemented as a native system:
 
-- DAG-CBOR/CIDv1 encoding and binary-safe chunked objects;
+- binary-safe chunked objects (the DAG-CBOR/CIDv1 codec exists; chunking and
+  the `raw`-codec BlobManifest pipeline are not yet wired);
 - multi-process durable object storage and transactional Line persistence
   (the current store is single-process and file-backed);
 - native working-copy materialization and change journal;
