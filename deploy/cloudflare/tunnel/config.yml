@@ -1,0 +1,24 @@
+# cloudflared Tunnel configuration for AgentForge.
+#
+# Replace `agentforge` with your tunnel name and the hostnames with your own.
+# This exposes the dashboard and API (including the GitHub webhook receiver)
+# through Cloudflare's edge with no inbound ports open on the host.
+#
+# Create the tunnel first:
+#   cloudflared tunnel login
+#   cloudflared tunnel create agentforge
+#   cloudflared tunnel route dns agentforge <your-hostname>
+tunnel: agentforge
+credentials-file: /etc/cloudflared/<tunnel-id>.json
+
+ingress:
+  # Dashboard (Next.js)
+  - hostname: <your-hostname>
+    service: http://agentforge-web:3000
+
+  # API + GitHub webhook receiver
+  - hostname: api.<your-hostname>
+    service: http://agentforge-api:4000
+
+  # Fallback: reject everything else
+  - service: http_status:404

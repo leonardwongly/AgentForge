@@ -1,0 +1,78 @@
+# AgentForge Helm chart values.
+# Production requires secrets (see values-secrets.example or --set flags) and a
+# fail-closed configuration. Review docs/self-hosting.md before deploying.
+
+image:
+  repository: agentforge
+  tag: "1.1.0"
+  pullPolicy: IfNotPresent
+
+# Bring your own Postgres/Redis, or let the chart provision them.
+postgresql:
+  enabled: true
+  auth:
+    database: agentforge
+    username: agentforge
+    password: "" # set via --set postgresql.auth.password or a secret
+  service:
+    port: 5432
+
+redis:
+  enabled: true
+  auth:
+    password: "" # set via --set redis.auth.password or a secret
+  service:
+    port: 6379
+
+api:
+  replicaCount: 1
+  port: 4000
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
+worker:
+  replicaCount: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
+web:
+  replicaCount: 1
+  port: 3000
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { cpu: "1", memory: 1Gi }
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  tls:
+    enabled: false
+    secretName: ""
+
+# Application configuration. Secrets are mounted from the `agentforge-secrets`
+# secret; non-secret values come from the `agentforge-config` ConfigMap.
+config:
+  nodeEnv: production
+  appBaseUrl: http://localhost
+  apiBaseUrl: http://localhost:4000
+  defaultPolicyMode: observe
+  sourceCodeStorage: "false"
+  fullDiffRetention: disabled
+  redactSecrets: "true"
+  llmFeatures: "false"
+  auditRecordRetentionDays: "90"
+
+# Set these via --set or a values file; never commit real secrets.
+secrets:
+  databaseUrl: ""
+  redisUrl: ""
+  githubAppId: ""
+  githubAppPrivateKey: ""
+  githubAppSlug: ""
+  githubWebhookSecret: ""
+  githubClientId: ""
+  githubClientSecret: ""
+  sessionSecret: ""

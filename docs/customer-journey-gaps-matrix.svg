@@ -1,0 +1,198 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1900" height="740" viewBox="0 0 1900 740" font-family="Helvetica Neue, Arial, sans-serif">
+  <rect width="1900" height="740" fill="#F6F7F8"/>
+  <text x="40" y="44" font-size="30" font-weight="700" fill="#18212B">Customer Journey — Gaps &amp; Opportunities Matrix</text>
+  <text x="40" y="72" font-size="16" fill="#5A6472">Cross-cutting gaps (G1–G10) mapped to journey stages, impact, priority, and the improvement that closes them.</text>
+
+  <!-- HEADER -->
+  <g font-size="16" font-weight="700" fill="#FFFFFF">
+    <rect x="40" y="90" width="80" height="48" fill="#18212B"/>
+    <text x="80" y="119" text-anchor="middle">ID</text>
+    <rect x="130" y="90" width="420" height="48" fill="#18212B"/>
+    <text x="340" y="119" text-anchor="middle">Gap</text>
+    <rect x="560" y="90" width="200" height="48" fill="#18212B"/>
+    <text x="660" y="119" text-anchor="middle">Journey stages</text>
+    <rect x="770" y="90" width="180" height="48" fill="#18212B"/>
+    <text x="860" y="119" text-anchor="middle">Impact</text>
+    <rect x="960" y="90" width="140" height="48" fill="#18212B"/>
+    <text x="1030" y="119" text-anchor="middle">Priority</text>
+    <rect x="1110" y="90" width="720" height="48" fill="#18212B"/>
+    <text x="1470" y="119" text-anchor="middle">Improvement</text>
+  </g>
+
+  <!-- ROW 1 -->
+  <g font-size="15" fill="#18212B">
+    <rect x="40" y="138" width="80" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="80" y="171" text-anchor="middle" font-weight="700">G1</text>
+    <rect x="130" y="138" width="420" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="142" y="171">No hosted SaaS / sandbox / demo</text>
+    <rect x="560" y="138" width="200" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="572" y="171">0, 1, 8</text>
+    <rect x="770" y="138" width="180" height="56" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="782" y="171" font-weight="700" fill="#C0392B">High</text>
+    <rect x="960" y="138" width="140" height="56" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="1030" y="171" font-weight="700" fill="#C0392B" text-anchor="middle">P0</text>
+    <rect x="1110" y="138" width="720" height="56" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1122" y="171" fill="#0868E0">Hosted sandbox + guided demo producing a real CCR</text>
+  </g>
+
+  <!-- ROW 2 -->
+  <g font-size="15" fill="#18212B">
+    <rect x="40" y="194" width="80" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="80" y="227" text-anchor="middle" font-weight="700">G2</text>
+    <rect x="130" y="194" width="420" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="142" y="227">Heavy multi-service setup, no installer</text>
+    <rect x="560" y="194" width="200" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="572" y="227">1, 2</text>
+    <rect x="770" y="194" width="180" height="56" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="782" y="227" font-weight="700" fill="#C0392B">High</text>
+    <rect x="960" y="194" width="140" height="56" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="1030" y="227" font-weight="700" fill="#C0392B" text-anchor="middle">P0</text>
+    <rect x="1110" y="194" width="720" height="56" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1122" y="227" fill="#0868E0">One-command installer + doctor / readiness preflight</text>
+  </g>
+
+  <!-- ROW 3 -->
+  <g font-size="15" fill="#18212B">
+    <rect x="40" y="250" width="80" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="80" y="283" text-anchor="middle" font-weight="700">G3</text>
+    <rect x="130" y="250" width="420" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="142" y="283">No external validation / design partners</text>
+    <rect x="560" y="250" width="200" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="572" y="283">0, 8</text>
+    <rect x="770" y="250" width="180" height="56" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="782" y="283" font-weight="700" fill="#C0392B">High</text>
+    <rect x="960" y="250" width="140" height="56" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="1030" y="283" font-weight="700" fill="#C0392B" text-anchor="middle">P0</text>
+    <rect x="1110" y="250" width="720" height="56" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1122" y="283" fill="#0868E0">Design-partner program; external interviews + artifacts</text>
+  </g>
+
+  <!-- ROW 4 -->
+  <g font-size="15" fill="#18212B">
+    <rect x="40" y="306" width="80" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="80" y="339" text-anchor="middle" font-weight="700">G4</text>
+    <rect x="130" y="306" width="420" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="142" y="339">No shipped AI assistance</text>
+    <rect x="560" y="306" width="200" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="572" y="339">5</text>
+    <rect x="770" y="306" width="180" height="56" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="782" y="339" font-weight="700" fill="#C0392B">High</text>
+    <rect x="960" y="306" width="140" height="56" fill="#F7E7C3" stroke="#C66A36"/>
+    <text x="1030" y="339" font-weight="700" fill="#C66A36" text-anchor="middle">P1</text>
+    <rect x="1110" y="306" width="720" height="56" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1122" y="339" fill="#0868E0">Advisory AI layer: explanations + evidence auto-draft (flags)</text>
+  </g>
+
+  <!-- ROW 5 -->
+  <g font-size="15" fill="#18212B">
+    <rect x="40" y="362" width="80" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="80" y="395" text-anchor="middle" font-weight="700">G5</text>
+    <rect x="130" y="362" width="420" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="142" y="395">No decision-intelligence / insights engine</text>
+    <rect x="560" y="362" width="200" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="572" y="395">5, 6</text>
+    <rect x="770" y="362" width="180" height="56" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="782" y="395" font-weight="700" fill="#C0392B">High</text>
+    <rect x="960" y="362" width="140" height="56" fill="#F7E7C3" stroke="#C66A36"/>
+    <text x="1030" y="395" font-weight="700" fill="#C66A36" text-anchor="middle">P1</text>
+    <rect x="1110" y="362" width="720" height="56" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1122" y="395" fill="#0868E0">Insights + per-detector precision/recall + recommendations</text>
+  </g>
+
+  <!-- ROW 6 -->
+  <g font-size="15" fill="#18212B">
+    <rect x="40" y="418" width="80" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="80" y="451" text-anchor="middle" font-weight="700">G6</text>
+    <rect x="130" y="418" width="420" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="142" y="451">No Slack/Teams/mobile actions</text>
+    <rect x="560" y="418" width="200" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="572" y="451">5</text>
+    <rect x="770" y="418" width="180" height="56" fill="#F7E7C3" stroke="#C66A36"/>
+    <text x="782" y="451" font-weight="700" fill="#C66A36">Medium</text>
+    <rect x="960" y="418" width="140" height="56" fill="#F7E7C3" stroke="#C66A36"/>
+    <text x="1030" y="451" font-weight="700" fill="#C66A36" text-anchor="middle">P1</text>
+    <rect x="1110" y="418" width="720" height="56" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1122" y="451" fill="#0868E0">In-workflow actions + push notifications</text>
+  </g>
+
+  <!-- ROW 7 -->
+  <g font-size="15" fill="#18212B">
+    <rect x="40" y="474" width="80" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="80" y="507" text-anchor="middle" font-weight="700">G7</text>
+    <rect x="130" y="474" width="420" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="142" y="507">No SSO / SIEM / tamper-evident audit</text>
+    <rect x="560" y="474" width="200" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="572" y="507">7</text>
+    <rect x="770" y="474" width="180" height="56" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="782" y="507" font-weight="700" fill="#C0392B">High</text>
+    <rect x="960" y="474" width="140" height="56" fill="#DCE8F7" stroke="#0868E0"/>
+    <text x="1030" y="507" font-weight="700" fill="#0868E0" text-anchor="middle">P2</text>
+    <rect x="1110" y="474" width="720" height="56" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1122" y="507" fill="#0868E0">Compliance depth: SSO/SAML, SIEM streaming, signed audit trail</text>
+  </g>
+
+  <!-- ROW 8 -->
+  <g font-size="15" fill="#18212B">
+    <rect x="40" y="530" width="80" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="80" y="563" text-anchor="middle" font-weight="700">G8</text>
+    <rect x="130" y="530" width="420" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="142" y="563">No production Helm/Terraform distribution</text>
+    <rect x="560" y="530" width="200" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="572" y="563">1, 7</text>
+    <rect x="770" y="530" width="180" height="56" fill="#F7E7C3" stroke="#C66A36"/>
+    <text x="782" y="563" font-weight="700" fill="#C66A36">Medium</text>
+    <rect x="960" y="530" width="140" height="56" fill="#DCE8F7" stroke="#0868E0"/>
+    <text x="1030" y="563" font-weight="700" fill="#0868E0" text-anchor="middle">P2</text>
+    <rect x="1110" y="530" width="720" height="56" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1122" y="563" fill="#0868E0">Helm chart + Terraform modules for enterprise self-hosted</text>
+  </g>
+
+  <!-- ROW 9 -->
+  <g font-size="15" fill="#18212B">
+    <rect x="40" y="586" width="80" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="80" y="619" text-anchor="middle" font-weight="700">G9</text>
+    <rect x="130" y="586" width="420" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="142" y="619">No support tiers / community / telemetry</text>
+    <rect x="560" y="586" width="200" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="572" y="619">8</text>
+    <rect x="770" y="586" width="180" height="56" fill="#F7E7C3" stroke="#C66A36"/>
+    <text x="782" y="619" font-weight="700" fill="#C66A36">Medium</text>
+    <rect x="960" y="586" width="140" height="56" fill="#DCE8F7" stroke="#0868E0"/>
+    <text x="1030" y="619" font-weight="700" fill="#0868E0" text-anchor="middle">P2</text>
+    <rect x="1110" y="586" width="720" height="56" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1122" y="619" fill="#0868E0">Customer-success motion + community + opt-in telemetry</text>
+  </g>
+
+  <!-- ROW 10 -->
+  <g font-size="15" fill="#18212B">
+    <rect x="40" y="642" width="80" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="80" y="675" text-anchor="middle" font-weight="700">G10</text>
+    <rect x="130" y="642" width="420" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="142" y="675">Two-product (Loom) narrative confusion</text>
+    <rect x="560" y="642" width="200" height="56" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="572" y="675">0, 8</text>
+    <rect x="770" y="642" width="180" height="56" fill="#F7E7C3" stroke="#C66A36"/>
+    <text x="782" y="675" font-weight="700" fill="#C66A36">Medium</text>
+    <rect x="960" y="642" width="140" height="56" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="1030" y="675" font-weight="700" fill="#C0392B" text-anchor="middle">P0</text>
+    <rect x="1110" y="642" width="720" height="56" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1122" y="675" fill="#0868E0">Single-product buyer story; move Loom to research page</text>
+  </g>
+
+  <!-- LEGEND -->
+  <g font-size="14" fill="#18212B">
+    <rect x="40" y="712" width="16" height="16" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="62" y="725">High</text>
+    <rect x="120" y="712" width="16" height="16" fill="#F7E7C3" stroke="#C66A36"/>
+    <text x="142" y="725">Medium</text>
+    <rect x="230" y="712" width="16" height="16" fill="#DCE8F7" stroke="#0868E0"/>
+    <text x="252" y="725">Low</text>
+    <text x="360" y="725" font-weight="700">Priority:</text>
+    <rect x="430" y="712" width="16" height="16" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="452" y="725">P0 (adoption blockers)</text>
+    <rect x="640" y="712" width="16" height="16" fill="#F7E7C3" stroke="#C66A36"/>
+    <text x="662" y="725">P1 (daily-use differentiators)</text>
+    <rect x="880" y="712" width="16" height="16" fill="#DCE8F7" stroke="#0868E0"/>
+    <text x="902" y="725">P2 (enterprise / retention)</text>
+  </g>
+</svg>

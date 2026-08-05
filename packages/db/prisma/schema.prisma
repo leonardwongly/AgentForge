@@ -300,6 +300,10 @@ model WebhookDelivery {
   publishedCheckRunId       BigInt?
   checkConclusion           String?
   checkPublishedAt          DateTime?
+  checkPublicationState     String    @default("pending")
+  checkPublicationClaimId   String?
+  checkPublicationClaimedAt DateTime?
+  checkExternalId           String?   @unique
   lastEnqueueFailureClass   String?
   lastEnqueueFailureMessage String?
   lastEnqueueFailedAt       DateTime?
@@ -322,6 +326,7 @@ model WebhookDelivery {
   @@index([repositoryFullName, pullRequestNumber])
   @@index([deliveryStatus, createdAt])
   @@index([evaluationTerminalFailure, lastFailedAt])
+  @@index([checkPublicationState, checkPublicationClaimedAt])
 }
 
 model ExportJob {
@@ -344,6 +349,7 @@ model ExportJob {
 
 model ChangeControlRecord {
   id                    String           @id @default(uuid())
+  revision              Int              @default(0)
   pullRequestId         String           @unique
   repositoryFullName    String
   pullRequestNumber     Int

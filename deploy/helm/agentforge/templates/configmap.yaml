@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agentforge.fullname" . }}-config
+  labels:
+    {{- include "agentforge.labels" . | nindent 4 }}
+data:
+  NODE_ENV: {{ .Values.config.nodeEnv | quote }}
+  APP_BASE_URL: {{ .Values.config.appBaseUrl | quote }}
+  API_BASE_URL: {{ .Values.config.apiBaseUrl | quote }}
+  DEFAULT_POLICY_MODE: {{ .Values.config.defaultPolicyMode | quote }}
+  SOURCE_CODE_STORAGE: {{ .Values.config.sourceCodeStorage | quote }}
+  FULL_DIFF_RETENTION: {{ .Values.config.fullDiffRetention | quote }}
+  REDACT_SECRETS: {{ .Values.config.redactSecrets | quote }}
+  LLM_FEATURES: {{ .Values.config.llmFeatures | quote }}
+  AUDIT_RECORD_RETENTION_DAYS: {{ .Values.config.auditRecordRetentionDays | quote }}

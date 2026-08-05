@@ -27,6 +27,12 @@ For product positioning and non-goals, see [docs/product-overview.md](docs/produ
 
 ## Loom VCS Direction
 
+> **Product vs. research.** For buyers and operators, **AgentForge Merge Guard**
+> (below) is the shipped product. **Loom** is a pre-1.0 research program and
+> specification that evolves the reusable policy, evidence, and provenance work
+> into a native agent-first version-control model. Loom is not yet a product and
+> does not change how Merge Guard is deployed or used today.
+
 This repository also contains the pre-1.0 implementation and authoritative
 specification for **Loom**, a native version-control system designed for software
 development in which humans, agents, and automation are first-class actors.
@@ -213,6 +219,13 @@ pnpm dev:api
 pnpm dev:web
 pnpm dev:worker
 
+# Stack health + guided setup
+pnpm doctor
+pnpm setup
+
+# Performance baseline
+pnpm benchmark
+
 # Build and static checks
 pnpm build
 pnpm typecheck
@@ -272,6 +285,8 @@ Important variables:
 | `LLM_FEATURES`                                    | Optional advisory AI features. Blocking decisions never depend on this.                                                                                                                                                  |
 | `AUDIT_RECORD_RETENTION_DAYS`                     | Retention period for audit and change-control records.                                                                                                                                                                   |
 | `EXPORT_STORAGE_BUCKET` / `EXPORT_STORAGE_REGION` | Reserved for a future object-storage export adapter. V1 export delivery is API job download.                                                                                                                             |
+| `NOTIFICATION_WEBHOOK_URL`                       | Optional outbound webhook for governance notifications (e.g. blocked PRs). Leave empty to disable.                                                                                                                        |
+| `AUDIT_STREAM_WEBHOOK_URL`                       | Optional SIEM-style webhook for streaming tamper-evident audit events via `POST /api/admin/audit-stream`. Leave empty to disable.                                                                                          |
 | `SESSION_SECRET`                                  | Session signing secret. Required before production deployment.                                                                                                                                                           |
 | `AGENTFORGE_GITHUB_ADMIN_LOGINS`                  | Comma-separated GitHub logins that receive `platform_admin` when built-in GitHub OAuth is used.                                                                                                                          |
 | `AGENTFORGE_GITHUB_ALLOWED_LOGINS`                | Comma-separated GitHub logins that receive `developer` when built-in GitHub OAuth is used.                                                                                                                               |
@@ -498,7 +513,7 @@ The documented deployment target is one Railway project with separate services:
 - `agentforge-web` for the optional Next.js dashboard, or host the dashboard elsewhere and point `APP_BASE_URL` at it.
 - Managed Postgres and Redis services.
 
-Build and start commands are defined in [docs/railway-deployment.md](docs/railway-deployment.md). Production migration deploys should use:
+Build and start commands are defined in [docs/railway-deployment.md](docs/railway-deployment.md). For a Cloudflare-hosted deployment (Tunnel + optional Pages), see [docs/cloudflare-deployment.md](docs/cloudflare-deployment.md) and `deploy/cloudflare/`. For Kubernetes or AWS, see `deploy/helm/agentforge` and `deploy/terraform/aws`. Production migration deploys should use:
 
 ```bash
 pnpm db:deploy

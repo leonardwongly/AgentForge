@@ -1,0 +1,38 @@
+# Runs cloudflared alongside the AgentForge services so the dashboard and API
+# (including the GitHub webhook receiver) are reachable through Cloudflare's
+# edge without opening inbound ports.
+#
+# Usage:
+#   cloudflared tunnel login
+#   cloudflared tunnel create agentforge
+#   docker compose -f deploy/cloudflare/tunnel/docker-compose.yml up -d
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./config.yml:/etc/cloudflared/config.yml:ro
+      # Mount your cloudflared credentials directory (contains <tunnel-id>.json)
+      - ~/.cloudflared:/etc/cloudflared:ro
+    network_mode: host
+    depends_on:
+      - agentforge-api
+      - agentforge-web
+
+  # Reference services the tunnel routes to. In a real deployment these are
+  # your existing API/web services; the tunnel only needs to reach them on the
+  # host network.
+  agentforge-api:
+    image: agentforge:1.1.0
+    command: ["start:api"]
+    environment:
+      NODE_ENV: production
+    network_mode: host
+
+  agentforge-web:
+    image: agentforge:1.1.0
+    command: ["start:web"]
+    environment:
+      NODE_ENV: production
+    network_mode: host

@@ -1,0 +1,182 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2000" height="960" viewBox="0 0 2000 960" font-family="Helvetica Neue, Arial, sans-serif">
+  <rect width="2000" height="960" fill="#F6F7F8"/>
+  <text x="30" y="44" font-size="30" font-weight="700" fill="#18212B">Core Governance Loop — Detailed Swimlane Journey Map</text>
+  <text x="30" y="72" font-size="16" fill="#5A6472">Stages 3–6: how a pull request moves through AgentForge, who acts, where it hurts, and where to improve.</text>
+
+  <!-- STAGE HEADERS -->
+  <g font-size="17" font-weight="700" fill="#FFFFFF">
+    <rect x="30" y="90" width="150" height="50" fill="#18212B"/>
+    <text x="105" y="121" fill="#FFFFFF" text-anchor="middle">Actor</text>
+    <rect x="180" y="90" width="285" height="50" fill="#0868E0"/>
+    <text x="322" y="121" fill="#FFFFFF" text-anchor="middle">A · PR Opened</text>
+    <rect x="480" y="90" width="285" height="50" fill="#0868E0"/>
+    <text x="622" y="121" fill="#FFFFFF" text-anchor="middle">B · Evaluation</text>
+    <rect x="780" y="90" width="285" height="50" fill="#0868E0"/>
+    <text x="922" y="121" fill="#FFFFFF" text-anchor="middle">C · Check Published</text>
+    <rect x="1080" y="90" width="285" height="50" fill="#0868E0"/>
+    <text x="1222" y="121" fill="#FFFFFF" text-anchor="middle">D · Evidence &amp; Review</text>
+    <rect x="1380" y="90" width="285" height="50" fill="#0868E0"/>
+    <text x="1522" y="121" fill="#FFFFFF" text-anchor="middle">E · Override / Decision</text>
+    <rect x="1680" y="90" width="285" height="50" fill="#0868E0"/>
+    <text x="1822" y="121" fill="#FFFFFF" text-anchor="middle">F · Merge &amp; Record</text>
+  </g>
+
+  <!-- LANE 1: GITHUB -->
+  <g font-size="15" fill="#18212B">
+    <rect x="30" y="140" width="150" height="150" fill="#18212B"/>
+    <text x="105" y="218" fill="#FFFFFF" text-anchor="middle" font-weight="700">GitHub</text>
+    <rect x="180" y="140" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="192" y="168" font-weight="700">PR opened</text>
+    <text x="192" y="190">by human or agent;</text>
+    <text x="192" y="212">diff + metadata</text>
+    <text x="192" y="234">available</text>
+    <rect x="480" y="140" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="492" y="168" font-weight="700">—</text>
+    <text x="492" y="190">(data source for</text>
+    <text x="492" y="212">detectors)</text>
+    <rect x="780" y="140" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="792" y="168" font-weight="700">Check run</text>
+    <text x="792" y="190">visible on the PR</text>
+    <text x="792" y="212">(pass / warn /</text>
+    <text x="792" y="234">block)</text>
+    <rect x="1080" y="140" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="1092" y="168" font-weight="700">PR body</text>
+    <text x="1092" y="190">headings carry</text>
+    <text x="1092" y="212">evidence</text>
+    <rect x="1380" y="140" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="1392" y="168" font-weight="700">—</text>
+    <rect x="1680" y="140" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="1692" y="168" font-weight="700">PR merged</text>
+    <text x="1692" y="190">(branch protection</text>
+    <text x="1692" y="212">+ check gate)</text>
+  </g>
+
+  <!-- LANE 2: AGENTFORGE SYSTEM -->
+  <g font-size="15" fill="#18212B">
+    <rect x="30" y="290" width="150" height="150" fill="#0868E0"/>
+    <text x="105" y="368" fill="#FFFFFF" text-anchor="middle" font-weight="700">AgentForge</text>
+    <rect x="180" y="290" width="285" height="150" fill="#EDF2FA" stroke="#D0D5DD"/>
+    <text x="192" y="318" font-weight="700">Webhook received,</text>
+    <text x="192" y="340">delivery recorded,</text>
+    <text x="192" y="362">queued to worker</text>
+    <rect x="480" y="290" width="285" height="150" fill="#EDF2FA" stroke="#D0D5DD"/>
+    <text x="492" y="318" font-weight="700">Deterministic</text>
+    <text x="492" y="340">detectors + policy</text>
+    <text x="492" y="362">evaluate (observe /</text>
+    <text x="492" y="384">warn / enforce)</text>
+    <rect x="780" y="290" width="285" height="150" fill="#EDF2FA" stroke="#D0D5DD"/>
+    <text x="792" y="318" font-weight="700">Publish check +</text>
+    <text x="792" y="340">create Change</text>
+    <text x="792" y="362">Control Record</text>
+    <rect x="1080" y="290" width="285" height="150" fill="#EDF2FA" stroke="#D0D5DD"/>
+    <text x="1092" y="318" font-weight="700">Evidence queue +</text>
+    <text x="1092" y="340">reviewer routing</text>
+    <text x="1092" y="362">from policy</text>
+    <rect x="1380" y="290" width="285" height="150" fill="#EDF2FA" stroke="#D0D5DD"/>
+    <text x="1392" y="318" font-weight="700">Override workflow,</text>
+    <text x="1392" y="340">CCR decision +</text>
+    <text x="1392" y="362">audit event</text>
+    <rect x="1680" y="290" width="285" height="150" fill="#EDF2FA" stroke="#D0D5DD"/>
+    <text x="1692" y="318" font-weight="700">CCR lifecycle →</text>
+    <text x="1692" y="340">merged; retention</text>
+    <text x="1692" y="362">sweep; export</text>
+  </g>
+
+  <!-- LANE 3: REVIEWER -->
+  <g font-size="15" fill="#18212B">
+    <rect x="30" y="440" width="150" height="150" fill="#C66A36"/>
+    <text x="105" y="518" fill="#FFFFFF" text-anchor="middle" font-weight="700">Reviewer</text>
+    <rect x="180" y="440" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="192" y="468" font-weight="700">—</text>
+    <text x="192" y="490">(notified via</text>
+    <text x="192" y="512">GitHub)</text>
+    <rect x="480" y="440" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="492" y="468" font-weight="700">—</text>
+    <rect x="780" y="440" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="792" y="468" font-weight="700">Sees findings +</text>
+    <text x="792" y="490">required evidence</text>
+    <text x="792" y="512">+ required reviewers</text>
+    <rect x="1080" y="440" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="1092" y="468" font-weight="700">Provides evidence</text>
+    <text x="1092" y="490">(PR body / manual),</text>
+    <text x="1092" y="512">reviews the change</text>
+    <rect x="1380" y="440" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="1392" y="468" font-weight="700">Approves or</text>
+    <text x="1392" y="490">requests changes;</text>
+    <text x="1392" y="512">may request override</text>
+    <rect x="1680" y="440" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="1692" y="468" font-weight="700">—</text>
+    <text x="1692" y="490">(post-merge)</text>
+  </g>
+
+  <!-- LANE 4: PLATFORM ADMIN -->
+  <g font-size="15" fill="#18212B">
+    <rect x="30" y="590" width="150" height="150" fill="#18212B"/>
+    <text x="105" y="668" fill="#FFFFFF" text-anchor="middle" font-weight="700">Platform Admin</text>
+    <rect x="180" y="590" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="192" y="618" font-weight="700">Approves GitHub</text>
+    <text x="192" y="640">installation before</text>
+    <text x="192" y="662">repos governed</text>
+    <rect x="480" y="590" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="492" y="618" font-weight="700">Applies policy</text>
+    <text x="492" y="640">pack / mode to the</text>
+    <text x="492" y="662">repository</text>
+    <rect x="780" y="590" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="792" y="618" font-weight="700">—</text>
+    <text x="792" y="640">(monitors check</text>
+    <text x="792" y="662">output)</text>
+    <rect x="1080" y="590" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="1092" y="618" font-weight="700">Monitors evidence</text>
+    <text x="1092" y="640">queue + blocked</text>
+    <text x="1092" y="662">PR dashboard</text>
+    <rect x="1380" y="590" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="1392" y="618" font-weight="700">Role-gated override</text>
+    <text x="1392" y="640">approval; reviews</text>
+    <text x="1392" y="662">override trends</text>
+    <rect x="1680" y="590" width="285" height="150" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <text x="1692" y="618" font-weight="700">Exports CCR /</text>
+    <text x="1692" y="640">compliance evidence</text>
+    <text x="1692" y="662">package</text>
+  </g>
+
+  <!-- PAIN POINTS BAND -->
+  <g font-size="15" fill="#18212B">
+    <rect x="30" y="740" width="150" height="90" fill="#C0392B"/>
+    <text x="105" y="790" fill="#FFFFFF" text-anchor="middle" font-weight="700">Pain points</text>
+    <rect x="180" y="740" width="285" height="90" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="192" y="766" font-weight="700" fill="#C0392B">Webhook / App setup complexity</text>
+    <rect x="480" y="740" width="285" height="90" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="492" y="766" font-weight="700" fill="#C0392B">Policy is YAML-first,</text>
+    <text x="492" y="790" font-weight="700" fill="#C0392B">no guided builder</text>
+    <rect x="780" y="740" width="285" height="90" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="792" y="766" font-weight="700" fill="#C0392B">No plain-English AI explanations</text>
+    <rect x="1080" y="740" width="285" height="90" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="1092" y="766" font-weight="700" fill="#C0392B">Evidence UX is PR-body based;</text>
+    <text x="1092" y="790" font-weight="700" fill="#C0392B">no Slack/Teams</text>
+    <rect x="1380" y="740" width="285" height="90" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="1392" y="766" font-weight="700" fill="#C0392B">Overrides not surfaced in workflow</text>
+    <rect x="1680" y="740" width="285" height="90" fill="#FBE9E7" stroke="#C0392B"/>
+    <text x="1692" y="766" font-weight="700" fill="#C0392B">No SIEM / tamper-evident audit</text>
+  </g>
+
+  <!-- OPPORTUNITIES BAND -->
+  <g font-size="15" fill="#18212B">
+    <rect x="30" y="830" width="150" height="90" fill="#0868E0"/>
+    <text x="105" y="880" fill="#FFFFFF" text-anchor="middle" font-weight="700">Opportunities</text>
+    <rect x="180" y="830" width="285" height="90" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="192" y="856" font-weight="700" fill="#0868E0">In-dashboard GitHub App</text>
+    <text x="192" y="880" font-weight="700" fill="#0868E0">setup flow</text>
+    <rect x="480" y="830" width="285" height="90" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="492" y="856" font-weight="700" fill="#0868E0">Guided policy builder + importer</text>
+    <rect x="780" y="830" width="285" height="90" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="792" y="856" font-weight="700" fill="#0868E0">Advisory AI explanations (flags)</text>
+    <rect x="1080" y="830" width="285" height="90" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1092" y="856" font-weight="700" fill="#0868E0">Evidence auto-draft +</text>
+    <text x="1092" y="880" font-weight="700" fill="#0868E0">Slack actions</text>
+    <rect x="1380" y="830" width="285" height="90" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1392" y="856" font-weight="700" fill="#0868E0">Push / mobile override approval</text>
+    <rect x="1680" y="830" width="285" height="90" fill="#EAF2FC" stroke="#0868E0"/>
+    <text x="1692" y="856" font-weight="700" fill="#0868E0">Decision intelligence +</text>
+    <text x="1692" y="880" font-weight="700" fill="#0868E0">compliance depth</text>
+  </g>
+</svg>

@@ -1,0 +1,16 @@
+apiVersion: v2
+name: agentforge
+description: AgentForge Merge Guard — deterministic, evidence-based pull request governance.
+type: application
+version: 0.1.0
+appVersion: "1.1.0"
+keywords:
+  - governance
+  - pull-request
+  - github
+  - change-control
+home: https://github.com/leonardwongly/AgentForge
+sources:
+  - https://github.com/leonardwongly/AgentForge
+maintainers:
+  - name: AgentForge

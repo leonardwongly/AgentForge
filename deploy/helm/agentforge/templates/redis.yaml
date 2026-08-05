@@ -1,0 +1,49 @@
+{{- if .Values.redis.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "agentforge.fullname" . }}-redis
+  labels:
+    {{- include "agentforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentforge.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: redis
+  template:
+    metadata:
+      labels:
+        {{- include "agentforge.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args:
+            - --appendonly
+            - "yes"
+            - --requirepass
+            - {{ .Values.redis.auth.password | quote }}
+          ports:
+            - name: redis
+              containerPort: {{ .Values.redis.service.port }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "agentforge.fullname" . }}-redis
+  labels:
+    {{- include "agentforge.labels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "agentforge.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: redis
+  ports:
+    - name: redis
+      port: {{ .Values.redis.service.port }}
+      targetPort: redis
+{{- end }}

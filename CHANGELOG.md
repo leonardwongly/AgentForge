@@ -11,6 +11,44 @@ specification are tracked here.
   object and history model, working copies, merge/reapply semantics, identity
   and capability Grants, governed admission, provenance, storage and recovery,
   synchronization, Git interoperability, security, and conformance gates.
+- Added `pnpm doctor`, a single command that validates the full local stack
+  (Node, pnpm, git, Docker, Postgres, Redis, MinIO) and reports a readiness
+  score.
+- Added `pnpm setup`, a guided one-command setup that creates `.env`, starts the
+  Compose backing services, waits for readiness, and runs Prisma validate,
+  migrate, and seed — non-destructively.
+- Added per-detector precision reporting to the policy-insights report
+  (`computeDetectorMetrics`), surfaced in the API and the dashboard Policy
+  Insights page as an override-based precision proxy per detector.
+- Added a tamper-evident audit trail (`chainAuditEvents`, `verifyAuditChain`,
+  `auditChainDigest`) that binds each audit event to the previous event's hash
+  and detects insertion, deletion, reordering, and modification.
+- Added a composite governance health score (`computeGovernanceHealth`) to the
+  policy-insights report, surfaced as a metric card on the dashboard.
+- Added `pnpm design-partner:report`, which turns a CCR export into an automated
+  validation evidence report (override/evidence/reviewer metrics, per-detector
+  precision, governance health, and human-gated proposals).
+- Added the `@agentforge/notifications` package with best-effort outbound
+  webhook delivery (`deliverWebhook`), governance notification payloads
+  (`buildNotificationPayload`), and SIEM-style tamper-evident audit streaming
+  (`streamAuditEvents`).
+- Wired a blocked-PR notification into the worker (gated by
+  `NOTIFICATION_WEBHOOK_URL`) and added `POST /api/admin/audit-stream` for
+  streaming chained audit events (gated by `AUDIT_STREAM_WEBHOOK_URL`).
+- Made the sample-preview onboarding action available in deployed instances
+  behind the explicit `AGENTFORGE_ENABLE_SAMPLE_PREVIEW` flag (the fixture-root
+  requirement is now optional).
+- Added Cloudflare deployment support: a Cloudflare Tunnel config and compose
+  file (`deploy/cloudflare/tunnel`), an optional Cloudflare Pages `wrangler.toml`
+  (`deploy/cloudflare/pages`), and `docs/cloudflare-deployment.md`.
+- Added `pnpm benchmark`, a reproducible performance baseline for the
+  deterministic evaluation pipeline (latency p50/p95/p99 and throughput) with
+  dataset and hardware disclosure.
+- Added enterprise deployment packaging: a multi-stage root `Dockerfile`
+  (api/worker/web targets), a Helm chart under `deploy/helm/agentforge`, and an
+  AWS ECS + RDS + ElastiCache Terraform module under `deploy/terraform/aws`.
+- Clarified the README product-vs-research positioning: Merge Guard is the
+  shipped product; Loom is a pre-1.0 research program.
 
 ### Changed
 

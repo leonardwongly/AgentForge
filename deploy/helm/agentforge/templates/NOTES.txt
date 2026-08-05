@@ -1,0 +1,18 @@
+AgentForge Merge Guard has been installed.
+
+Get the dashboard URL:
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/component=web,app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 3000:{{ .Values.web.port }}
+
+Then open http://localhost:3000.
+
+Configuration notes:
+- Non-secret settings are in the ConfigMap "{{ include "agentforge.fullname" . }}-config".
+- Secrets are in the Secret "{{ include "agentforge.fullname" . }}-secrets" (set via --set secrets.* or a values file; never commit real secrets).
+- The API readiness endpoint is /ready; health is /health.
+- The GitHub webhook receiver is served at /webhooks/github on the API service.
+
+Production checklist (see docs/self-hosting.md):
+- Provide managed Postgres and Redis (set postgresql.enabled=false / redis.enabled=false and point DATABASE_URL / REDIS_URL at them).
+- Run migrations with: kubectl exec <api-pod> -- pnpm db:deploy
+- Configure trusted-proxy identity or GitHub OAuth before exposing the dashboard.

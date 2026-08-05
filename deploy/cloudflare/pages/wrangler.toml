@@ -1,0 +1,19 @@
+# Cloudflare Pages configuration for the AgentForge dashboard (optional).
+#
+# This serves the Next.js dashboard from Cloudflare's edge using
+# @cloudflare/next-on-pages. The API, worker, Postgres, and Redis remain
+# self-hosted and are reached through the tunneled API hostname.
+#
+# Build:
+#   pnpm --filter @agentforge/web build
+#   npx @cloudflare/next-on-pages
+#   npx wrangler pages deploy .vercel/output/static
+name = "agentforge-dashboard"
+compatibility_date = "2026-08-04"
+pages_build_output_dir = ".vercel/output/static"
+
+[vars]
+# Point the dashboard at your tunneled API hostname.
+API_BASE_URL = "https://api.example.com"
+APP_BASE_URL = "https://example.com"
+NODE_ENV = "production"

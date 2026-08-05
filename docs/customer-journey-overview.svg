@@ -1,0 +1,188 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1980" height="1100" viewBox="0 0 1980 1100" font-family="Helvetica Neue, Arial, sans-serif">
+  <rect width="1980" height="1100" fill="#F6F7F8"/>
+  <text x="40" y="52" font-size="34" font-weight="700" fill="#18212B">AgentForge — End-to-End Customer Journey Map</text>
+  <text x="40" y="82" font-size="18" fill="#5A6472">Nine stages from first awareness to retention, with gaps and improvements at each step.</text>
+
+  <!-- STAGE CARDS (3x3) -->
+  <!-- S0 -->
+  <g transform="translate(30,110)">
+    <rect width="620" height="252" rx="10" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <rect width="620" height="46" rx="10" fill="#9CBFDF"/>
+    <rect y="36" width="620" height="10" fill="#9CBFDF"/>
+    <text x="18" y="30" font-size="14" font-weight="700" fill="#18212B">STAGE 0</text>
+    <text x="18" y="52" font-size="20" font-weight="700" fill="#18212B">Awareness &amp; Evaluation</text>
+    <rect x="470" y="12" width="132" height="24" rx="12" fill="#C66A36"/>
+    <text x="536" y="29" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">Gap: Medium</text>
+    <text x="18" y="82" font-size="15" fill="#18212B"><tspan font-weight="700">Goal:</tspan> Understand fit &amp; credibility</text>
+    <text x="18" y="106" font-size="15" fill="#18212B"><tspan font-weight="700">Touchpoints:</tspan> README, docs, launch copy</text>
+    <text x="18" y="130" font-size="15" fill="#C0392B"><tspan font-weight="700">Top gap:</tspan> No hosted demo / sandbox</text>
+    <text x="18" y="154" font-size="15" fill="#18212B"><tspan font-weight="700">Also:</tspan> 0 external orgs; Loom confusion</text>
+    <text x="18" y="186" font-size="15" fill="#0868E0"><tspan font-weight="700">Improve:</tspan> Guided sandbox + case studies</text>
+    <text x="18" y="210" font-size="15" fill="#0868E0">Single-product story until Loom validated</text>
+  </g>
+
+  <!-- S1 -->
+  <g transform="translate(680,110)">
+    <rect width="620" height="252" rx="10" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <rect width="620" height="46" rx="10" fill="#F2C4A0"/>
+    <rect y="36" width="620" height="10" fill="#F2C4A0"/>
+    <text x="18" y="30" font-size="14" font-weight="700" fill="#18212B">STAGE 1</text>
+    <text x="18" y="52" font-size="20" font-weight="700" fill="#18212B">Installation &amp; Config</text>
+    <rect x="470" y="12" width="132" height="24" rx="12" fill="#C0392B"/>
+    <text x="536" y="29" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">Gap: High</text>
+    <text x="18" y="82" font-size="15" fill="#18212B"><tspan font-weight="700">Goal:</tspan> Working instance fast</text>
+    <text x="18" y="106" font-size="15" fill="#18212B"><tspan font-weight="700">Touchpoints:</tspan> Docs, Docker Compose, CLI</text>
+    <text x="18" y="130" font-size="15" fill="#C0392B"><tspan font-weight="700">Top gap:</tspan> Multi-service footprint</text>
+    <text x="18" y="154" font-size="15" fill="#18212B"><tspan font-weight="700">Also:</tspan> No one-command installer</text>
+    <text x="18" y="186" font-size="15" fill="#0868E0"><tspan font-weight="700">Improve:</tspan> One-command installer</text>
+    <text x="18" y="210" font-size="15" fill="#0868E0">Doctor / readiness preflight + upgrades</text>
+  </g>
+
+  <!-- S2 -->
+  <g transform="translate(1330,110)">
+    <rect width="620" height="252" rx="10" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <rect width="620" height="46" rx="10" fill="#F2C4A0"/>
+    <rect y="36" width="620" height="10" fill="#F2C4A0"/>
+    <text x="18" y="30" font-size="14" font-weight="700" fill="#18212B">STAGE 2</text>
+    <text x="18" y="52" font-size="20" font-weight="700" fill="#18212B">GitHub App + Auth</text>
+    <rect x="470" y="12" width="132" height="24" rx="12" fill="#C0392B"/>
+    <text x="536" y="29" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">Gap: High</text>
+    <text x="18" y="82" font-size="15" fill="#18212B"><tspan font-weight="700">Goal:</tspan> Connect GitHub securely</text>
+    <text x="18" y="106" font-size="15" fill="#18212B"><tspan font-weight="700">Touchpoints:</tspan> Setup docs, OAuth / proxy</text>
+    <text x="18" y="130" font-size="15" fill="#C0392B"><tspan font-weight="700">Top gap:</tspan> Trusted-proxy complexity</text>
+    <text x="18" y="154" font-size="15" fill="#18212B"><tspan font-weight="700">Also:</tspan> No SSO/SAML; manual App setup</text>
+    <text x="18" y="186" font-size="15" fill="#0868E0"><tspan font-weight="700">Improve:</tspan> In-dashboard App setup flow</text>
+    <text x="18" y="210" font-size="15" fill="#0868E0">Reference ingress configs; SSO later</text>
+  </g>
+
+  <!-- S3 -->
+  <g transform="translate(30,390)">
+    <rect width="620" height="252" rx="10" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <rect width="620" height="46" rx="10" fill="#9CBFDF"/>
+    <rect y="36" width="620" height="10" fill="#9CBFDF"/>
+    <text x="18" y="30" font-size="14" font-weight="700" fill="#18212B">STAGE 3</text>
+    <text x="18" y="52" font-size="20" font-weight="700" fill="#18212B">First Repo + Policy</text>
+    <rect x="470" y="12" width="132" height="24" rx="12" fill="#C66A36"/>
+    <text x="536" y="29" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">Gap: Medium</text>
+    <text x="18" y="82" font-size="15" fill="#18212B"><tspan font-weight="700">Goal:</tspan> Govern a real repository</text>
+    <text x="18" y="106" font-size="15" fill="#18212B"><tspan font-weight="700">Touchpoints:</tspan> Onboarding wizard, packs</text>
+    <text x="18" y="130" font-size="15" fill="#C0392B"><tspan font-weight="700">Top gap:</tspan> Sample preview dev-only</text>
+    <text x="18" y="154" font-size="15" fill="#18212B"><tspan font-weight="700">Also:</tspan> YAML-first authoring</text>
+    <text x="18" y="186" font-size="15" fill="#0868E0"><tspan font-weight="700">Improve:</tspan> Guided policy builder</text>
+    <text x="18" y="210" font-size="15" fill="#0868E0">Branch-protection importer + pack library</text>
+  </g>
+
+  <!-- S4 -->
+  <g transform="translate(680,390)">
+    <rect width="620" height="252" rx="10" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <rect width="620" height="46" rx="10" fill="#B5D8B0"/>
+    <rect y="36" width="620" height="10" fill="#B5D8B0"/>
+    <text x="18" y="30" font-size="14" font-weight="700" fill="#18212B">STAGE 4</text>
+    <text x="18" y="52" font-size="20" font-weight="700" fill="#18212B">Activation (First Value)</text>
+    <rect x="470" y="12" width="132" height="24" rx="12" fill="#2E8B57"/>
+    <text x="536" y="29" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">Gap: Low</text>
+    <text x="18" y="82" font-size="15" fill="#18212B"><tspan font-weight="700">Goal:</tspan> First evaluated PR + CCR</text>
+    <text x="18" y="106" font-size="15" fill="#18212B"><tspan font-weight="700">Touchpoints:</tspan> Check run, dashboard</text>
+    <text x="18" y="130" font-size="15" fill="#C0392B"><tspan font-weight="700">Top gap:</tspan> Value gated by setup</text>
+    <text x="18" y="154" font-size="15" fill="#18212B"><tspan font-weight="700">Also:</tspan> No next-step guidance</text>
+    <text x="18" y="186" font-size="15" fill="#0868E0"><tspan font-weight="700">Improve:</tspan> Post-activation checklist</text>
+    <text x="18" y="210" font-size="15" fill="#0868E0">Opt-in activation telemetry</text>
+  </g>
+
+  <!-- S5 -->
+  <g transform="translate(1330,390)">
+    <rect width="620" height="252" rx="10" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <rect width="620" height="46" rx="10" fill="#9CBFDF"/>
+    <rect y="36" width="620" height="10" fill="#9CBFDF"/>
+    <text x="18" y="30" font-size="14" font-weight="700" fill="#18212B">STAGE 5</text>
+    <text x="18" y="52" font-size="20" font-weight="700" fill="#18212B">Daily Use (Core Loop)</text>
+    <rect x="470" y="12" width="132" height="24" rx="12" fill="#C66A36"/>
+    <text x="536" y="29" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">Gap: Medium</text>
+    <text x="18" y="82" font-size="15" fill="#18212B"><tspan font-weight="700">Goal:</tspan> Review, evidence, override</text>
+    <text x="18" y="106" font-size="15" fill="#18212B"><tspan font-weight="700">Touchpoints:</tspan> Dashboard, checks, PR body</text>
+    <text x="18" y="130" font-size="15" fill="#C0392B"><tspan font-weight="700">Top gap:</tspan> No AI assist, no Slack/Teams</text>
+    <text x="18" y="154" font-size="15" fill="#18212B"><tspan font-weight="700">Also:</tspan> Evidence UX is PR-body based</text>
+    <text x="18" y="186" font-size="15" fill="#0868E0"><tspan font-weight="700">Improve:</tspan> Advisory AI layer (flags)</text>
+    <text x="18" y="210" font-size="15" fill="#0868E0">Slack/Teams actions + reviewer inbox</text>
+  </g>
+
+  <!-- S6 -->
+  <g transform="translate(30,670)">
+    <rect width="620" height="252" rx="10" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <rect width="620" height="46" rx="10" fill="#F2C4A0"/>
+    <rect y="36" width="620" height="10" fill="#F2C4A0"/>
+    <text x="18" y="30" font-size="14" font-weight="700" fill="#18212B">STAGE 6</text>
+    <text x="18" y="52" font-size="20" font-weight="700" fill="#18212B">Optimization &amp; Expansion</text>
+    <rect x="470" y="12" width="132" height="24" rx="12" fill="#C0392B"/>
+    <text x="536" y="29" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">Gap: High</text>
+    <text x="18" y="82" font-size="15" fill="#18212B"><tspan font-weight="700">Goal:</tspan> Reduce noise, scale repos</text>
+    <text x="18" y="106" font-size="15" fill="#18212B"><tspan font-weight="700">Touchpoints:</tspan> Insights, optimize mode</text>
+    <text x="18" y="130" font-size="15" fill="#C0392B"><tspan font-weight="700">Top gap:</tspan> Insights not shipped</text>
+    <text x="18" y="154" font-size="15" fill="#18212B"><tspan font-weight="700">Also:</tspan> No per-detector precision/recall</text>
+    <text x="18" y="186" font-size="15" fill="#0868E0"><tspan font-weight="700">Improve:</tspan> Decision-intelligence engine</text>
+    <text x="18" y="210" font-size="15" fill="#0868E0">Bulk onboarding + drift alerts</text>
+  </g>
+
+  <!-- S7 -->
+  <g transform="translate(680,670)">
+    <rect width="620" height="252" rx="10" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <rect width="620" height="46" rx="10" fill="#F2C4A0"/>
+    <rect y="36" width="620" height="10" fill="#F2C4A0"/>
+    <text x="18" y="30" font-size="14" font-weight="700" fill="#18212B">STAGE 7</text>
+    <text x="18" y="52" font-size="20" font-weight="700" fill="#18212B">Compliance / Enterprise</text>
+    <rect x="470" y="12" width="132" height="24" rx="12" fill="#C0392B"/>
+    <text x="536" y="29" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">Gap: High</text>
+    <text x="18" y="82" font-size="15" fill="#18212B"><tspan font-weight="700">Goal:</tspan> Audit prep, SSO, self-hosted</text>
+    <text x="18" y="106" font-size="15" fill="#18212B"><tspan font-weight="700">Touchpoints:</tspan> Exports, evidence packages</text>
+    <text x="18" y="130" font-size="15" fill="#C0392B"><tspan font-weight="700">Top gap:</tspan> No SSO / SIEM / tamper audit</text>
+    <text x="18" y="154" font-size="15" fill="#18212B"><tspan font-weight="700">Also:</tspan> No SOC2/ISO mappings, no K8s</text>
+    <text x="18" y="186" font-size="15" fill="#0868E0"><tspan font-weight="700">Improve:</tspan> Compliance depth + SIEM</text>
+    <text x="18" y="210" font-size="15" fill="#0868E0">Helm/Terraform for enterprise</text>
+  </g>
+
+  <!-- S8 -->
+  <g transform="translate(1330,670)">
+    <rect width="620" height="252" rx="10" fill="#FFFFFF" stroke="#D0D5DD"/>
+    <rect width="620" height="46" rx="10" fill="#F2C4A0"/>
+    <rect y="36" width="620" height="10" fill="#F2C4A0"/>
+    <text x="18" y="30" font-size="14" font-weight="700" fill="#18212B">STAGE 8</text>
+    <text x="18" y="52" font-size="20" font-weight="700" fill="#18212B">Retention &amp; Advocacy</text>
+    <rect x="470" y="12" width="132" height="24" rx="12" fill="#C0392B"/>
+    <text x="536" y="29" font-size="13" font-weight="700" fill="#FFFFFF" text-anchor="middle">Gap: High</text>
+    <text x="18" y="82" font-size="15" fill="#18212B"><tspan font-weight="700">Goal:</tspan> Renew, expand, advocate</text>
+    <text x="18" y="106" font-size="15" fill="#18212B"><tspan font-weight="700">Touchpoints:</tspan> Support, community, SaaS</text>
+    <text x="18" y="130" font-size="15" fill="#C0392B"><tspan font-weight="700">Top gap:</tspan> No support tiers / community</text>
+    <text x="18" y="154" font-size="15" fill="#18212B"><tspan font-weight="700">Also:</tspan> No usage telemetry, no SaaS path</text>
+    <text x="18" y="186" font-size="15" fill="#0868E0"><tspan font-weight="700">Improve:</tspan> Customer-success motion</text>
+    <text x="18" y="210" font-size="15" fill="#0868E0">Community + opt-in telemetry</text>
+  </g>
+
+  <!-- EMOTIONAL JOURNEY BAND -->
+  <g transform="translate(0,950)">
+    <text x="40" y="20" font-size="20" font-weight="700" fill="#18212B">Emotional journey</text>
+    <text x="40" y="44" font-size="14" fill="#5A6472">Frustration peaks during setup; delight at first value; friction returns in daily use; confidence grows with compliance.</text>
+    <!-- axis -->
+    <line x1="140" y1="100" x2="1840" y2="100" stroke="#D0D5DD" stroke-width="2"/>
+    <!-- curve -->
+    <polyline points="140,56 352.5,80 565,84 777.5,60 990,32 1202.5,48 1415,40 1627.5,36 1840,30" fill="none" stroke="#0868E0" stroke-width="4"/>
+    <!-- points + labels -->
+    <circle cx="140" cy="56" r="7" fill="#0868E0"/>
+    <text x="140" y="120" font-size="13" font-weight="700" fill="#18212B" text-anchor="middle">Aware</text>
+    <circle cx="352.5" cy="80" r="7" fill="#C0392B"/>
+    <text x="352.5" y="120" font-size="13" font-weight="700" fill="#18212B" text-anchor="middle">Install</text>
+    <circle cx="565" cy="84" r="7" fill="#C0392B"/>
+    <text x="565" y="120" font-size="13" font-weight="700" fill="#18212B" text-anchor="middle">Auth</text>
+    <circle cx="777.5" cy="60" r="7" fill="#C66A36"/>
+    <text x="777.5" y="120" font-size="13" font-weight="700" fill="#18212B" text-anchor="middle">First repo</text>
+    <circle cx="990" cy="32" r="7" fill="#2E8B57"/>
+    <text x="990" y="120" font-size="13" font-weight="700" fill="#18212B" text-anchor="middle">Activate</text>
+    <circle cx="1202.5" cy="48" r="7" fill="#C66A36"/>
+    <text x="1202.5" y="120" font-size="13" font-weight="700" fill="#18212B" text-anchor="middle">Daily use</text>
+    <circle cx="1415" cy="40" r="7" fill="#2E8B57"/>
+    <text x="1415" y="120" font-size="13" font-weight="700" fill="#18212B" text-anchor="middle">Optimize</text>
+    <circle cx="1627.5" cy="36" r="7" fill="#2E8B57"/>
+    <text x="1627.5" y="120" font-size="13" font-weight="700" fill="#18212B" text-anchor="middle">Compliance</text>
+    <circle cx="1840" cy="30" r="7" fill="#2E8B57"/>
+    <text x="1840" y="120" font-size="13" font-weight="700" fill="#18212B" text-anchor="middle">Retain</text>
+  </g>
+</svg>
