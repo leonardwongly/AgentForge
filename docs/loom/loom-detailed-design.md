@@ -1370,12 +1370,16 @@ Implemented and tested today:
 - Git-ref import into prototype States;
 - deterministic policy evaluation over Loom-derived text diffs;
 - DSSE/in-toto deterministic-check attestations with subject pinning; and
-- a repository-local `ratify` and `verify` CLI demonstration.
+- a repository-local `ratify` and `verify` CLI demonstration;
+- a durable content-addressed object store and transactional Line journal
+  (single-process, file-backed; CAS on `(head, sequence)` with idempotency
+  keys and crash-safe atomic writes).
 
 Not yet implemented as a native system:
 
 - DAG-CBOR/CIDv1 encoding and binary-safe chunked objects;
-- durable object storage and transactional Line persistence;
+- multi-process durable object storage and transactional Line persistence
+  (the current store is single-process and file-backed);
 - native working-copy materialization and change journal;
 - native Proposal/admission state machine and atomic CAS;
 - persistent actor identity, key lifecycle, and Grant revocation;
