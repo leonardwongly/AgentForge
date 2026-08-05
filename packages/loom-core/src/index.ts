@@ -23,3 +23,4 @@ export * from "./materialize.js";
 export * from "./admission.js";
 export * from "./gc.js";
 export * from "./sync.js";
+export * from "./ledger.js";
