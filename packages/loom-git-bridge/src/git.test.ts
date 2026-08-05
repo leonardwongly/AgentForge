@@ -134,6 +134,25 @@ describe("stateFromGitRef", () => {
     expect("mode" in cell).toBe(false);
   });
 
+  it("forces a text file to bytes when .gitattributes marks it -text", async () => {
+    const gitattributesOid = "c".repeat(40);
+    const reader: GitReader = {
+      lsTree: async () => [
+        { path: ".gitattributes", mode: "100644", type: "blob", objectId: gitattributesOid },
+        { path: "data.bin", mode: "100644", type: "blob", objectId: "d".repeat(40) }
+      ],
+      readBlob: async (objectId: string) =>
+        objectId === gitattributesOid ? "*.bin -text\n" : "this is text but forced binary\n",
+      readBlobBytes: async () => new TextEncoder().encode("this is text but forced binary\n"),
+      readFile: async () => {
+        throw new Error("path-based read must not be used");
+      }
+    };
+
+    const state = await stateFromGitRef(reader, "HEAD");
+    expect(cellAt(state, "data.bin").facet).toBe("bytes");
+  });
+
   it("preserves submodules (commit entries) as bytes cells with their pinned OID", async () => {
     const submoduleOid = "a".repeat(40);
     const reader: GitReader = {
