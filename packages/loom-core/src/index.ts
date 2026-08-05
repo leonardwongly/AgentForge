@@ -25,3 +25,4 @@ export * from "./gc.js";
 export * from "./sync.js";
 export * from "./ledger.js";
 export * from "./keys.js";
+export * from "./revocation.js";
