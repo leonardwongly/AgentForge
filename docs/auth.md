@@ -94,8 +94,9 @@ Production deployments that enable the sample preview must set
 `AGENTFORGE_ENABLE_SAMPLE_PREVIEW=true`. `AGENTFORGE_SAMPLE_FIXTURE_ROOT` is
 optional when the bundled `fixtures/` directory is discoverable; set it to an
 absolute project root when the deployment layout does not include that bundled
-directory. Without a discoverable or explicitly configured fixture root,
-sample preview stays disabled instead of probing arbitrary filesystem paths.
+directory. Without a discoverable or explicitly configured fixture root, the
+sample preview action fails closed with an error instead of probing arbitrary
+filesystem paths.
 
 ## Local Development
 
