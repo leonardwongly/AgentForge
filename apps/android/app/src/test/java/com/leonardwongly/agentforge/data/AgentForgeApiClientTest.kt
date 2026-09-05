@@ -20,13 +20,13 @@ class AgentForgeApiClientTest {
     val health =
       parseHealth(
         statusCode = 200,
-        body = "{\"status\":\"ok\",\"version\":\"1.1.0\"}",
+        body = "{\"status\":\"ok\",\"version\":\"1.2.0\"}",
         checkedAt = Instant.EPOCH,
       )
 
     assertTrue(health.isProcessHealthy)
     assertEquals("", health.database)
-    assertEquals("1.1.0", health.version)
+    assertEquals("1.2.0", health.version)
   }
 
   @Test
@@ -251,7 +251,7 @@ class AgentForgeApiClientTest {
 
   @Test
   fun fetchHealth_closesResponseStreamAndHandlesProviderReturningZeroProgress() = runBlocking {
-    val stream = ZeroProgressInputStream("{\"status\":\"ok\",\"version\":\"1.1.0\"}".toByteArray())
+    val stream = ZeroProgressInputStream("{\"status\":\"ok\",\"version\":\"1.2.0\"}".toByteArray())
     val client =
       AgentForgeApiClient(Dispatchers.Unconfined) {
         StubHttpURLConnection(URL(it), statusCode = 200, input = stream)

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 
-const expectedVersion = "1.1.0";
+const expectedVersion = "1.2.0";
 
 type CheckResult = {
   name: string;
