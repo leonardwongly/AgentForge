@@ -34,7 +34,12 @@ describe("factsFromEffects (native policy facts)", () => {
       paths: ["package.json", "db/migration.sql", "src/x.test.ts", ".github/workflows/ci.yml"]
     });
     const types = facts.map((fact) => fact.type).sort();
-    expect(types).toEqual(["ci_workflow_changed", "dependency_added", "migration_added", "test_deleted"]);
+    expect(types).toEqual([
+      "ci_workflow_changed",
+      "dependency_added",
+      "migration_added",
+      "test_deleted"
+    ]);
     for (const fact of facts) {
       expect(fact.confidence).toBe("verified");
       expect(fact.source).toBe("loom_effects");
@@ -86,7 +91,10 @@ describe("factsFromEffects (native policy facts)", () => {
   });
 
   it("passes through duplicate declared effects verbatim (dedupe is the evaluator's job)", () => {
-    const facts = factsFromEffects({ effects: ["adds_migration", "adds_migration"], paths: ["m.sql"] });
+    const facts = factsFromEffects({
+      effects: ["adds_migration", "adds_migration"],
+      paths: ["m.sql"]
+    });
     expect(facts).toHaveLength(2);
     expect(facts[0]?.id).toBe("fact:effect:adds_migration");
     expect(facts[1]?.id).toBe("fact:effect:adds_migration");

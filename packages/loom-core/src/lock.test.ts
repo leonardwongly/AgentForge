@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  utimesSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -93,12 +101,17 @@ describe("FileLock", () => {
       const old = new Date(Date.now() - 10_000);
       utimesSync(lockPath, old, old);
 
-      const contenders = [new FileLock(root, "main", 100, 500), new FileLock(root, "main", 100, 500)];
+      const contenders = [
+        new FileLock(root, "main", 100, 500),
+        new FileLock(root, "main", 100, 500)
+      ];
       const releases = await Promise.all(contenders.map((lock) => lock.acquire()));
 
       expect(existsSync(lockPath)).toBe(true);
       expect(existsSync(`${lockPath}.retired.`)).toBe(false);
-      const retiredFiles = readdirSync(join(root, "locks")).filter((file) => file.includes(".retired."));
+      const retiredFiles = readdirSync(join(root, "locks")).filter((file) =>
+        file.includes(".retired.")
+      );
       expect(retiredFiles).toHaveLength(0);
 
       releases.forEach((release) => release());

@@ -37,13 +37,13 @@ Error:
 
 ## 3. Methods
 
-| Method | Params | Result |
-|---|---|---|
-| `hello` | — | `{ version, server, methods }` (negotiation) |
-| `object.put` | `bytes` (base64) | `{ cid }` |
-| `object.get` | `cid` | `{ bytes }` (base64) |
-| `line.read` | `name` | journal entry or `null` |
-| `line.advance` | `name, scope, expectedHead, expectedSequence, newHead, idempotencyKey?` | CAS outcome |
+| Method         | Params                                                                  | Result                                       |
+| -------------- | ----------------------------------------------------------------------- | -------------------------------------------- |
+| `hello`        | —                                                                       | `{ version, server, methods }` (negotiation) |
+| `object.put`   | `bytes` (base64)                                                        | `{ cid }`                                    |
+| `object.get`   | `cid`                                                                   | `{ bytes }` (base64)                         |
+| `line.read`    | `name`                                                                  | journal entry or `null`                      |
+| `line.advance` | `name, scope, expectedHead, expectedSequence, newHead, idempotencyKey?` | CAS outcome                                  |
 
 ## 4. Authentication
 

@@ -90,7 +90,9 @@ export async function runSetup(): Promise<void> {
       console.log(`FAIL ${check.name}: ${check.detail}`);
       if (check.remediation) console.log(`  Fix: ${check.remediation}`);
     }
-    throw new Error("Prerequisites are not satisfied; fix the items above and re-run `pnpm setup`.");
+    throw new Error(
+      "Prerequisites are not satisfied; fix the items above and re-run `pnpm setup`."
+    );
   }
   console.log("  Prerequisites OK (Node, pnpm, Docker).");
 

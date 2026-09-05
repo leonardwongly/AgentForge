@@ -37,7 +37,11 @@ describe("replicate", () => {
   it("replicates a chunked blob so it loads at the target", () => {
     withStores((source, target) => {
       const bytes = new TextEncoder().encode("a blob spanning multiple chunks for replication");
-      const manifestCid = storeBlob(source, bytes, { version: 1, algorithm: "fixed", chunkSize: 8 });
+      const manifestCid = storeBlob(source, bytes, {
+        version: 1,
+        algorithm: "fixed",
+        chunkSize: 8
+      });
       replicate(source, target);
       expect(loadBlob(target, manifestCid)).toEqual(bytes);
     });

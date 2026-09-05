@@ -7,7 +7,12 @@ import type {
   VerifiedFact
 } from "@agentforge/core";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/detectors";
-import { effectsFromChangeJournal, stateAddress, type Effect, type State } from "@agentforge/loom-core";
+import {
+  effectsFromChangeJournal,
+  stateAddress,
+  type Effect,
+  type State
+} from "@agentforge/loom-core";
 import { evaluateMergeGuard, type PolicyConfig } from "@agentforge/policy";
 import { fabricDiffView } from "./diff-view.js";
 import { factsFromEffects } from "./facts.js";
@@ -80,7 +85,10 @@ export function evaluateTransformSet(input: TransformEvaluationInput): Transform
   const inferredEffects = effectsFromChangeJournal({
     added: diff.filter((file) => file.status === "added").map((file) => file.filename),
     modified: diff
-      .filter((file) => file.status === "modified" || file.status === "renamed" || file.status === "changed")
+      .filter(
+        (file) =>
+          file.status === "modified" || file.status === "renamed" || file.status === "changed"
+      )
       .map((file) => file.filename),
     removed: diff.filter((file) => file.status === "removed").map((file) => file.filename)
   });
@@ -90,7 +98,9 @@ export function evaluateTransformSet(input: TransformEvaluationInput): Transform
   // Keep policy-derived detector facts even when declarations are present so
   // path-to-rule mapping (for example `sensitive_paths.billing`) remains
   // authoritative. Deduplicate by fact id while preserving both evidence lanes.
-  const facts = [...new Map([...detectedFacts, ...declaredFacts].map((fact) => [fact.id, fact])).values()];
+  const facts = [
+    ...new Map([...detectedFacts, ...declaredFacts].map((fact) => [fact.id, fact])).values()
+  ];
   const result = evaluateMergeGuard(pr, facts, input.policy);
 
   return { diff, facts, result, synthesizedInput: pr };

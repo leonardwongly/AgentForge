@@ -121,7 +121,10 @@ export class AgentClient {
   constructor(private readonly options: AgentClientOptions) {
     this.sessions = new SessionStore();
     this.workGraph = new WorkGraph();
-    this.proposals = new ProposalStore(options.root, new FileLineJournal(join(options.root, ".loom")));
+    this.proposals = new ProposalStore(
+      options.root,
+      new FileLineJournal(join(options.root, ".loom"))
+    );
   }
 
   /** Create a new delegated session for this agent. */

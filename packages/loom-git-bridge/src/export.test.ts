@@ -75,8 +75,20 @@ describe("stateToGitWorkingCopy (pure export)", () => {
     const dir = await mkdtemp(join(tmpdir(), "loom-export-unsafe-"));
     try {
       const state = requireState([
-        { op: "put_cell", at: "ok.txt", ident: mintNodeIdent(T0, 0, "ok.txt"), facet: "text", text: "fine" },
-        { op: "put_cell", at: "../escape.txt", ident: mintNodeIdent(T0, 1, "escape"), facet: "text", text: "bad" }
+        {
+          op: "put_cell",
+          at: "ok.txt",
+          ident: mintNodeIdent(T0, 0, "ok.txt"),
+          facet: "text",
+          text: "fine"
+        },
+        {
+          op: "put_cell",
+          at: "../escape.txt",
+          ident: mintNodeIdent(T0, 1, "escape"),
+          facet: "text",
+          text: "bad"
+        }
       ]);
       const report = stateToGitWorkingCopy(state, dir);
       expect(report.written).toBe(1);
@@ -139,7 +151,13 @@ describe("exportStateToGit (mirror commit)", () => {
     const repoDir = await initGitRepo();
     try {
       const state = requireState([
-        { op: "put_cell", at: "README.md", ident: mintNodeIdent(T0, 0, "README.md"), facet: "text", text: "# exported\n" }
+        {
+          op: "put_cell",
+          at: "README.md",
+          ident: mintNodeIdent(T0, 0, "README.md"),
+          facet: "text",
+          text: "# exported\n"
+        }
       ]);
       const result = exportStateToGit(state, repoDir, { message: "mirror admission" });
       expect(result.written).toBe(1);
@@ -155,8 +173,20 @@ describe("exportStateToGit (mirror commit)", () => {
     const repoDir = await initGitRepo();
     try {
       const state = requireState([
-        { op: "put_cell", at: "ok.txt", ident: mintNodeIdent(T0, 0, "ok.txt"), facet: "text", text: "fine" },
-        { op: "put_cell", at: "../escape.txt", ident: mintNodeIdent(T0, 1, "escape"), facet: "text", text: "bad" }
+        {
+          op: "put_cell",
+          at: "ok.txt",
+          ident: mintNodeIdent(T0, 0, "ok.txt"),
+          facet: "text",
+          text: "fine"
+        },
+        {
+          op: "put_cell",
+          at: "../escape.txt",
+          ident: mintNodeIdent(T0, 1, "escape"),
+          facet: "text",
+          text: "bad"
+        }
       ]);
       const result = exportStateToGit(state, repoDir, { message: "partial mirror" });
       expect(result.written).toBe(1);
@@ -175,7 +205,13 @@ describe("exportStateToGit (mirror commit)", () => {
       await writeFile(hook, `#!/bin/sh\ntouch '${marker}'\n`, "utf8");
       await chmod(hook, 0o755);
       const state = requireState([
-        { op: "put_cell", at: "README.md", ident: mintNodeIdent(T0, 0, "README.md"), facet: "text", text: "# exported\n" }
+        {
+          op: "put_cell",
+          at: "README.md",
+          ident: mintNodeIdent(T0, 0, "README.md"),
+          facet: "text",
+          text: "# exported\n"
+        }
       ]);
       exportStateToGit(state, repoDir, { message: "hook isolation" });
       expect(existsSync(marker)).toBe(false);

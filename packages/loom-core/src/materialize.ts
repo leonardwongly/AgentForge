@@ -102,7 +102,8 @@ function isMissing(error: unknown): boolean {
 /** Capture a working copy directory into a State (each file becomes a Cell). */
 export function captureState(
   targetDir: string,
-  identFor: (path: string) => NodeIdent = (path) => `nid:${sha256Hex(path).slice(0, 32)}` as NodeIdent,
+  identFor: (path: string) => NodeIdent = (path) =>
+    `nid:${sha256Hex(path).slice(0, 32)}` as NodeIdent,
   exclude?: ReadonlySet<string>
 ): State {
   const cells: Record<string, Cell> = {};
@@ -111,7 +112,10 @@ export function captureState(
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const absolute = join(dir, entry.name);
       const rel = relative(root, absolute).split(sep).join("/");
-      if (exclude && [...exclude].some((prefix) => rel === prefix || rel.startsWith(prefix + "/"))) {
+      if (
+        exclude &&
+        [...exclude].some((prefix) => rel === prefix || rel.startsWith(prefix + "/"))
+      ) {
         continue;
       }
       if (entry.isDirectory()) {
@@ -136,7 +140,11 @@ export interface ChangeJournal {
 }
 
 /** Diff a working copy against a base State to produce a change journal. */
-export function diffWorkingCopy(targetDir: string, baseState: State, exclude?: ReadonlySet<string>): ChangeJournal {
+export function diffWorkingCopy(
+  targetDir: string,
+  baseState: State,
+  exclude?: ReadonlySet<string>
+): ChangeJournal {
   const current = captureState(targetDir, undefined, exclude);
   const added: string[] = [];
   const modified: string[] = [];

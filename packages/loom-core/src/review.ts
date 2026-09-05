@@ -19,16 +19,40 @@ export interface ReviewRequirement {
 }
 
 const EFFECT_REVIEW: Readonly<Record<string, ReviewRequirement>> = {
-  adds_migration: { effect: "adds_migration", evidence: ["rollback_plan", "migration_dry_run"], reviewers: ["database-owner"] },
-  deletes_migration: { effect: "deletes_migration", evidence: ["rollback_plan"], reviewers: ["database-owner"] },
-  adds_dependency: { effect: "adds_dependency", evidence: ["dependency_justification"], reviewers: [] },
-  bumps_dependency_major: { effect: "bumps_dependency_major", evidence: ["dependency_justification"], reviewers: [] },
+  adds_migration: {
+    effect: "adds_migration",
+    evidence: ["rollback_plan", "migration_dry_run"],
+    reviewers: ["database-owner"]
+  },
+  deletes_migration: {
+    effect: "deletes_migration",
+    evidence: ["rollback_plan"],
+    reviewers: ["database-owner"]
+  },
+  adds_dependency: {
+    effect: "adds_dependency",
+    evidence: ["dependency_justification"],
+    reviewers: []
+  },
+  bumps_dependency_major: {
+    effect: "bumps_dependency_major",
+    evidence: ["dependency_justification"],
+    reviewers: []
+  },
   bumps_dependency_minor: { effect: "bumps_dependency_minor", evidence: [], reviewers: [] },
   deletes_test: { effect: "deletes_test", evidence: ["deleted_test_explanation"], reviewers: [] },
   skips_test: { effect: "skips_test", evidence: ["deleted_test_explanation"], reviewers: [] },
   changes_ci: { effect: "changes_ci", evidence: ["ci_change_reason"], reviewers: [] },
-  touches_sensitive_path: { effect: "touches_sensitive_path", evidence: ["security_note"], reviewers: ["security-team"] },
-  adds_secret_like_value: { effect: "adds_secret_like_value", evidence: ["security_note"], reviewers: ["security-team"] }
+  touches_sensitive_path: {
+    effect: "touches_sensitive_path",
+    evidence: ["security_note"],
+    reviewers: ["security-team"]
+  },
+  adds_secret_like_value: {
+    effect: "adds_secret_like_value",
+    evidence: ["security_note"],
+    reviewers: ["security-team"]
+  }
 };
 
 /** The review requirement an effect implies, or undefined if none. */

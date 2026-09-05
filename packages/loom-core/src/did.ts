@@ -53,7 +53,9 @@ export function didLoom(publicKeyBytes: Uint8Array): Did {
 }
 
 /** Parse a DID into `{ method, id }`; returns undefined for malformed input. */
-export function parseDid(did: string): { readonly method: string; readonly id: string } | undefined {
+export function parseDid(
+  did: string
+): { readonly method: string; readonly id: string } | undefined {
   if (!did.startsWith("did:")) {
     return undefined;
   }

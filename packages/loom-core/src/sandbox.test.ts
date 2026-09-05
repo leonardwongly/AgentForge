@@ -37,23 +37,36 @@ describe("validateRecipeBudget", () => {
   });
 
   it("rejects an oversized inputSelector", () => {
-    const r = recipe({ inputSelector: Array.from({ length: DEFAULT_SANDBOX_LIMITS.maxInputs + 1 }, (_, i) => ({ path: `p${i}` })) });
+    const r = recipe({
+      inputSelector: Array.from({ length: DEFAULT_SANDBOX_LIMITS.maxInputs + 1 }, (_, i) => ({
+        path: `p${i}`
+      }))
+    });
     expect(validateRecipeBudget(r)).toMatch(/maxInputs/);
   });
 
   it("rejects an oversized writeScope", () => {
-    const r = recipe({ writeScope: Array.from({ length: DEFAULT_SANDBOX_LIMITS.maxWrites + 1 }, (_, i) => ({ path: `p${i}` })) });
+    const r = recipe({
+      writeScope: Array.from({ length: DEFAULT_SANDBOX_LIMITS.maxWrites + 1 }, (_, i) => ({
+        path: `p${i}`
+      }))
+    });
     expect(validateRecipeBudget(r)).toMatch(/maxWrites/);
   });
 
   it("rejects an oversized rule payload", () => {
-    const r = recipe({ rule: { find: "a".repeat(DEFAULT_SANDBOX_LIMITS.maxRuleBytes + 1), replace: "b" } });
+    const r = recipe({
+      rule: { find: "a".repeat(DEFAULT_SANDBOX_LIMITS.maxRuleBytes + 1), replace: "b" }
+    });
     expect(validateRecipeBudget(r)).toMatch(/maxRuleBytes/);
   });
 
   it("rejects too many invariants", () => {
     const r = recipe({
-      invariants: Array.from({ length: DEFAULT_SANDBOX_LIMITS.maxInvariants + 1 }, () => ({ kind: "path_unchanged", path: "a.ts" }))
+      invariants: Array.from({ length: DEFAULT_SANDBOX_LIMITS.maxInvariants + 1 }, () => ({
+        kind: "path_unchanged",
+        path: "a.ts"
+      }))
     });
     expect(validateRecipeBudget(r)).toMatch(/maxInvariants/);
   });
@@ -61,7 +74,11 @@ describe("validateRecipeBudget", () => {
 
 describe("runEngineBounded", () => {
   it("runs normally within budget", () => {
-    const writes = runEngineBounded(runner, [{ path: "a.ts", cell: { text: "hello" } }], tightLimits);
+    const writes = runEngineBounded(
+      runner,
+      [{ path: "a.ts", cell: { text: "hello" } }],
+      tightLimits
+    );
     expect(writes.get("a.ts")).toBe("HELLO");
   });
 
@@ -89,8 +106,8 @@ describe("runEngineBounded", () => {
     const manyRunner: EngineRunner = {
       run: () => new Map(Array.from({ length: 3 }, (_, i) => [`p${i}`, "x"]))
     };
-    expect(() => runEngineBounded(manyRunner, [{ path: "a.ts", cell: { text: "x" } }], tightLimits)).toThrow(
-      /maxWrites/
-    );
+    expect(() =>
+      runEngineBounded(manyRunner, [{ path: "a.ts", cell: { text: "x" } }], tightLimits)
+    ).toThrow(/maxWrites/);
   });
 });

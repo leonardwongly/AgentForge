@@ -9,13 +9,9 @@ import {
 
 describe("parseGitAttributes", () => {
   it("parses text and -text patterns, ignoring comments and blanks", () => {
-    const attrs = parseGitAttributes([
-      "# comment",
-      "*.png -text",
-      "*.md text",
-      "",
-      "docs/** text"
-    ].join("\n"));
+    const attrs = parseGitAttributes(
+      ["# comment", "*.png -text", "*.md text", "", "docs/** text"].join("\n")
+    );
     expect(attrs.binaryPaths).toEqual(["*.png"]);
     expect(attrs.textPaths).toEqual(["*.md", "docs/**"]);
   });

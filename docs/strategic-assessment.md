@@ -72,22 +72,22 @@ Loom, if sequenced and validated correctly, remains the only path to 100×.
 
 ### 2.1 Remediation status (this review cycle)
 
-| Gap / opportunity | Status | What shipped |
-| ----------------- | ------ | ------------ |
-| G1 sample preview in deployed instances | Closed | Onboarding sample preview enabled behind `AGENTFORGE_ENABLE_SAMPLE_PREVIEW` in production |
-| G2 adoption friction | Closed | `pnpm doctor` + `pnpm setup` |
-| G3 design-partner evidence | Closed | `pnpm design-partner:report` |
-| G4 advisory AI layer | Confirmed implemented | Evidence auto-draft (gated by `llmFeatures`, advisory-only) |
-| G5 per-detector precision | Closed | `computeDetectorMetrics` in report/API/dashboard |
-| G6 outbound notifications | Closed (webhook surface) | `@agentforge/notifications` + worker blocked-PR webhook |
-| G7 audit streaming + tamper-evidence | Closed | Audit hash chain + `POST /api/admin/audit-stream` |
-| G8 enterprise packaging | Closed | Root Dockerfile + Helm chart + Terraform module + Cloudflare Tunnel/Pages |
-| G10 single-product positioning | Closed | README product-vs-research clarification |
-| C8 performance baseline | Closed | `pnpm benchmark` (latency p50/p95/p99 + throughput) |
-| O1 decision intelligence | Partially closed | Governance health score + per-detector precision (closed-loop product pending) |
-| G9 support/community/telemetry | Open (process) | Not code |
-| G7 SSO/SAML | Open (external) | IdP integration not started |
-| G6 Slack/Teams app registration | Open (external) | Webhook surface ready; app-store registration pending |
+| Gap / opportunity                       | Status                   | What shipped                                                                              |
+| --------------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------- |
+| G1 sample preview in deployed instances | Closed                   | Onboarding sample preview enabled behind `AGENTFORGE_ENABLE_SAMPLE_PREVIEW` in production |
+| G2 adoption friction                    | Closed                   | `pnpm doctor` + `pnpm setup`                                                              |
+| G3 design-partner evidence              | Closed                   | `pnpm design-partner:report`                                                              |
+| G4 advisory AI layer                    | Confirmed implemented    | Evidence auto-draft (gated by `llmFeatures`, advisory-only)                               |
+| G5 per-detector precision               | Closed                   | `computeDetectorMetrics` in report/API/dashboard                                          |
+| G6 outbound notifications               | Closed (webhook surface) | `@agentforge/notifications` + worker blocked-PR webhook                                   |
+| G7 audit streaming + tamper-evidence    | Closed                   | Audit hash chain + `POST /api/admin/audit-stream`                                         |
+| G8 enterprise packaging                 | Closed                   | Root Dockerfile + Helm chart + Terraform module + Cloudflare Tunnel/Pages                 |
+| G10 single-product positioning          | Closed                   | README product-vs-research clarification                                                  |
+| C8 performance baseline                 | Closed                   | `pnpm benchmark` (latency p50/p95/p99 + throughput)                                       |
+| O1 decision intelligence                | Partially closed         | Governance health score + per-detector precision (closed-loop product pending)            |
+| G9 support/community/telemetry          | Open (process)           | Not code                                                                                  |
+| G7 SSO/SAML                             | Open (external)          | IdP integration not started                                                               |
+| G6 Slack/Teams app registration         | Open (external)          | Webhook surface ready; app-store registration pending                                     |
 
 ---
 
@@ -130,6 +130,7 @@ validation gate. The pivot is documented well, but it is a pivot nonetheless.
 allocation, product/marketing messaging, and user expectations.
 
 **Risks.**
+
 - **Dilution:** engineering effort split between maintaining a shippable product
   and building an unproven VCS.
 - **Stranded value:** the governance product could stagnate while Loom consumes
@@ -152,6 +153,7 @@ enormous.
 **Scope.** The entire Loom program and any product/marketing claims built on it.
 
 **Risks.**
+
 - **Opportunity cost:** years of engineering on Loom could be spent on the
   governance product's 10× levers (decision intelligence, AI layer, integrations).
 - **Over-commitment:** the 100× framing is plausible only if Loom reaches
@@ -176,6 +178,7 @@ but it means the current Loom packages are **proofs, not a product**.
 **Scope.** All Loom packages; the conformance and validation plan.
 
 **Risks.**
+
 - **Overclaiming:** the README correctly warns against claiming conformance, but
   the risk of premature "Loom works" messaging is real.
 - **Silent data loss:** the spec's own top priority is "no silent data loss."
@@ -197,6 +200,7 @@ design-partner program; the team is appropriately conservative about claims.
 go-to-market.
 
 **Risks.**
+
 - **Building the wrong thing:** features (compliance frameworks, GitLab support,
   Slack) are prioritized by hypothesis, not validated demand.
 - **Pricing misalignment:** the protected-repositories pricing hypothesis is
@@ -219,6 +223,7 @@ heavy for a self-hosted tool.
 **Scope.** Adoption, time-to-value, support burden, and the mobile consoles.
 
 **Risks.**
+
 - **High activation energy:** teams may not complete setup.
 - **Support load:** self-hosted multi-service operation generates support
   tickets that a small team cannot absorb.
@@ -237,6 +242,7 @@ the Loom pivot introduced a broad, cross-cutting change set.
 **Scope.** Developer workflow, review burden, CI, and release risk.
 
 **Risks.**
+
 - **Review overload:** 9,800+ insertions in one change set is hard to review
   well, raising the chance of subtle regressions.
 - **Merge conflicts / drift:** long-lived uncommitted work diverges from `main`.
@@ -256,6 +262,7 @@ AI assists" principle. The constraint is right; the shipping cadence is slow.
 **Scope.** Reviewer experience, time-to-resolution, differentiation.
 
 **Risks.**
+
 - **Missed differentiation:** competitors shipping AI-assisted review could
   commoditize the deterministic baseline.
 - **Unused data:** the CCR dataset that would power recommendations is collected
@@ -275,6 +282,7 @@ performance; no benchmark harness exists for the runtime.
 retention sweeps, and Loom admission latency.
 
 **Risks.**
+
 - **Unexpected capacity ceilings** when real orgs adopt enforce mode at scale.
 - **No SLOs** to defend in enterprise deals.
 - **Loom admission latency** (p95 < 3s target) unverified.
@@ -292,6 +300,7 @@ self-hosted deployment model.
 **Scope.** Security, onboarding, and operational correctness.
 
 **Risks.**
+
 - **Misconfiguration** in self-hosted installs could weaken isolation.
 - **Operational burden** of managing RLS roles and proxy header stripping.
 
@@ -310,6 +319,7 @@ histories. This data is currently collected but **under-utilized**.
 
 **Why 10×.** Every evaluation can make the system smarter. Turning this data
 into:
+
 - policy-tuning recommendations (relax thresholds, add exceptions, promote
   observe→warn, demote enforce→warn);
 - per-detector precision/recall reporting;
@@ -478,7 +488,7 @@ reducing friction.
 - **Steps.**
   1. Ship a one-command local/self-hosted installer (e.g., a single Docker
      Compose profile or Helm chart) that brings up API + worker + web + Postgres
-     + Redis with sane defaults.
+     - Redis with sane defaults.
   2. Add a guided onboarding wizard that runs a real PR through `observe` mode
      end-to-end and produces the first CCR.
   3. Provide a "production readiness checklist" that auto-checks the fail-closed
@@ -667,13 +677,13 @@ reducing friction.
 
 ### 8.1 Short-term (next 2–4 quarters)
 
-| Lever | Expected impact | Quantified target |
-| ----- | --------------- | ----------------- |
-| Decision intelligence (O1) | Self-improving governance; fewer false positives; faster merges | False-positive override rate < 15%/detector; time-to-resolve < 2h p75 |
-| Advisory AI (O2) | Lower reviewer load | Evidence completion ≥80% assisted; CSAT > 4.0 |
-| Design-partner program (C4) | Validated market, pricing, positioning | ≥3 external interviews; enforce-mode unlocked |
-| Adoption friction (C5) | Faster time-to-value | Time-to-first-CCR < 1 day; setup completion ↑ |
-| Land increments (C6) | Lower risk, faster velocity | Median PR < 800 insertions; no >2-week uncommitted WIP |
+| Lever                       | Expected impact                                                 | Quantified target                                                     |
+| --------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Decision intelligence (O1)  | Self-improving governance; fewer false positives; faster merges | False-positive override rate < 15%/detector; time-to-resolve < 2h p75 |
+| Advisory AI (O2)            | Lower reviewer load                                             | Evidence completion ≥80% assisted; CSAT > 4.0                         |
+| Design-partner program (C4) | Validated market, pricing, positioning                          | ≥3 external interviews; enforce-mode unlocked                         |
+| Adoption friction (C5)      | Faster time-to-value                                            | Time-to-first-CCR < 1 day; setup completion ↑                         |
+| Land increments (C6)        | Lower risk, faster velocity                                     | Median PR < 800 insertions; no >2-week uncommitted WIP                |
 
 **Near-term value to stakeholders:** engineering/platform teams get a faster,
 smarter governance loop; security teams get lower false-positive noise; the
@@ -681,13 +691,13 @@ company gets validated market signal and a differentiated, shippable product.
 
 ### 8.2 Long-term (12–24+ months)
 
-| Lever | Expected impact | Quantified target |
-| ----- | --------------- | ----------------- |
+| Lever                        | Expected impact                               | Quantified target                                  |
+| ---------------------------- | --------------------------------------------- | -------------------------------------------------- |
 | Agent-native governance (O3) | Category leadership as agent-driven dev grows | Governed share of agent-assisted PRs; external WTP |
-| Loom moat (O4) | 100× outcome if validated | 30-day dual-safety pilot; Phase 1–2 gates |
-| Compliance depth (O7) | Enterprise premium, retention | SOC 2/ISO mappings; tamper-evident trail |
-| Platform expansion (O6) | Broader market | GitLab + Bitbucket + self-hosted |
-| Integration surface (O5) | Ubiquitous reviewer workflow | Slack/Teams/mobile actions |
+| Loom moat (O4)               | 100× outcome if validated                     | 30-day dual-safety pilot; Phase 1–2 gates          |
+| Compliance depth (O7)        | Enterprise premium, retention                 | SOC 2/ISO mappings; tamper-evident trail           |
+| Platform expansion (O6)      | Broader market                                | GitLab + Bitbucket + self-hosted                   |
+| Integration surface (O5)     | Ubiquitous reviewer workflow                  | Slack/Teams/mobile actions                         |
 
 **Long-term transformation:** AgentForge moves from "a PR check" to "the
 governance and provenance layer for software development," where every change —
@@ -715,19 +725,19 @@ category.
 
 ### 9.1 Complexity / resource / dependency matrix
 
-| Strategy | Complexity | Key resources | Dependencies | Primary risk |
-| -------- | ---------- | -------------- | ------------ | ------------- |
-| S-C1 wedge+moat | Low | Leadership, roadmap | None | None (decision only) |
-| S-C2 Loom gates | Medium | Research owner | Design partners | No WTP signal |
-| S-C3 conformance | High | VCS engineers | Frozen decision register | Silent data loss |
-| S-C4 design partners | Medium | PM/CS | 3 external orgs | Recruiting |
-| S-C5 adoption | Medium | DevOps | Installer/Helm | Support burden |
-| S-C6 incremental | Low | Dev discipline | None | None |
-| S-C7 AI layer | High | ML/LLM engineers | LLM provider | Latency/cost |
-| S-C8 perf/SLOs | Medium | SRE/Dev | Load harness | Capacity ceilings |
-| S-C9 tenancy ops | Medium | Security eng | Reference configs | Misconfig |
-| S-O1 decision intel | Medium | Data eng | CCR data | Data quality |
-| S-O7 compliance | High | Compliance/eng | SOC2 engagement | Audit scope |
+| Strategy             | Complexity | Key resources       | Dependencies             | Primary risk         |
+| -------------------- | ---------- | ------------------- | ------------------------ | -------------------- |
+| S-C1 wedge+moat      | Low        | Leadership, roadmap | None                     | None (decision only) |
+| S-C2 Loom gates      | Medium     | Research owner      | Design partners          | No WTP signal        |
+| S-C3 conformance     | High       | VCS engineers       | Frozen decision register | Silent data loss     |
+| S-C4 design partners | Medium     | PM/CS               | 3 external orgs          | Recruiting           |
+| S-C5 adoption        | Medium     | DevOps              | Installer/Helm           | Support burden       |
+| S-C6 incremental     | Low        | Dev discipline      | None                     | None                 |
+| S-C7 AI layer        | High       | ML/LLM engineers    | LLM provider             | Latency/cost         |
+| S-C8 perf/SLOs       | Medium     | SRE/Dev             | Load harness             | Capacity ceilings    |
+| S-C9 tenancy ops     | Medium     | Security eng        | Reference configs        | Misconfig            |
+| S-O1 decision intel  | Medium     | Data eng            | CCR data                 | Data quality         |
+| S-O7 compliance      | High       | Compliance/eng      | SOC2 engagement          | Audit scope          |
 
 ### 9.2 Execution and monitoring
 
@@ -815,22 +825,22 @@ design-partner report (S-C4 tooling), and positioning (S-C1 docs). The
 remaining roadmap focuses on the strategic and process work that code cannot
 close alone.
 
-| Priority | Workstream | Timeframe | Outcome |
-| -------- | ---------- | --------- | ------- |
-| P0 | Resolve strategic sequencing (S-C1) | Now | Clear wedge+moat plan |
-| P0 | Commit/split the WIP into increments (S-C6) | Now | Lower risk, faster velocity |
-| P0 | Launch design-partner program (S-C4) | Q1 | Validated market + pricing |
-| P1 | Close the decision-intelligence loop (S-O1) | Q1–Q2 | Self-improving governance (10×) |
-| P1 | Ship advisory AI explanations (S-O2) | Q2–Q3 | Reviewer load reduction (10×) |
-| P1 | Hosted sandbox / demo (G1) | Q2 | Zero-friction evaluation |
-| P2 | Publish SLOs from the shipped benchmark baseline (S-C8) | Q2–Q3 | Scalability + enterprise readiness |
-| P2 | Slack/Teams app registration (S-O5) | Q3 | In-workflow actions |
-| P2 | Tenancy self-audit (S-C9) | Q3 | Operational safety |
-| P2 | SSO/SAML (G7) | Q3–Q4 | Enterprise auth |
-| P3 | Support tiers + community + telemetry (G9) | Q4+ | Retention |
-| P3 | Compliance depth (S-O7) | Q4+ | Enterprise premium |
-| P3 | Platform expansion (S-O6) | Q4+ | Broader market |
-| P3 | Loom Phase 0–1 gated (S-C2/S-C3/S-O4) | Ongoing | Earn the 100× |
+| Priority | Workstream                                              | Timeframe | Outcome                            |
+| -------- | ------------------------------------------------------- | --------- | ---------------------------------- |
+| P0       | Resolve strategic sequencing (S-C1)                     | Now       | Clear wedge+moat plan              |
+| P0       | Commit/split the WIP into increments (S-C6)             | Now       | Lower risk, faster velocity        |
+| P0       | Launch design-partner program (S-C4)                    | Q1        | Validated market + pricing         |
+| P1       | Close the decision-intelligence loop (S-O1)             | Q1–Q2     | Self-improving governance (10×)    |
+| P1       | Ship advisory AI explanations (S-O2)                    | Q2–Q3     | Reviewer load reduction (10×)      |
+| P1       | Hosted sandbox / demo (G1)                              | Q2        | Zero-friction evaluation           |
+| P2       | Publish SLOs from the shipped benchmark baseline (S-C8) | Q2–Q3     | Scalability + enterprise readiness |
+| P2       | Slack/Teams app registration (S-O5)                     | Q3        | In-workflow actions                |
+| P2       | Tenancy self-audit (S-C9)                               | Q3        | Operational safety                 |
+| P2       | SSO/SAML (G7)                                           | Q3–Q4     | Enterprise auth                    |
+| P3       | Support tiers + community + telemetry (G9)              | Q4+       | Retention                          |
+| P3       | Compliance depth (S-O7)                                 | Q4+       | Enterprise premium                 |
+| P3       | Platform expansion (S-O6)                               | Q4+       | Broader market                     |
+| P3       | Loom Phase 0–1 gated (S-C2/S-C3/S-O4)                   | Ongoing   | Earn the 100×                      |
 
 ---
 
@@ -872,17 +882,17 @@ The primary personas (from `docs/launch-positioning-and-pricing.md`):
 
 ### 13.2 Journey stages at a glance
 
-| Stage | Customer goal | Primary touchpoints | Product readiness | Overall gap level |
-| ----- | ------------- | ------------------- | ----------------- | ----------------- |
-| 0. Awareness | Understand what it does and whether it fits | README, product docs, launch copy | Strong positioning, weak discovery | Medium |
-| 1. Installation | Get a working instance quickly | Docs, Docker Compose, CLI | Functional but heavy | High |
-| 2. GitHub App + auth | Connect GitHub and secure access | Setup docs, OAuth/proxy | Robust but complex | High |
-| 3. First repo + policy | Govern a real repository | Onboarding wizard, policy packs | Partial (dev-only sample) | Medium |
-| 4. Activation | See first evaluated PR + CCR | Check run, dashboard | Strong | Low |
-| 5. Daily use | Review, evidence, override | Dashboard, checks, PR body | Strong core, weak assist | Medium |
-| 6. Optimization | Reduce noise, scale to more repos | Insights, optimize mode | Insights not shipped | High |
-| 7. Compliance/enterprise | Audit prep, SSO, self-hosted | Exports, packages | Partial (no SSO/SIEM) | High |
-| 8. Retention/advocacy | Renew, expand, advocate | Support, community, SaaS | Not established | High |
+| Stage                    | Customer goal                               | Primary touchpoints               | Product readiness                  | Overall gap level |
+| ------------------------ | ------------------------------------------- | --------------------------------- | ---------------------------------- | ----------------- |
+| 0. Awareness             | Understand what it does and whether it fits | README, product docs, launch copy | Strong positioning, weak discovery | Medium            |
+| 1. Installation          | Get a working instance quickly              | Docs, Docker Compose, CLI         | Functional but heavy               | High              |
+| 2. GitHub App + auth     | Connect GitHub and secure access            | Setup docs, OAuth/proxy           | Robust but complex                 | High              |
+| 3. First repo + policy   | Govern a real repository                    | Onboarding wizard, policy packs   | Partial (dev-only sample)          | Medium            |
+| 4. Activation            | See first evaluated PR + CCR                | Check run, dashboard              | Strong                             | Low               |
+| 5. Daily use             | Review, evidence, override                  | Dashboard, checks, PR body        | Strong core, weak assist           | Medium            |
+| 6. Optimization          | Reduce noise, scale to more repos           | Insights, optimize mode           | Insights not shipped               | High              |
+| 7. Compliance/enterprise | Audit prep, SSO, self-hosted                | Exports, packages                 | Partial (no SSO/SIEM)              | High              |
+| 8. Retention/advocacy    | Renew, expand, advocate                     | Support, community, SaaS          | Not established                    | High              |
 
 ---
 
@@ -893,6 +903,7 @@ high-risk and agent-assisted PRs, and whether it is credible and low-risk to
 try.
 
 **Current support.**
+
 - Clear, liability-safe positioning: "Evidence-based pull request governance for
   high-risk and agent-assisted changes."
 - Extensive docs (product overview, security/data-handling, self-hosting,
@@ -901,6 +912,7 @@ try.
   strong credibility signal.
 
 **Gaps.**
+
 - **No hosted SaaS or managed trial.** Evaluation requires a full self-hosted
   install (Postgres + Redis + GitHub App + API + worker + web). High activation
   energy before any value.
@@ -912,6 +924,7 @@ try.
   as the destination, which can confuse an evaluator about what they are buying.
 
 **Improvements.**
+
 - Ship a hosted sandbox / guided demo that produces a real CCR against a sample
   repo without local setup.
 - Publish a short "see it in 10 minutes" walkthrough video or interactive demo.
@@ -926,12 +939,14 @@ try.
 **Customer goal.** Get a working instance with minimal effort and risk.
 
 **Current support.**
+
 - Detailed README quick start, Docker Compose for Postgres/Redis/MinIO, dev
   preflight that fails fast with exact remediation commands.
 - Pinned package manager (Corepack/pnpm), pinned dependency versions, digest-
   pinned images.
 
 **Gaps.**
+
 - **Multi-service footprint.** API + worker + web + Postgres + Redis is a lot to
   stand up for a self-hosted governance tool.
 - **No one-command installer.** Setup is a sequence of manual steps
@@ -940,6 +955,7 @@ try.
 - **No upgrade/rollback automation** beyond documented runbook steps.
 
 **Improvements.**
+
 - Provide a single-command local installer and a production Helm chart / Terraform
   module (already planned in V2 Phase 3) earlier, since adoption depends on it.
 - Ship a `doctor`/preflight that validates the whole stack and prints a
@@ -953,12 +969,14 @@ try.
 **Customer goal.** Connect the GitHub App and secure dashboard access.
 
 **Current support.**
+
 - Documented GitHub App setup (webhook events, permissions, webhook URL).
 - Two auth paths: trusted-proxy identity (HMAC-signed headers) and built-in
   GitHub OAuth; platform-admin approval before repositories are governed.
 - Fail-closed production config that refuses unsafe settings.
 
 **Gaps.**
+
 - **Auth is complex.** Trusted-proxy setup requires an ingress that strips
   spoofable headers and signs identity headers — a real operational lift.
 - **No SSO/SAML/SCIM** until V2 Phase 4, which enterprise buyers expect.
@@ -968,6 +986,7 @@ try.
   value only.
 
 **Improvements.**
+
 - Add an in-dashboard GitHub App creation/onboarding assistant that walks the
   user through the GitHub side and validates credentials.
 - Provide a reference ingress config (Caddy/Nginx/Traefik/Cloudflare) for the
@@ -982,12 +1001,14 @@ try.
 **Customer goal.** Govern a real repository with sensible policy quickly.
 
 **Current support.**
+
 - Onboarding wizard and sample preview (dev-only flag `AGENTFORGE_ENABLE_SAMPLE_PREVIEW`).
 - Built-in policy packs (startup-default, platform-engineering, fintech,
   healthcare-regulated) and YAML policy validation/preview tooling.
 - `observe` → `warn` → `enforce` rollout modes.
 
 **Gaps.**
+
 - **Sample preview is dev-only** and not available in a deployed/production
   instance, so a real new org cannot use it to bootstrap.
 - **Policy authoring is YAML-first.** Non-expert users need guidance; no
@@ -997,6 +1018,7 @@ try.
   starter packs until later.
 
 **Improvements.**
+
 - Make the sample-preview onboarding available in deployed instances (behind
   an explicit flag) so every new org can create its first CCR in minutes.
 - Add a guided policy builder (form → YAML) and a "start from branch protection"
@@ -1011,6 +1033,7 @@ try.
 understand what the product does.
 
 **Current support.**
+
 - First evaluated PR publishes a Merge Guard check with findings, required
   evidence, and required reviewers.
 - Dashboard records view; CCR lifecycle (opened → evaluated → blocked/warned/
@@ -1018,6 +1041,7 @@ understand what the product does.
 - Strong test coverage of the activation path (webhook → worker → check).
 
 **Gaps.**
+
 - **Time-to-first-CCR is gated by the heavy setup** in earlier stages.
 - **No guided "what to do next"** after the first record (e.g., enable enforce
   on a second repo, add evidence, review an override).
@@ -1025,6 +1049,7 @@ understand what the product does.
   cannot see where users drop off).
 
 **Improvements.**
+
 - Add a post-activation checklist/next-steps in the dashboard.
 - Add opt-in, privacy-respecting activation telemetry (or a design-partner
   observation program) to detect drop-off.
@@ -1039,6 +1064,7 @@ understand what the product does.
 loop fast and low-noise.
 
 **Current support.**
+
 - Deterministic detectors, evidence requirements, reviewer routing, override
   workflow, and dashboard views (blocked PRs, evidence queues, records,
   insights tab).
@@ -1047,6 +1073,7 @@ loop fast and low-noise.
   disabled by default and not shipped.
 
 **Gaps.**
+
 - **No Slack/Teams/mobile actions.** Reviewers must leave their workflow and
   use the dashboard; no push notifications.
 - **No shipped AI assistance.** No plain-English explanations, no evidence
@@ -1059,6 +1086,7 @@ loop fast and low-noise.
   intelligence engine yet).
 
 **Improvements.**
+
 - Ship the advisory AI layer (explanations, evidence auto-draft, policy
   recommendations) behind flags (S-C7/S-O2).
 - Build Slack (then Teams) actions and push notifications (S-O5).
@@ -1074,12 +1102,14 @@ loop fast and low-noise.
 to more repositories and teams.
 
 **Current support.**
+
 - `optimize` mode keeps enforce controls active and surfaces improvement
   opportunities.
 - Policy versioning and preview; override trends in the dashboard.
 - Multi-repository and multi-policy-pack support.
 
 **Gaps.**
+
 - **Policy insights are not generated** (no aggregation engine, no
   recommendations, no weekly digest).
 - **No per-detector precision/recall reporting** to guide tuning.
@@ -1088,6 +1118,7 @@ to more repositories and teams.
   org-wide defaults.
 
 **Improvements.**
+
 - Ship the decision-intelligence engine with per-detector metrics and
   read-only recommendations (S-O1).
 - Add bulk repository onboarding and org-wide policy defaults.
@@ -1101,6 +1132,7 @@ to more repositories and teams.
 and deploy in restricted environments.
 
 **Current support.**
+
 - JSON/CSV CCR exports and compliance evidence packages (manifest, control
   mappings, audit timeline, redaction report).
 - Metadata-only storage, secret redaction, fail-closed config, RLS tenant
@@ -1108,6 +1140,7 @@ and deploy in restricted environments.
 - Self-hosting docs and a hardened reference.
 
 **Gaps.**
+
 - **No SSO/SAML/SCIM** (V2 Phase 4) — a blocker for many enterprise buyers.
 - **No SIEM streaming** (Splunk HEC, Datadog, Elasticsearch) — audit is
   export-based, not continuous.
@@ -1117,6 +1150,7 @@ and deploy in restricted environments.
 - **No hosted SaaS** for teams that do not self-host.
 
 **Improvements.**
+
 - Prioritize SSO/SAML and the tamper-evident audit trail for enterprise deals.
 - Ship SIEM streaming and framework control mappings (S-O7).
 - Deliver Helm/Terraform for self-hosted enterprise (S-O6).
@@ -1130,11 +1164,13 @@ and deploy in restricted environments.
 and externally.
 
 **Current support.**
+
 - Governance value compounds as more repos are protected.
 - Compliance evidence packages support renewals in regulated orgs.
 - Self-governance dogfooding demonstrates the product in practice.
 
 **Gaps.**
+
 - **No support tiers / SLAs / onboarding success program.**
 - **No community** (forums, Discord, contributor onboarding) beyond GitHub
   issues.
@@ -1143,6 +1179,7 @@ and externally.
 - **Loom narrative** may confuse long-term positioning for renewals.
 
 **Improvements.**
+
 - Define support tiers and a customer-success motion (onboarding, health
   reviews, renewal).
 - Stand up a community and a public roadmap with feedback channels.
@@ -1153,18 +1190,18 @@ and externally.
 
 ### 13.12 Cross-cutting gaps and prioritized improvements
 
-| # | Gap | Journey stages | Impact | Priority |
-| -- | --- | -------------- | ------ | -------- |
-| G1 | No hosted SaaS / sandbox / demo | 0, 1, 8 | High (activation) | P0 |
-| G2 | Heavy multi-service setup, no installer | 1, 2 | High (adoption) | P0 |
-| G3 | No external validation / design partners | 0, 8 | High (credibility) | P0 |
-| G4 | No shipped AI assistance | 5 | High (daily value) | P1 |
-| G5 | No decision-intelligence / insights engine | 5, 6 | High (differentiation) | P1 |
-| G6 | No Slack/Teams/mobile actions | 5 | Medium (friction) | P1 |
-| G7 | No SSO/SAML/SCIM, SIEM, tamper-evident audit | 7 | High (enterprise) | P2 |
-| G8 | No production Helm/Terraform distribution | 1, 7 | Medium (enterprise) | P2 |
-| G9 | No support tiers / community / telemetry | 8 | Medium (retention) | P2 |
-| G10 | Two-product (Loom) narrative confusion | 0, 8 | Medium (positioning) | P0 |
+| #   | Gap                                          | Journey stages | Impact                 | Priority |
+| --- | -------------------------------------------- | -------------- | ---------------------- | -------- |
+| G1  | No hosted SaaS / sandbox / demo              | 0, 1, 8        | High (activation)      | P0       |
+| G2  | Heavy multi-service setup, no installer      | 1, 2           | High (adoption)        | P0       |
+| G3  | No external validation / design partners     | 0, 8           | High (credibility)     | P0       |
+| G4  | No shipped AI assistance                     | 5              | High (daily value)     | P1       |
+| G5  | No decision-intelligence / insights engine   | 5, 6           | High (differentiation) | P1       |
+| G6  | No Slack/Teams/mobile actions                | 5              | Medium (friction)      | P1       |
+| G7  | No SSO/SAML/SCIM, SIEM, tamper-evident audit | 7              | High (enterprise)      | P2       |
+| G8  | No production Helm/Terraform distribution    | 1, 7           | Medium (enterprise)    | P2       |
+| G9  | No support tiers / community / telemetry     | 8              | Medium (retention)     | P2       |
+| G10 | Two-product (Loom) narrative confusion       | 0, 8           | Medium (positioning)   | P0       |
 
 **Recommended sequencing.** Fix the adoption blockers (G1, G2, G3, G10) first
 so prospects can reach first value; then ship the daily-use differentiators

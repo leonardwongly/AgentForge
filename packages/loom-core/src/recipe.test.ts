@@ -13,7 +13,11 @@ const base = {
 
 describe("Recipe SDK", () => {
   it("builds a valid regex-replace recipe", () => {
-    const recipe = createRecipe({ ...base, engine: "regex-replace", rule: { find: "foo", replace: "bar" } });
+    const recipe = createRecipe({
+      ...base,
+      engine: "regex-replace",
+      rule: { find: "foo", replace: "bar" }
+    });
     expect(recipe.engine).toBe("regex-replace");
     expect(recipe.rule).toEqual({ find: "foo", replace: "bar" });
   });
@@ -28,22 +32,29 @@ describe("Recipe SDK", () => {
   });
 
   it("rejects an invalid regex-replace rule", () => {
-    expect(() => createRecipe({ ...base, engine: "regex-replace", rule: { find: "", replace: "b" } })).toThrow(
-      /non-empty string 'find'/
-    );
+    expect(() =>
+      createRecipe({ ...base, engine: "regex-replace", rule: { find: "", replace: "b" } })
+    ).toThrow(/non-empty string 'find'/);
   });
 
   it("rejects an invalid dep-bump rule", () => {
-    expect(() => createRecipe({ ...base, engine: "dep-bump", rule: { name: "x", from: "", to: "2" } })).toThrow(
-      /non-empty string 'from'/
-    );
+    expect(() =>
+      createRecipe({ ...base, engine: "dep-bump", rule: { name: "x", from: "", to: "2" } })
+    ).toThrow(/non-empty string 'from'/);
   });
 
   it("rejects an oversized recipe against the budget", () => {
     expect(() =>
       createRecipe(
         { ...base, engine: "regex-replace", rule: { find: "a".repeat(1_000_000), replace: "b" } },
-        { maxInputs: 1000, maxRuleBytes: 1024, maxWrites: 100, maxWriteBytes: 1024, maxTotalWriteBytes: 4096, maxInvariants: 10 }
+        {
+          maxInputs: 1000,
+          maxRuleBytes: 1024,
+          maxWrites: 100,
+          maxWriteBytes: 1024,
+          maxTotalWriteBytes: 4096,
+          maxInvariants: 10
+        }
       )
     ).toThrow(/maxRuleBytes/);
   });
@@ -60,6 +71,8 @@ describe("Recipe SDK", () => {
   });
 
   it("validateRecipeRule rejects an unknown engine", () => {
-    expect(validateRecipeRule({ ...base, engine: "unknown" as never, rule: {} })).toMatch(/unknown engine/);
+    expect(validateRecipeRule({ ...base, engine: "unknown" as never, rule: {} })).toMatch(
+      /unknown engine/
+    );
   });
 });

@@ -95,7 +95,9 @@ describe("FileObjectStore (content-addressed, crash-safe)", () => {
       writeFileSync(backupJsonPath, JSON.stringify({ payload: "tampered" }), "utf8");
 
       expect(() => store.restoreFrom(backupDir)).toThrow(/does not match its CID/);
-      expect(readdirSync(join(root, "objects")).filter((file) => file.endsWith(".tmp"))).toHaveLength(0);
+      expect(
+        readdirSync(join(root, "objects")).filter((file) => file.endsWith(".tmp"))
+      ).toHaveLength(0);
 
       // Fail closed: no corrupt backup file may enter the live object directory.
       expect(store.get(cid)).toEqual(value);

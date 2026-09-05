@@ -38,18 +38,28 @@ export class GrantRevocationRegistry {
   private persist(): void {
     if (this.file) {
       mkdirSync(dirname(this.file), { recursive: true });
-      const temp = join(dirname(this.file), `.${basename(this.file)}.${process.pid}.${randomUUID()}.tmp`);
-      writeFileSync(temp, JSON.stringify({ revoked: [...this.revoked] }), { encoding: "utf8", flag: "wx" });
+      const temp = join(
+        dirname(this.file),
+        `.${basename(this.file)}.${process.pid}.${randomUUID()}.tmp`
+      );
+      writeFileSync(temp, JSON.stringify({ revoked: [...this.revoked] }), {
+        encoding: "utf8",
+        flag: "wx"
+      });
       renameSync(temp, this.file);
     }
   }
 
   private reload(): void {
     if (!this.file || !existsSync(this.file)) return;
-    if (statSync(this.file).size > 1_048_576) throw new Error("loom: revocation registry is too large");
+    if (statSync(this.file).size > 1_048_576)
+      throw new Error("loom: revocation registry is too large");
     const parsed: unknown = JSON.parse(readFileSync(this.file, "utf8"));
-    if (!isRecord(parsed) || !Array.isArray(parsed.revoked) ||
-        parsed.revoked.some((id) => typeof id !== "string" || id.length > 512)) {
+    if (
+      !isRecord(parsed) ||
+      !Array.isArray(parsed.revoked) ||
+      parsed.revoked.some((id) => typeof id !== "string" || id.length > 512)
+    ) {
       throw new Error("loom: malformed revocation registry");
     }
     this.revoked = new Set(parsed.revoked);

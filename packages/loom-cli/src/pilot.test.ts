@@ -42,10 +42,21 @@ function cleanup(...dirs: string[]): void {
 
 describe("stateEquivalenceDigest", () => {
   it("is deterministic and content-only (idents do not matter)", () => {
-    const a = { kind: "state" as const, cells: { "x.txt": { facet: "text" as const, ident: "nid:a" as NodeIdent, text: "hi\n" } } };
-    const b = { kind: "state" as const, cells: { "x.txt": { facet: "text" as const, ident: "nid:different" as NodeIdent, text: "hi\n" } } };
+    const a = {
+      kind: "state" as const,
+      cells: { "x.txt": { facet: "text" as const, ident: "nid:a" as NodeIdent, text: "hi\n" } }
+    };
+    const b = {
+      kind: "state" as const,
+      cells: {
+        "x.txt": { facet: "text" as const, ident: "nid:different" as NodeIdent, text: "hi\n" }
+      }
+    };
     expect(stateEquivalenceDigest(a)).toBe(stateEquivalenceDigest(b));
-    const c = { kind: "state" as const, cells: { "x.txt": { facet: "text" as const, ident: "nid:a" as NodeIdent, text: "bye\n" } } };
+    const c = {
+      kind: "state" as const,
+      cells: { "x.txt": { facet: "text" as const, ident: "nid:a" as NodeIdent, text: "bye\n" } }
+    };
     expect(stateEquivalenceDigest(a)).not.toBe(stateEquivalenceDigest(c));
   });
 });
@@ -79,13 +90,22 @@ describe("pilot mirror and verify", () => {
       writeFileSync(join(git, "a.txt"), "tampered\n", "utf8");
       runGit(git, ["add", "--all"]);
       runGit(git, [
-        "-c", "user.name=Tamper", "-c", "user.email=tamper@example.invalid",
-        "commit", "--quiet", "--no-gpg-sign", "--message", "tamper"
+        "-c",
+        "user.name=Tamper",
+        "-c",
+        "user.email=tamper@example.invalid",
+        "commit",
+        "--quiet",
+        "--no-gpg-sign",
+        "--message",
+        "tamper"
       ]);
 
       const verify = await verifyMirrorEquivalence(loom, git);
       expect(verify.equivalent).toBe(false);
-      expect(verify.divergences.some((d) => d.path === "a.txt" && d.reason === "content differs")).toBe(true);
+      expect(
+        verify.divergences.some((d) => d.path === "a.txt" && d.reason === "content differs")
+      ).toBe(true);
       expect(verify.loomDigest).not.toBe(verify.gitDigest);
     } finally {
       cleanup(loom, git);
@@ -101,8 +121,15 @@ describe("pilot mirror and verify", () => {
       rmSync(join(git, "a.txt"));
       runGit(git, ["add", "--all"]);
       runGit(git, [
-        "-c", "user.name=Tamper", "-c", "user.email=tamper@example.invalid",
-        "commit", "--quiet", "--no-gpg-sign", "--message", "remove"
+        "-c",
+        "user.name=Tamper",
+        "-c",
+        "user.email=tamper@example.invalid",
+        "commit",
+        "--quiet",
+        "--no-gpg-sign",
+        "--message",
+        "remove"
       ]);
       const verify = await verifyMirrorEquivalence(loom, git);
       expect(verify.equivalent).toBe(false);
@@ -134,7 +161,11 @@ describe("pilot restore drill", () => {
     try {
       // Tamper with the admission ledger so verification must fail.
       const ledgerPath = join(loom, ".loom", "ledger.jsonl");
-      writeFileSync(ledgerPath, readFileSync(ledgerPath, "utf8") + "{\"index\":999,\"payload\":{\"tampered\":true}}\n", "utf8");
+      writeFileSync(
+        ledgerPath,
+        readFileSync(ledgerPath, "utf8") + '{"index":999,"payload":{"tampered":true}}\n',
+        "utf8"
+      );
       const result = restoreDrill(loom, backup);
       expect(result.ok).toBe(false);
       expect(result.ledgerValid).toBe(false);

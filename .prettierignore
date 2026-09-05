@@ -14,3 +14,11 @@ test-results/
 # Swift Package Manager / Xcode build output
 **/.build/
 **/DerivedData/
+
+# Helm charts contain Go-template expressions and are validated with Helm,
+# not Prettier's YAML parser.
+deploy/helm/
+
+# Deployment documentation is maintained alongside the separately scoped
+# Cloudflare hardening work.
+docs/cloudflare-deployment.md

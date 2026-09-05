@@ -11,11 +11,15 @@ import type { Cid } from "./types.js";
 
 const GENESIS = address({ kind: "line", name: "x", scope: "shared", head: "x" as Cid });
 
-function withStore(run: (root: string, journal: FileLineJournal, store: ProposalStore) => void | Promise<void>): Promise<void> {
+function withStore(
+  run: (root: string, journal: FileLineJournal, store: ProposalStore) => void | Promise<void>
+): Promise<void> {
   const root = mkdtempSync(join(tmpdir(), "loom-admission-"));
   const journal = new FileLineJournal(root);
   const store = new ProposalStore(root, journal);
-  return Promise.resolve(run(root, journal, store)).finally(() => rmSync(root, { recursive: true, force: true }));
+  return Promise.resolve(run(root, journal, store)).finally(() =>
+    rmSync(root, { recursive: true, force: true })
+  );
 }
 
 describe("Proposal/admission state machine", () => {
@@ -30,7 +34,14 @@ describe("Proposal/admission state machine", () => {
       });
       const proposal = store.create({
         title: "billing change",
-        updates: [{ line: "billing", expectedHead: GENESIS, expectedSequence: 0, newHead: address({ v: 1 }) }],
+        updates: [
+          {
+            line: "billing",
+            expectedHead: GENESIS,
+            expectedSequence: 0,
+            newHead: address({ v: 1 })
+          }
+        ],
         requiredReviewers: ["did:loom:reviewer"],
         requiredEvidence: ["rollback_plan"]
       });
@@ -86,10 +97,23 @@ describe("Proposal/admission state machine", () => {
   it("fails admission when the cross-Line commit conflicts (nothing advances)", async () => {
     await withStore(async (root, journal, store) => {
       // Advance the line first so the proposal's expected head is stale.
-      await journal.advance({ name: "billing", scope: "shared", expectedHead: GENESIS, expectedSequence: 0, newHead: address({ v: "prior" }) });
+      await journal.advance({
+        name: "billing",
+        scope: "shared",
+        expectedHead: GENESIS,
+        expectedSequence: 0,
+        newHead: address({ v: "prior" })
+      });
       const proposal = store.create({
         title: "stale",
-        updates: [{ line: "billing", expectedHead: GENESIS, expectedSequence: 0, newHead: address({ v: 2 }) }],
+        updates: [
+          {
+            line: "billing",
+            expectedHead: GENESIS,
+            expectedSequence: 0,
+            newHead: address({ v: 2 })
+          }
+        ],
         requiredReviewers: ["r"],
         requiredEvidence: []
       });
@@ -104,7 +128,12 @@ describe("Proposal/admission state machine", () => {
 
   it("is idempotent for approvals and evidence", async () => {
     await withStore(async (_root, _journal, store) => {
-      const proposal = store.create({ title: "x", updates: [], requiredReviewers: ["r"], requiredEvidence: ["e"] });
+      const proposal = store.create({
+        title: "x",
+        updates: [],
+        requiredReviewers: ["r"],
+        requiredEvidence: ["e"]
+      });
       store.submit(proposal.id);
       store.approve(proposal.id, "r");
       store.approve(proposal.id, "r");

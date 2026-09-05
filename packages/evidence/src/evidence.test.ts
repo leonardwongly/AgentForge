@@ -193,9 +193,10 @@ describe("addManualEvidence", () => {
   });
 
   it("marks approved evidence as approved and defaults approver to the actor", () => {
-    const next = addManualEvidence([requirement("rollback_plan")], [
-      { kind: "rollback_plan", content: "Revert.", actor: "sam", approved: true }
-    ]);
+    const next = addManualEvidence(
+      [requirement("rollback_plan")],
+      [{ kind: "rollback_plan", content: "Revert.", actor: "sam", approved: true }]
+    );
     expect(next[0]).toMatchObject({
       status: "approved",
       approvedBy: "sam",
@@ -204,31 +205,35 @@ describe("addManualEvidence", () => {
   });
 
   it("keeps unapproved evidence as provided without an approver", () => {
-    const next = addManualEvidence([requirement("rollback_plan")], [
-      { kind: "rollback_plan", content: "Revert.", actor: "sam" }
-    ]);
+    const next = addManualEvidence(
+      [requirement("rollback_plan")],
+      [{ kind: "rollback_plan", content: "Revert.", actor: "sam" }]
+    );
     expect(next[0]).toMatchObject({ status: "provided" });
     expect(next[0]!.approvedBy).toBeUndefined();
     expect(next[0]!.approvedAt).toBeUndefined();
   });
 
   it("sources linked artifacts as linked_artifact", () => {
-    const next = addManualEvidence([requirement("rollback_plan")], [
-      {
-        kind: "rollback_plan",
-        content: "Revert.",
-        actor: "sam",
-        linkedArtifact: "https://artifacts.example.com/plan-1"
-      }
-    ]);
+    const next = addManualEvidence(
+      [requirement("rollback_plan")],
+      [
+        {
+          kind: "rollback_plan",
+          content: "Revert.",
+          actor: "sam",
+          linkedArtifact: "https://artifacts.example.com/plan-1"
+        }
+      ]
+    );
     expect(next[0]).toMatchObject({ source: "linked_artifact" });
   });
 
   it("leaves requirements unchanged for empty or whitespace-only content", () => {
     const current = [requirement("rollback_plan")];
-    expect(addManualEvidence(current, [{ kind: "rollback_plan", content: "", actor: "sam" }])[0]).toEqual(
-      requirement("rollback_plan")
-    );
+    expect(
+      addManualEvidence(current, [{ kind: "rollback_plan", content: "", actor: "sam" }])[0]
+    ).toEqual(requirement("rollback_plan"));
     expect(
       addManualEvidence(current, [{ kind: "rollback_plan", content: "   \n  ", actor: "sam" }])[0]
     ).toEqual(requirement("rollback_plan"));
@@ -236,24 +241,27 @@ describe("addManualEvidence", () => {
 
   it("leaves requirements unchanged when no manual evidence matches", () => {
     const current = [requirement("rollback_plan")];
-    expect(addManualEvidence(current, [{ kind: "migration_dry_run", content: "x", actor: "sam" }])[0]).toEqual(
-      requirement("rollback_plan")
-    );
+    expect(
+      addManualEvidence(current, [{ kind: "migration_dry_run", content: "x", actor: "sam" }])[0]
+    ).toEqual(requirement("rollback_plan"));
     expect(addManualEvidence(current, [])).toEqual(current);
   });
 
   it("preserves explicitly supplied providedAt, approvedBy, and approvedAt", () => {
-    const next = addManualEvidence([requirement("rollback_plan")], [
-      {
-        kind: "rollback_plan",
-        content: "Revert.",
-        actor: "sam",
-        approved: true,
-        providedAt: "2026-07-01T00:00:00.000Z",
-        approvedBy: "governance-admin",
-        approvedAt: "2026-07-01T01:00:00.000Z"
-      }
-    ]);
+    const next = addManualEvidence(
+      [requirement("rollback_plan")],
+      [
+        {
+          kind: "rollback_plan",
+          content: "Revert.",
+          actor: "sam",
+          approved: true,
+          providedAt: "2026-07-01T00:00:00.000Z",
+          approvedBy: "governance-admin",
+          approvedAt: "2026-07-01T01:00:00.000Z"
+        }
+      ]
+    );
     expect(next[0]).toMatchObject({
       providedAt: "2026-07-01T00:00:00.000Z",
       approvedBy: "governance-admin",
@@ -262,9 +270,10 @@ describe("addManualEvidence", () => {
   });
 
   it("redacts secrets from the content summary of manual evidence", () => {
-    const next = addManualEvidence([requirement("rollback_plan")], [
-      { kind: "rollback_plan", content: `Revert using ghp_${"1".repeat(36)}`, actor: "sam" }
-    ]);
+    const next = addManualEvidence(
+      [requirement("rollback_plan")],
+      [{ kind: "rollback_plan", content: `Revert using ghp_${"1".repeat(36)}`, actor: "sam" }]
+    );
     expect(next[0]!.contentSummary).not.toContain("ghp_");
     expect(next[0]!.contentSummary).toContain("[REDACTED]");
   });

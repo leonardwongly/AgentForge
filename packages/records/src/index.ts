@@ -493,9 +493,7 @@ export function generatePolicyTuningReport(
 
 // Composite governance health: a weighted penalty from override, open/rejected
 // evidence, and pending-reviewer rates. Higher is healthier.
-export function computeGovernanceHealth(
-  metrics: PolicyTuningReport["metrics"]
-): GovernanceHealth {
+export function computeGovernanceHealth(metrics: PolicyTuningReport["metrics"]): GovernanceHealth {
   const penalty =
     metrics.overrideRate * 0.4 +
     metrics.openEvidenceRate * 0.3 +
@@ -511,12 +509,19 @@ export function computeGovernanceHealth(
 // precision is reported as 1 - (overrideCount / findingCount). True recall
 // requires a labeled corpus and is intentionally not derived from CCRs alone.
 export function computeDetectorMetrics(records: ChangeControlRecord[]): DetectorMetric[] {
-  const byDetector = new Map<string, { findings: number; records: Set<string>; overrides: number }>();
+  const byDetector = new Map<
+    string,
+    { findings: number; records: Set<string>; overrides: number }
+  >();
   for (const record of records) {
     const isOverride = record.lifecycle === "overridden";
     const seen = new Set<string>();
     for (const finding of record.verifiedFindings) {
-      const entry = byDetector.get(finding.type) ?? { findings: 0, records: new Set<string>(), overrides: 0 };
+      const entry = byDetector.get(finding.type) ?? {
+        findings: 0,
+        records: new Set<string>(),
+        overrides: 0
+      };
       entry.findings += 1;
       entry.records.add(record.id);
       if (isOverride && !seen.has(finding.type)) {

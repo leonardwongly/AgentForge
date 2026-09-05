@@ -97,7 +97,10 @@ export interface MirrorVerification {
  * Verify the git mirror's HEAD tree matches the Loom head State byte-for-byte.
  * Returns the equivalence digests of both sides and every divergence.
  */
-export async function verifyMirrorEquivalence(dir: string, gitRepoDir: string): Promise<MirrorVerification> {
+export async function verifyMirrorEquivalence(
+  dir: string,
+  gitRepoDir: string
+): Promise<MirrorVerification> {
   const state = loadHeadState(dir);
   const gitState = await stateFromGitRef(execGitReader(gitRepoDir), "HEAD");
 

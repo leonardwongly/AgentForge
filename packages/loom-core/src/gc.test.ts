@@ -22,7 +22,11 @@ describe("collectGarbage", () => {
   it("retains roots and their transitive references, collecting the rest", () => {
     withStore((store) => {
       const bytes = new TextEncoder().encode("some blob content");
-      const manifestCid = storeBlob(store, bytes, { version: 1, algorithm: "fixed", chunkSize: 64 });
+      const manifestCid = storeBlob(store, bytes, {
+        version: 1,
+        algorithm: "fixed",
+        chunkSize: 64
+      });
       const manifest = store.getDagCbor<{ chunks: Array<{ cid: string }> }>(manifestCid)!;
       const chunkCid = manifest.chunks[0]!.cid as Cid;
 
@@ -67,8 +71,7 @@ describe("collectGarbage", () => {
       const a = store.putRaw(new TextEncoder().encode("a"));
       const b = store.putRaw(new TextEncoder().encode("b"));
       // a references b, b references a (cycle).
-      const references = (cid: Cid): readonly Cid[] =>
-        cid === a ? [b] : cid === b ? [a] : [];
+      const references = (cid: Cid): readonly Cid[] => (cid === a ? [b] : cid === b ? [a] : []);
       const result = collectGarbage(store, [a], references);
       expect(store.hasRaw(a)).toBe(true);
       expect(store.hasRaw(b)).toBe(true);

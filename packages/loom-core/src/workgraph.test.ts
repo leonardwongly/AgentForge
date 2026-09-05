@@ -41,7 +41,11 @@ describe("agent work graph", () => {
 
   it("traces a node back to its agent and session", () => {
     const graph = new WorkGraph();
-    const node = graph.addNode({ agentDid: "did:loom:agent", sessionId: "sess-1", transformCid: "cid-1" });
+    const node = graph.addNode({
+      agentDid: "did:loom:agent",
+      sessionId: "sess-1",
+      transformCid: "cid-1"
+    });
     expect(graph.get(node.id)).toMatchObject({
       agentDid: "did:loom:agent",
       sessionId: "sess-1",

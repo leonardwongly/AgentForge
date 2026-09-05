@@ -81,14 +81,14 @@ describe("validateWireMessage", () => {
     expect(validateWireMessage(null)).toMatch(/must be an object/);
     expect(validateWireMessage({ v: 2, id: "1", ok: true, result: {} })).toMatch(/unsupported/);
     expect(validateWireMessage({ v: 1, id: "", ok: true, result: {} })).toMatch(/non-empty/);
-    expect(validateWireMessage({ v: 1, id: "1", method: "bogus", params: {}, nonce: "n", timestamp: 1 })).toMatch(
-      /unknown method/
-    );
+    expect(
+      validateWireMessage({ v: 1, id: "1", method: "bogus", params: {}, nonce: "n", timestamp: 1 })
+    ).toMatch(/unknown method/);
     expect(
       validateWireMessage({ v: 1, id: "1", method: "hello", params: [], nonce: "n", timestamp: 1 })
     ).toMatch(/params must be an object/);
-    expect(
-      validateWireMessage({ v: 1, id: "1", ok: false, error: { code: "x" } })
-    ).toMatch(/requires \{code, message\}/);
+    expect(validateWireMessage({ v: 1, id: "1", ok: false, error: { code: "x" } })).toMatch(
+      /requires \{code, message\}/
+    );
   });
 });

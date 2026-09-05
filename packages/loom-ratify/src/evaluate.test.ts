@@ -155,7 +155,9 @@ describe("evaluateTransformSet — governance engine re-homed onto Loom", () => 
       result: state({}),
       policy: policyOf(POLICY_YAML)
     });
-    expect(first.synthesizedInput.pullRequestNumber).toBe(second.synthesizedInput.pullRequestNumber);
+    expect(first.synthesizedInput.pullRequestNumber).toBe(
+      second.synthesizedInput.pullRequestNumber
+    );
     expect(first.synthesizedInput.headSha).toBe(stateAddress(sensitiveResult));
     expect(other.synthesizedInput.headSha).not.toBe(first.synthesizedInput.headSha);
     expect(other.synthesizedInput.pullRequestNumber).toBeGreaterThanOrEqual(0);
@@ -170,9 +172,9 @@ describe("evaluateTransformSet — governance engine re-homed onto Loom", () => 
     });
     expect(ev.synthesizedInput.changedFiles[0]?.status).toBe("renamed");
     expect(ev.result.status).toBe("block");
-    expect(ev.facts.some((f) => f.type === "sensitive_path_changed" && f.source === "loom_effects")).toBe(
-      true
-    );
+    expect(
+      ev.facts.some((f) => f.type === "sensitive_path_changed" && f.source === "loom_effects")
+    ).toBe(true);
     expect(ev.result.findings.some((f) => f.type === "sensitive_path_changed")).toBe(true);
   });
 
@@ -192,7 +194,9 @@ describe("evaluateTransformSet — governance engine re-homed onto Loom", () => 
     expect(ev.result.status).toBe("block");
     expect(
       ev.result.requiredEvidence.some(
-        (e) => e.kind === "deleted_test_explanation" && e.requiredByFindingId === "fact:effect:deletes_test"
+        (e) =>
+          e.kind === "deleted_test_explanation" &&
+          e.requiredByFindingId === "fact:effect:deletes_test"
       )
     ).toBe(true);
   });
@@ -242,7 +246,9 @@ describe("evaluateTransformSet — governance engine re-homed onto Loom", () => 
       ]
     });
     expect(ev.result.status).toBe("block");
-    expect(ev.result.requiredReviewers.some((r) => r.reviewer === "alice" && !r.approved)).toBe(true);
+    expect(ev.result.requiredReviewers.some((r) => r.reviewer === "alice" && !r.approved)).toBe(
+      true
+    );
   });
 
   it("copies caller reviews into the synthesized input without aliasing", () => {

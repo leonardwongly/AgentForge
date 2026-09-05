@@ -7,7 +7,11 @@ function finding(type: VerifiedFact["type"], id: string): VerifiedFact {
   return { id, type, source: "github_diff", evidence: "evidence", confidence: "verified" };
 }
 
-function record(id: string, lifecycle: ChangeControlRecord["lifecycle"], findings: VerifiedFact[]): ChangeControlRecord {
+function record(
+  id: string,
+  lifecycle: ChangeControlRecord["lifecycle"],
+  findings: VerifiedFact[]
+): ChangeControlRecord {
   return {
     id,
     revision: 1,
@@ -36,7 +40,10 @@ describe("computeDetectorMetrics", () => {
 
   it("aggregates findings per detector across records", () => {
     const metrics = computeDetectorMetrics([
-      record("r1", "passed", [finding("sensitive_path_changed", "f1"), finding("migration_added", "f2")]),
+      record("r1", "passed", [
+        finding("sensitive_path_changed", "f1"),
+        finding("migration_added", "f2")
+      ]),
       record("r2", "passed", [finding("sensitive_path_changed", "f3")])
     ]);
     const sensitive = metrics.find((m) => m.detector === "sensitive_path_changed");

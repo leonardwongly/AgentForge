@@ -15,7 +15,12 @@ describe("delegated agent sessions", () => {
 
   it("permits writes only within the write scope and budget", () => {
     const store = new SessionStore();
-    const session = store.create({ agentDid: AGENT, grantId: "g1", writeScope: ["src/billing/"], maxWrites: 2 });
+    const session = store.create({
+      agentDid: AGENT,
+      grantId: "g1",
+      writeScope: ["src/billing/"],
+      maxWrites: 2
+    });
 
     expect(store.canWrite(session, "src/billing/checkout.ts")).toBe(true);
     expect(store.canWrite(session, "src/other/x.ts")).toBe(false);

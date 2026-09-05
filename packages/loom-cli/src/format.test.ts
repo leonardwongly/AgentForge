@@ -156,9 +156,7 @@ describe("formatRatify", () => {
 
   it("reports the signed attestation when an envelope is present", () => {
     const out = formatRatify(ratifyResult({ envelope }));
-    expect(out).toContain(
-      "attestation: signed (application/vnd.in-toto+json, 1 signature)"
-    );
+    expect(out).toContain("attestation: signed (application/vnd.in-toto+json, 1 signature)");
   });
 
   it("omits the attestation line when no envelope is present", () => {

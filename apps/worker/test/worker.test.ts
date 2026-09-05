@@ -1986,7 +1986,6 @@ describe("Merge Guard worker evaluation jobs", () => {
     const pr = await loadPr("billing-path.json");
     const envelope = webhookEnvelope(pr);
 
-
     const result = await processMergeGuardEvaluationJob({
       deliveryId: envelope.deliveryId,
       envelope,

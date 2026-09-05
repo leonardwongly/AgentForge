@@ -51,7 +51,10 @@ const TRANSITIONS: Record<ProposalState, ReadonlySet<ProposalState>> = {
 export class ProposalStore {
   private readonly proposals = new Map<string, Proposal>();
 
-  constructor(private readonly root: string, private readonly journal: FileLineJournal) {}
+  constructor(
+    private readonly root: string,
+    private readonly journal: FileLineJournal
+  ) {}
 
   get(id: string): Proposal | undefined {
     return this.proposals.get(id);
@@ -86,7 +89,10 @@ export class ProposalStore {
     if (!proposal || proposal.state !== "proposed") {
       return proposal;
     }
-    if (!proposal.requiredReviewers.includes(reviewer) || (actor !== undefined && actor === proposal.author)) {
+    if (
+      !proposal.requiredReviewers.includes(reviewer) ||
+      (actor !== undefined && actor === proposal.author)
+    ) {
       return proposal;
     }
     if (!proposal.approvals.includes(reviewer)) {

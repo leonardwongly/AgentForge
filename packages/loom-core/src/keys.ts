@@ -91,7 +91,10 @@ export class KeyRegistry {
   private persist(): void {
     if (this.file) {
       mkdirSync(dirname(this.file), { recursive: true });
-      const temp = join(dirname(this.file), `.${basename(this.file)}.${process.pid}.${randomUUID()}.tmp`);
+      const temp = join(
+        dirname(this.file),
+        `.${basename(this.file)}.${process.pid}.${randomUUID()}.tmp`
+      );
       writeFileSync(temp, JSON.stringify(this.state), { encoding: "utf8", flag: "wx" });
       renameSync(temp, this.file);
     }
@@ -107,8 +110,12 @@ export class KeyRegistry {
       if (!isRecord(value)) throw new Error("loom: malformed key registry actor");
       const actor = Object.create(null) as Record<string, KeyRecord>;
       for (const [key, record] of Object.entries(value)) {
-        if (!isRecord(record) || (record.status !== "active" && record.status !== "revoked") ||
-            typeof record.registeredAt !== "number" || !Number.isFinite(record.registeredAt)) {
+        if (
+          !isRecord(record) ||
+          (record.status !== "active" && record.status !== "revoked") ||
+          typeof record.registeredAt !== "number" ||
+          !Number.isFinite(record.registeredAt)
+        ) {
           throw new Error("loom: malformed key registry record");
         }
         actor[key] = { status: record.status, registeredAt: record.registeredAt };
