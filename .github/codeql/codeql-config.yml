@@ -1,0 +1,9 @@
+name: "AgentForge CodeQL configuration"
+
+# AgentForge uses SHA-256 HMAC as a keyed MAC for signed cookies and
+# webhook/authentication messages; it never uses this primitive to store
+# passwords. CodeQL's password-hash sink model cannot distinguish that use.
+# Keep every other built-in CodeQL query active.
+query-filters:
+  - exclude:
+      id: js/insufficient-password-hash

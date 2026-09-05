@@ -27,6 +27,7 @@ jobs:
       - uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e
         with:
           languages: javascript-typescript
+          config-file: ./.github/codeql/codeql-config.yml
           packs: codeql/javascript-queries:AlertSuppression.ql
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
