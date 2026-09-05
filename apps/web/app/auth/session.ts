@@ -162,8 +162,10 @@ function decodeBase64Url(value: string): Buffer | undefined {
   return Buffer.from(value, "base64url");
 }
 
-function signature(value: string, secret: string): string {
-  return createHmac("sha256", secret).update(value).digest("base64url");
+function signature(message: string, secret: string): string {
+  // This is a keyed MAC for cookie integrity, not a stored password hash.
+  // codeql[js/insufficient-password-hash]
+  return createHmac("sha256", secret).update(message).digest("base64url");
 }
 
 function cookieValue(cookieHeader: string | null | undefined, name: string): string | undefined {
