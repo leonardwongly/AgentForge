@@ -19,15 +19,15 @@
     "@agentforge/db": "workspace:*",
     "@agentforge/detectors": "workspace:*",
     "@agentforge/github": "workspace:*",
+    "@agentforge/notifications": "workspace:*",
     "@agentforge/policy": "workspace:*",
     "@agentforge/records": "workspace:*",
-    "@agentforge/notifications": "workspace:*",
     "@agentforge/reviewers": "workspace:*",
     "@agentforge/security": "workspace:*",
     "@fastify/cors": "11.2.0",
     "@fastify/rate-limit": "11.1.0",
     "bullmq": "5.79.2",
-    "fastify": "5.9.0",
+    "fastify": "5.12.1",
     "ioredis": "5.11.1",
     "zod": "4.4.3"
   }
