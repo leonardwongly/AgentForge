@@ -45,10 +45,7 @@ import {
   policyContentHashFromVersion,
   type PolicyConfig
 } from "@agentforge/policy";
-import {
-  buildNotificationPayload,
-  deliverWebhook
-} from "@agentforge/notifications";
+import { buildNotificationPayload, deliverWebhook } from "@agentforge/notifications";
 import {
   createAuditEvent,
   createChangeControlRecord,
@@ -192,7 +189,9 @@ export class CheckPublicationAmbiguousError extends Error {
 
 export class ChangeControlRecordConcurrencyError extends Error {
   constructor(recordId: string) {
-    super(`Change Control Record ${recordId} changed during worker evaluation; retry with fresh state.`);
+    super(
+      `Change Control Record ${recordId} changed during worker evaluation; retry with fresh state.`
+    );
     this.name = "ChangeControlRecordConcurrencyError";
   }
 }
@@ -724,9 +723,41 @@ function terminalFailurePublicationContext(data: MergeGuardEvaluationJobData):
     }
   | undefined {
   const envelope = data.envelope;
-  const repositoryFullName = data.pr?.repositoryFullName ?? envelope?.repository?.fullName;
-  const owner = envelope?.repository?.owner ?? repositoryFullName?.split("/")[0];
-  const repo = envelope?.repository?.name ?? repositoryFullName?.split("/")[1];
+  const prRepositoryFullName = data.pr?.repositoryFullName;
+  const envelopeRepository = envelope?.repository;
+  const envelopeFullName = envelopeRepository?.fullName;
+  if (
+    prRepositoryFullName &&
+    envelopeFullName &&
+    !sameRepositoryFullName(prRepositoryFullName, envelopeFullName)
+  ) {
+    return undefined;
+  }
+  if (
+    envelopeRepository &&
+    !repositoryIdentityMatchesFullName(
+      envelopeRepository.owner,
+      envelopeRepository.name,
+      envelopeRepository.fullName
+    )
+  ) {
+    return undefined;
+  }
+  const repositoryFullName = prRepositoryFullName ?? envelopeFullName;
+  const parsedFullName = repositoryFullName?.split("/");
+  if (parsedFullName && parsedFullName.length !== 2) {
+    return undefined;
+  }
+  const owner = envelopeRepository?.owner ?? parsedFullName?.[0];
+  const repo = envelopeRepository?.name ?? parsedFullName?.[1];
+  if (
+    repositoryFullName &&
+    owner &&
+    repo &&
+    !repositoryIdentityMatchesFullName(owner, repo, repositoryFullName)
+  ) {
+    return undefined;
+  }
   const pullRequestNumber =
     data.pr?.pullRequestNumber ??
     envelope?.pullRequest?.number ??
@@ -1146,26 +1177,49 @@ export function computeBackoffDelay(
   job: { opts: { backoff?: { delay?: number } } }
 ): number {
   if (err instanceof CheckPublicationClaimPendingError && err.retryAfterMs !== undefined) {
-    return Math.min(MAX_BACKOFF_DELAY_MS, Math.max(1000, Math.ceil(err.retryAfterMs)));
+    return boundedBackoffDelay(Math.ceil(err.retryAfterMs), 1000);
   }
 
   const retryAfterMs = githubRetryAfterMs(err);
   if (retryAfterMs !== undefined) {
     const jittered = retryAfterMs + Math.random() * RATE_LIMIT_JITTER_MS;
-    return Math.min(MAX_BACKOFF_DELAY_MS, Math.max(1000, Math.floor(jittered)));
+    return boundedBackoffDelay(jittered, 1000);
   }
 
   if (type === "exponentialWithJitter") {
-    const baseDelay = job.opts.backoff?.delay ?? MERGE_GUARD_EVALUATION_BACKOFF_MS;
-    const delay = baseDelay * Math.pow(2, attemptsMade - 1);
+    const baseDelay = finitePositive(job.opts.backoff?.delay)
+      ? (job.opts.backoff?.delay ?? MERGE_GUARD_EVALUATION_BACKOFF_MS)
+      : MERGE_GUARD_EVALUATION_BACKOFF_MS;
+    const safeAttempts = finiteNonNegativeInteger(attemptsMade);
+    const delay = baseDelay * Math.pow(2, Math.max(0, safeAttempts - 1));
     const min = delay * 0.5;
     const max = delay * 1.5;
     const jittered = Math.floor(min + Math.random() * (max - min));
-    return Math.min(MAX_BACKOFF_DELAY_MS, Math.max(1000, jittered));
+    return boundedBackoffDelay(jittered, 1000);
   }
   // Fallback delay calculation
-  const baseDelay = job.opts.backoff?.delay ?? 30000;
-  return Math.min(MAX_BACKOFF_DELAY_MS, baseDelay * Math.pow(2, attemptsMade - 1));
+  const baseDelay = finitePositive(job.opts.backoff?.delay)
+    ? (job.opts.backoff?.delay ?? 30000)
+    : 30000;
+  return boundedBackoffDelay(
+    baseDelay * Math.pow(2, Math.max(0, finiteNonNegativeInteger(attemptsMade) - 1)),
+    0
+  );
+}
+
+function finitePositive(value: number | undefined): value is number {
+  return value !== undefined && Number.isFinite(value) && value > 0;
+}
+
+function finiteNonNegativeInteger(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+function boundedBackoffDelay(value: number, minimum: number): number {
+  return Math.min(
+    MAX_BACKOFF_DELAY_MS,
+    Math.max(minimum, Number.isFinite(value) ? value : minimum)
+  );
 }
 
 let workerCache: RedisCacheManager | undefined;
@@ -1455,8 +1509,11 @@ export function classifyMergeGuardEvaluationFailure(input: {
 }): MergeGuardEvaluationFailureSummary {
   const errorClass = input.error instanceof Error ? input.error.name : "UnknownError";
   const message = input.error instanceof Error ? input.error.message : String(input.error);
-  const attemptsMade = Math.max(0, input.attemptsMade ?? 0);
-  const maxAttempts = Math.max(1, input.maxAttempts ?? MERGE_GUARD_EVALUATION_ATTEMPTS);
+  const attemptsMade = finiteNonNegativeInteger(input.attemptsMade ?? 0);
+  const configuredMaxAttempts = input.maxAttempts ?? MERGE_GUARD_EVALUATION_ATTEMPTS;
+  const maxAttempts = Number.isFinite(configuredMaxAttempts)
+    ? Math.max(1, Math.floor(configuredMaxAttempts))
+    : MERGE_GUARD_EVALUATION_ATTEMPTS;
   const retryable =
     !(input.error instanceof UnrecoverableError) &&
     isRetryableEvaluationFailure(errorClass, message);
@@ -1467,7 +1524,10 @@ export function classifyMergeGuardEvaluationFailure(input: {
     terminalFailure: !retryable || attemptsMade >= maxAttempts,
     attemptsMade,
     maxAttempts,
-    failedAt: input.failedAt ?? new Date().toISOString(),
+    failedAt:
+      input.failedAt && Number.isFinite(Date.parse(input.failedAt))
+        ? input.failedAt
+        : new Date().toISOString(),
     correlationId: input.deliveryId ?? "unknown_delivery"
   };
 }
@@ -1799,10 +1859,23 @@ export async function resolveEnvelopeEvaluationContext(input: {
   envelope: GithubWebhookEnvelope;
 }): Promise<EnvelopeEvaluationContext> {
   const approvedInstallation = await resolveApprovedEnvelopeInstallation(input);
-  const repositoryId = input.envelope.repository?.id;
+  const envelopeRepository = input.envelope.repository;
+  const repositoryId = envelopeRepository?.id;
   if (!repositoryId || !Number.isSafeInteger(repositoryId) || repositoryId <= 0) {
     throw new EnvelopeRepositoryIdentityError(
       "Merge Guard evaluation jobs with a persisted webhook envelope require a valid immutable GitHub repository id."
+    );
+  }
+  if (
+    !envelopeRepository ||
+    !repositoryIdentityMatchesFullName(
+      envelopeRepository.owner,
+      envelopeRepository.name,
+      envelopeRepository.fullName
+    )
+  ) {
+    throw new EnvelopeRepositoryIdentityError(
+      "Merge Guard evaluation jobs with a persisted webhook envelope require a consistent GitHub repository owner, name, and full name."
     );
   }
   const repository = await runWithOrgContext(approvedInstallation.organizationId, () =>
@@ -1872,6 +1945,19 @@ export async function resolveRuntimeEvaluationContext(input: {
         }));
   if (input.envelopeContext && !repository) {
     throw new RepositoryNotConfiguredError(input.pr.repositoryFullName);
+  }
+  if (
+    input.envelopeContext &&
+    repository &&
+    !sameRepositoryFullName(repository.fullName, input.pr.repositoryFullName)
+  ) {
+    // The immutable repository id selected the policy row, while the PR
+    // payload supplies the human-readable name. Do not let a malformed or
+    // replayed envelope combine one repository's policy with another
+    // repository's GitHub facts.
+    throw new EnvelopeRepositoryIdentityError(
+      "The pull request repository identity does not match the immutable GitHub repository binding."
+    );
   }
   assertProductionRepositoryStorageSettings(input.config, repository);
   if (repository && !repository.enabled) {
@@ -2039,6 +2125,17 @@ function isTeamReviewer(reviewer: string): boolean {
   return normalized.includes("/") || normalized.includes("-team") || normalized.includes("-owner");
 }
 
+function sameRepositoryFullName(left: string, right: string): boolean {
+  return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
+function repositoryIdentityMatchesFullName(owner: string, name: string, fullName: string): boolean {
+  if (!owner.trim() || !name.trim() || !fullName.trim()) {
+    return false;
+  }
+  return sameRepositoryFullName(`${owner}/${name}`, fullName);
+}
+
 function normalizeOwnerKey(value: string): string {
   return value
     .trim()
@@ -2146,9 +2243,7 @@ async function reconcileCheckIfConfigured(input: {
       conclusion: input.conclusionOverride,
       externalId: input.externalId
     });
-    return reconciled
-      ? { published: true, ...reconciled, reused: true }
-      : undefined;
+    return reconciled ? { published: true, ...reconciled, reused: true } : undefined;
   }
   if (!input.githubContext.checkPublisherClient) {
     return undefined;
@@ -2219,8 +2314,7 @@ async function publishCheckOnce(
   }
 
   const publicationState =
-    previous.checkPublicationState ||
-    (previous.checkPublishedAt ? "ambiguous" : "pending");
+    previous.checkPublicationState || (previous.checkPublishedAt ? "ambiguous" : "pending");
   const externalId = previous.checkExternalId ?? deterministicExternalId;
   if (
     publicationState === "creating" &&
@@ -2563,7 +2657,13 @@ function applyEnvelopeLifecycle(
   if (envelope?.event !== "pull_request" || envelope.action !== "closed" || !envelope.pullRequest) {
     return record;
   }
-  const now = envelope.receivedAt;
+  const nowDate = validEnvelopeDate(envelope.receivedAt);
+  if (nowDate === undefined) {
+    // Never persist an Invalid Date or advance the lifecycle based on a
+    // malformed, untrusted webhook timestamp.
+    return record;
+  }
+  const now = nowDate.toISOString();
   if (envelope.pullRequest.merged) {
     return {
       ...record,
@@ -2757,7 +2857,9 @@ async function ensureWorkerRecord(input: {
       id: `pr_${record.id}`,
       repositoryId: repository.id,
       githubPullRequestId:
-        envelope?.pullRequest?.id && Number.isSafeInteger(envelope.pullRequest.id)
+        envelope?.pullRequest?.id &&
+        Number.isSafeInteger(envelope.pullRequest.id) &&
+        envelope.pullRequest.id > 0
           ? BigInt(envelope.pullRequest.id)
           : stableBigInt(`${pr.repositoryFullName}#${pr.pullRequestNumber}`),
       number: pr.pullRequestNumber,
@@ -3056,7 +3158,7 @@ function pullRequestState(envelope: GithubWebhookEnvelope | undefined): string {
 
 function closedAt(envelope: GithubWebhookEnvelope | undefined): Date | undefined {
   return envelope?.event === "pull_request" && envelope.action === "closed"
-    ? new Date(envelope.receivedAt)
+    ? validEnvelopeDate(envelope.receivedAt)
     : undefined;
 }
 
@@ -3064,8 +3166,13 @@ function mergedAt(envelope: GithubWebhookEnvelope | undefined): Date | undefined
   return envelope?.event === "pull_request" &&
     envelope.action === "closed" &&
     envelope.pullRequest?.merged
-    ? new Date(envelope.receivedAt)
+    ? validEnvelopeDate(envelope.receivedAt)
     : undefined;
+}
+
+function validEnvelopeDate(value: string): Date | undefined {
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? new Date(milliseconds) : undefined;
 }
 
 function repositoryIdFromFullName(fullName: string): string {

@@ -172,6 +172,25 @@ describe("Proxy Authentication cryptographic security", () => {
     expect(result).toBeUndefined();
   });
 
+  it("rejects a timestamp with trailing non-numeric data even when its parsed value is current", async () => {
+    process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
+    process.env.AGENTFORGE_API_PROXY_SECRET = secret;
+
+    // This used to pass because parseInt() accepted the numeric prefix. A
+    // signed request must still reject malformed serialized fields rather than
+    // relying on each intermediary to parse them identically.
+    const timestamp = `${Math.floor(Date.now() / 1000)}junk`;
+    const req = signedRequest(secret, {
+      actor: "alex",
+      role: "platform_admin",
+      org: "org_test",
+      timestamp
+    });
+
+    const result = await resolveApiActor(req);
+    expect(result).toBeUndefined();
+  });
+
   it("rejects when actor contains invalid characters", async () => {
     process.env.AGENTFORGE_API_TRUST_PROXY_HEADERS = "true";
     process.env.AGENTFORGE_API_PROXY_SECRET = secret;

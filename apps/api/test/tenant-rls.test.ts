@@ -8,9 +8,9 @@ import {
 
 /**
  * Verifies the Postgres Row-Level Security tenant backstop (AF-SEC M4) end to end:
- * permissive when no org context is bound, strictly org-scoped (reads + writes)
- * when bound. RLS only applies to a NON-superuser / NON-BYPASSRLS role, so this
- * test provisions a restricted role and connects as it.
+ * fail-closed when no org context is bound and strictly org-scoped (reads +
+ * writes) when bound. RLS only applies to a NON-superuser / NON-BYPASSRLS role,
+ * so this test provisions a restricted role and connects as it.
  *
  * Skips automatically when Postgres is not reachable (e.g. the default `pnpm test`
  * from a clean shell). Runs in CI's integration job and locally with Compose up.
@@ -45,7 +45,14 @@ const n = Date.now();
 // file fails loudly instead of silently vanishing from the report.
 function isUnreachableConnectionError(error: unknown): boolean {
   const code = (error as { code?: unknown } | undefined)?.code;
-  return code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "P1001" || code === "P1017";
+  return (
+    code === "ECONNREFUSED" ||
+    code === "ENOTFOUND" ||
+    code === "EPERM" ||
+    code === "EACCES" ||
+    code === "P1001" ||
+    code === "P1017"
+  );
 }
 
 // Bounded retry for the initial connectivity probe only. Running the full
@@ -197,7 +204,7 @@ describe("tenant isolation via Postgres RLS", () => {
     }
   });
 
-  it("is permissive when no org context is bound", async (ctx) => {
+  it("denies organization-owned rows when no org context is bound", async (ctx) => {
     if (!available || !app) {
       ctx.skip();
       return;
@@ -205,7 +212,7 @@ describe("tenant isolation via Postgres RLS", () => {
     const rows = await app.repository.findMany({
       where: { id: { in: [created.repoA, created.repoB] } }
     });
-    expect(rows.length).toBe(2);
+    expect(rows).toHaveLength(0);
   });
 
   it("scopes reads to the bound organization", async (ctx) => {

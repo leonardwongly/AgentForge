@@ -62,9 +62,12 @@ export interface OverrideStore {
 
 export interface RepositoryStore {
   organizationId(repositoryId: string): Promise<string | undefined>;
-  findIdByFullName(fullName: string): Promise<string | undefined>;
+  findIdByFullName(fullName: string, organizationId?: string): Promise<string | undefined>;
   modeOverride(repositoryId: string): Promise<ChangeControlRecord["mode"] | undefined>;
-  defaultDataHandling(defaults: RepositoryDataHandlingState): Promise<RepositoryDataHandlingState>;
+  defaultDataHandling(
+    defaults: RepositoryDataHandlingState,
+    organizationId?: string
+  ): Promise<RepositoryDataHandlingState>;
   listSummaries(
     defaultMode: ChangeControlRecord["mode"],
     organizationId?: string
@@ -812,13 +815,17 @@ export function createInMemoryPersistencePort(state?: InMemoryPersistenceState):
           listRecords().find((record) => record.repositoryId === repositoryId)?.organizationId
         );
       },
-      async findIdByFullName(fullName) {
-        return listRecords().find((record) => record.repositoryFullName === fullName)?.repositoryId;
+      async findIdByFullName(fullName, organizationId) {
+        return listRecords().find(
+          (record) =>
+            record.repositoryFullName === fullName &&
+            (!organizationId || record.organizationId === organizationId)
+        )?.repositoryId;
       },
       async modeOverride(repositoryId) {
         return settingsMap().get(repositoryId)?.mode;
       },
-      async defaultDataHandling(defaults) {
+      async defaultDataHandling(defaults, _organizationId) {
         return defaults;
       },
       async listSummaries(defaultMode, organizationId) {

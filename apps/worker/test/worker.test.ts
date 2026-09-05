@@ -173,7 +173,7 @@ async function loadPolicy(name: string): Promise<string> {
 function setProductionWorkerEnv(): void {
   process.env.NODE_ENV = "production";
   process.env.DATABASE_URL = "postgresql://localhost:5432/db";
-  process.env.REDIS_URL = "";
+  process.env.REDIS_URL = "redis://redis.example.com:6379";
   process.env.GITHUB_APP_ID = "123456";
   process.env.GITHUB_APP_PRIVATE_KEY = "test-private-key";
   process.env.GITHUB_WEBHOOK_SECRET = "worker-production-webhook-key-1234567890";

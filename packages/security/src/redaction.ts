@@ -30,12 +30,11 @@ export type RedactionMatch = {
 
 const REDACTION = "[REDACTED]";
 
-// Upper bound on input length scanned by detectSecrets. Secret scanning of very
-// large blobs (e.g. a 1MB diff) is low value and a DoS amplifier; detection is
-// truncated to this many characters. redactSecrets is NOT truncated (it must
-// never emit an un-redacted tail) and instead relies on every pattern being
-// linear-time (no unbounded backtracking).
-const MAX_SECRET_SCAN_LENGTH = 65_536;
+// Scan large inputs in bounded overlapping chunks. This avoids a single huge
+// regex operation while still checking the entire value; truncating at a fixed
+// offset allowed an attacker to hide a credential in the unscanned tail.
+const SECRET_SCAN_CHUNK_LENGTH = 65_536;
+const SECRET_SCAN_OVERLAP_LENGTH = 16_384;
 
 const patterns: Array<{ kind: RedactionMatch["kind"]; regex: RegExp }> = [
   {
@@ -141,25 +140,57 @@ export function redactSecrets(input: string): string {
 }
 
 export function detectSecrets(input: string): RedactionMatch[] {
-  const scanned =
-    input.length > MAX_SECRET_SCAN_LENGTH ? input.slice(0, MAX_SECRET_SCAN_LENGTH) : input;
   const matches: RedactionMatch[] = [];
+  const seen = new Set<string>();
   for (const { kind, regex } of patterns) {
-    regex.lastIndex = 0;
-    for (const match of scanned.matchAll(regex)) {
-      const value = match[0];
-      matches.push({ kind, value, redacted: preservePrefix(value), ...classifyMatch(kind, value) });
+    for (
+      let offset = 0;
+      offset < input.length || (offset === 0 && input.length === 0);
+      offset += SECRET_SCAN_CHUNK_LENGTH
+    ) {
+      const scanned = input.slice(
+        offset,
+        offset + SECRET_SCAN_CHUNK_LENGTH + SECRET_SCAN_OVERLAP_LENGTH
+      );
+      regex.lastIndex = 0;
+      for (const match of scanned.matchAll(regex)) {
+        // A match that starts in the overlap belongs to the next chunk, where
+        // it will be emitted once with the full surrounding context.
+        if (match.index !== undefined && match.index >= SECRET_SCAN_CHUNK_LENGTH) {
+          continue;
+        }
+        const value = match[0];
+        const key = `${kind}:${offset + (match.index ?? 0)}:${value}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        matches.push({
+          kind,
+          value,
+          redacted: preservePrefix(value),
+          ...classifyMatch(kind, value)
+        });
+      }
     }
   }
   return matches;
 }
 
 export function redactObject<T>(value: T): T {
+  return redactObjectValue(value, new WeakSet<object>()) as T;
+}
+
+function redactObjectValue(value: unknown, ancestors: WeakSet<object>): unknown {
   if (typeof value === "string") {
-    return redactSecrets(value) as T;
+    return redactSecrets(value);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => redactObject(item)) as T;
+    if (ancestors.has(value)) {
+      return undefined;
+    }
+    ancestors.add(value);
+    const redacted = value.map((item) => redactObjectValue(item, ancestors));
+    ancestors.delete(value);
+    return redacted;
   }
   // Preserve non-plain objects (e.g. Date) as-is: they carry no secret-bearing
   // string fields of their own and recursing through their (empty) enumerable
@@ -168,16 +199,28 @@ export function redactObject<T>(value: T): T {
     return value;
   }
   if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, nested]) => [key, redactObject(nested)])
-    ) as T;
+    if (ancestors.has(value)) {
+      return undefined;
+    }
+    ancestors.add(value);
+    const redacted = Object.fromEntries(
+      Object.entries(value).map(([key, nested]) => [key, redactObjectValue(nested, ancestors)])
+    );
+    ancestors.delete(value);
+    return redacted;
   }
   return value;
 }
 
 export function summarizeSafeSnippet(input: string, maxLength = 180): string {
+  const boundedLength = Number.isSafeInteger(maxLength) ? Math.max(0, maxLength) : 180;
+  if (boundedLength === 0) {
+    return "";
+  }
   const compact = redactSecrets(input).replace(/\s+/g, " ").trim();
-  return compact.length > maxLength ? `${compact.slice(0, maxLength - 1)}…` : compact;
+  return compact.length > boundedLength
+    ? `${[...compact].slice(0, Math.max(0, boundedLength - 1)).join("")}…`
+    : compact;
 }
 
 function preservePrefix(match: string): string {

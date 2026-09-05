@@ -52,7 +52,14 @@ export function findEvidenceInPrBody(
       contentSummary: string;
     }
   | undefined {
-  for (const heading of evidenceHeadings[kind]) {
+  if (typeof body !== "string") {
+    return undefined;
+  }
+  const headings = evidenceHeadings[kind];
+  if (!headings) {
+    return undefined;
+  }
+  for (const heading of headings) {
     const pattern = new RegExp(
       `(?:^|\\n)\\s*${escapeRegExp(heading)}\\s*:\\s*(?<content>[^\\n][\\s\\S]*?)(?=\\n\\s*[A-Za-z][A-Za-z /-]{2,40}\\s*:|$)`,
       "i"
@@ -70,9 +77,20 @@ export function addManualEvidence(
   current: EvidenceRequirement[],
   manualEvidence: ManualEvidenceInput[]
 ): EvidenceRequirement[] {
+  if (!Array.isArray(manualEvidence)) {
+    return current;
+  }
   return current.map((requirement) => {
-    const provided = manualEvidence.find((item) => item.kind === requirement.kind);
-    if (!provided || !provided.content.trim()) {
+    // Select the first usable item, not merely the first matching kind. A
+    // blank duplicate from a malformed/replayed request must not suppress a
+    // later valid attestation for the same requirement.
+    const provided = manualEvidence.find(
+      (item) =>
+        item?.kind === requirement.kind &&
+        typeof item.content === "string" &&
+        item.content.trim().length > 0
+    );
+    if (!provided) {
       return requirement;
     }
 
@@ -103,7 +121,10 @@ function buildRequirement(
   pr: Pick<PullRequestInput, "body" | "manualEvidence" | "authorLogin">
 ): EvidenceRequirement {
   const fromBody = findEvidenceInPrBody(kind, pr.body);
-  const fromManual = pr.manualEvidence?.find((item) => item.kind === kind && item.content.trim());
+  const fromManual = pr.manualEvidence?.find(
+    (item) =>
+      item?.kind === kind && typeof item.content === "string" && item.content.trim().length > 0
+  );
   const id = `evidence:${hit.finding.id}:${kind}`;
 
   if (fromManual) {

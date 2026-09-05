@@ -8,6 +8,7 @@
  * installs.
  */
 import type { AuditEventRecord, ChangeControlRecord } from "@agentforge/core";
+import { isIP } from "node:net";
 
 import { auditChainDigest, chainAuditEvents } from "@agentforge/records";
 
@@ -100,6 +101,10 @@ export type DeliveryOptions = {
   fetchImpl?: typeof fetch;
 };
 
+const MAX_WEBHOOK_RETRIES = 8;
+const MAX_WEBHOOK_TIMEOUT_MS = 60_000;
+const MAX_WEBHOOK_PAYLOAD_BYTES = 1_048_576;
+
 // Best-effort, non-blocking webhook delivery with a timeout and a small retry.
 // Any failure is reported but never thrown, so callers cannot be taken down by
 // an unreachable notification endpoint.
@@ -108,8 +113,29 @@ export async function deliverWebhook(
   payload: unknown,
   options: DeliveryOptions = {}
 ): Promise<DeliveryResult> {
-  const timeoutMs = options.timeoutMs ?? 5_000;
-  const retries = options.retries ?? 2;
+  if (!isSafeWebhookDestination(url)) {
+    return { ok: false, error: "invalid webhook destination" };
+  }
+  let body: string;
+  try {
+    const serialized = JSON.stringify(payload);
+    if (typeof serialized !== "string") {
+      return { ok: false, error: "invalid webhook payload" };
+    }
+    if (Buffer.byteLength(serialized, "utf8") > MAX_WEBHOOK_PAYLOAD_BYTES) {
+      return { ok: false, error: "webhook payload too large" };
+    }
+    body = serialized;
+  } catch {
+    // Circular or otherwise non-serializable payloads should be reported to
+    // the caller, not retried repeatedly while holding request resources.
+    return { ok: false, error: "invalid webhook payload" };
+  }
+  // Keep untrusted configuration from turning delivery into an unbounded
+  // resource consumer. Negative/NaN values are normalized to safe defaults;
+  // retries are capped while preserving the documented small retry behavior.
+  const timeoutMs = normalizeTimeout(options.timeoutMs);
+  const retries = normalizeRetries(options.retries);
   const fetchImpl = options.fetchImpl ?? fetch;
   let lastError: string | undefined;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -120,7 +146,7 @@ export async function deliverWebhook(
         const response = await fetchImpl(url, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(payload),
+          body,
           signal: controller.signal
         });
         if (response.ok) {
@@ -138,6 +164,84 @@ export async function deliverWebhook(
     }
   }
   return { ok: false, error: lastError };
+}
+
+function isSafeWebhookDestination(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    const hostname = parsed.hostname.toLowerCase();
+    const ipLiteral = hostname.replace(/^\[|\]$/gu, "");
+    if (parsed.protocol !== "https:" || !hostname || parsed.username || parsed.password) {
+      return false;
+    }
+    return !(
+      hostname === "localhost" ||
+      hostname.endsWith(".local") ||
+      hostname === "metadata.google.internal" ||
+      isPrivateIpLiteral(ipLiteral) ||
+      hostname === "169.254.169.254" ||
+      /^127\./u.test(hostname) ||
+      /^10\./u.test(hostname) ||
+      /^192\.168\./u.test(hostname) ||
+      /^172\.(?:1[6-9]|2\d|3[0-1])\./u.test(hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function normalizeTimeout(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.min(Math.floor(value), MAX_WEBHOOK_TIMEOUT_MS)
+    : 5_000;
+}
+
+function normalizeRetries(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.min(Math.floor(value), MAX_WEBHOOK_RETRIES)
+    : 2;
+}
+
+function isPrivateIpLiteral(hostname: string): boolean {
+  const version = isIP(hostname);
+  if (version === 4) {
+    const octets = hostname.split(".").map(Number);
+    return (
+      octets[0] === 10 ||
+      octets[0] === 127 ||
+      (octets[0] === 169 && octets[1] === 254) ||
+      (octets[0] === 172 && octets[1] !== undefined && octets[1] >= 16 && octets[1] <= 31) ||
+      (octets[0] === 192 && octets[1] === 168)
+    );
+  }
+  if (version !== 6) {
+    return false;
+  }
+  const normalized = hostname.toLowerCase();
+  if (
+    normalized === "::1" ||
+    normalized.startsWith("fc") ||
+    normalized.startsWith("fd") ||
+    normalized.startsWith("fe80:")
+  ) {
+    return true;
+  }
+  // Node normalizes IPv4-mapped literals to hex (e.g. ::ffff:7f00:1).
+  const mapped = normalized.match(/^::ffff:([0-9a-f]{4}):([0-9a-f]{1,4})$/u);
+  if (!mapped) {
+    return false;
+  }
+  const first = Number.parseInt(mapped[1]!, 16);
+  const second = Number.parseInt(mapped[2]!.padStart(4, "0"), 16);
+  const a = first >> 8;
+  const b = first & 0xff;
+  return (
+    a === 10 ||
+    a === 127 ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b !== undefined && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168)
+  );
 }
 
 export type AuditStreamPayload = {

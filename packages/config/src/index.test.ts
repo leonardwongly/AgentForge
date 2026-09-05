@@ -3,6 +3,8 @@ import { loadConfig } from "./index.js";
 
 const productionBaseEnv = {
   NODE_ENV: "production",
+  DATABASE_URL: "postgresql://agentforge:test@db.example.com:5432/agentforge",
+  REDIS_URL: "redis://redis.example.com:6379",
   GITHUB_WEBHOOK_SECRET: "production-secret-32-characters-long",
   GITHUB_APP_ID: "123456",
   GITHUB_APP_PRIVATE_KEY: [
@@ -25,11 +27,11 @@ const productionBaseEnv = {
 };
 
 describe("AgentForge runtime config", () => {
-  it("does not inject local database or Redis defaults in production", () => {
+  it("requires explicit database and Redis URLs in production", () => {
     const config = loadConfig(productionBaseEnv);
 
-    expect(config.databaseUrl).toBeUndefined();
-    expect(config.redisUrl).toBeUndefined();
+    expect(config.databaseUrl).toBe(productionBaseEnv.DATABASE_URL);
+    expect(config.redisUrl).toBe(productionBaseEnv.REDIS_URL);
   });
 
   it.each([
@@ -39,6 +41,8 @@ describe("AgentForge runtime config", () => {
     ["missing GitHub OAuth client id", { GITHUB_CLIENT_ID: "" }, "GITHUB_CLIENT_ID"],
     ["missing GitHub OAuth client secret", { GITHUB_CLIENT_SECRET: "" }, "GITHUB_CLIENT_SECRET"],
     ["missing session secret", { SESSION_SECRET: "" }, "SESSION_SECRET"],
+    ["missing database URL", { DATABASE_URL: "" }, "DATABASE_URL"],
+    ["missing Redis URL", { REDIS_URL: "" }, "REDIS_URL"],
     ["unsigned webhooks enabled", { ALLOW_UNSIGNED_GITHUB_WEBHOOKS: "true" }, "ALLOW_UNSIGNED"],
     ["source storage enabled", { SOURCE_CODE_STORAGE: "true" }, "SOURCE_CODE_STORAGE"],
     ["redaction disabled", { REDACT_SECRETS: "false" }, "REDACT_SECRETS"],
@@ -104,6 +108,18 @@ describe("AgentForge runtime config", () => {
     ]
   ])("fails closed in production when %s", (_name, override, message) => {
     expect(() => loadConfig({ ...productionBaseEnv, ...override })).toThrow(message);
+  });
+
+  it("requires secure webhook destinations in production", () => {
+    expect(() =>
+      loadConfig({ ...productionBaseEnv, AUDIT_STREAM_WEBHOOK_URL: "http://siem.example.com/hook" })
+    ).toThrow("AUDIT_STREAM_WEBHOOK_URL must use an https URL in production");
+    expect(() =>
+      loadConfig({
+        ...productionBaseEnv,
+        AUDIT_STREAM_WEBHOOK_URL: "https://169.254.169.254/latest"
+      })
+    ).toThrow("AUDIT_STREAM_WEBHOOK_URL must use an https URL in production");
   });
 
   it.each([

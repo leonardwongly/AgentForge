@@ -24,6 +24,8 @@ import {
 import {
   createPrismaClient,
   enterOrgContext,
+  runWithOrgContext,
+  runWithSystemContext,
   withUnmanagedOrgBinding,
   type PrismaClient
 } from "@agentforge/db";
@@ -617,6 +619,189 @@ const policyUpdateSchema = z
     contentYaml: policyYamlPayloadSchema
   })
   .strict();
+
+// Policy preview is an externally reachable evaluation boundary. Keeping this
+// schema separate from the internal PullRequestInput type prevents malformed
+// JSON (for example, a missing changedFiles array or a null file entry) from
+// reaching detectors that intentionally assume a normalized provider payload.
+// The limits also keep optional metadata from becoming an avoidable CPU/memory
+// amplifier when preview is used without a GitHub adapter.
+const changedFilePreviewSchema = z
+  .object({
+    filename: z.string().trim().min(1).max(1_000),
+    status: z.enum(["added", "modified", "removed", "renamed", "copied", "changed", "unchanged"]),
+    previousFilename: z
+      .string()
+      .trim()
+      .min(1)
+      .max(1_000)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    additions: z
+      .number()
+      .int()
+      .min(0)
+      .max(1_000_000_000)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    deletions: z
+      .number()
+      .int()
+      .min(0)
+      .max(1_000_000_000)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    changes: z
+      .number()
+      .int()
+      .min(0)
+      .max(1_000_000_000)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    patch: z
+      .string()
+      .max(200_000)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    previousContent: z
+      .string()
+      .max(200_000)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    currentContent: z
+      .string()
+      .max(200_000)
+      .nullish()
+      .transform((value) => value ?? undefined)
+  })
+  .strict();
+
+const pullRequestReviewPreviewSchema = z
+  .object({
+    reviewer: z.string().trim().min(1).max(128),
+    reviewerType: z
+      .enum(["user", "team"])
+      .nullish()
+      .transform((value) => value ?? undefined),
+    teamSlugs: z
+      .array(z.string().trim().min(1).max(128))
+      .max(100)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    teamVerification: z
+      .object({
+        status: z.enum(["verified", "unavailable", "failed"]),
+        reason: z.string().max(500),
+        checkedTeamSlugs: z.array(z.string().trim().min(1).max(128)).max(100)
+      })
+      .strict()
+      .nullish()
+      .transform((value) => value ?? undefined),
+    state: z.enum(["APPROVED", "CHANGES_REQUESTED", "COMMENTED"]),
+    submittedAt: z.string().trim().min(1).max(128)
+  })
+  .strict();
+
+const manualEvidencePreviewSchema = z
+  .object({
+    kind: evidenceKindSchema,
+    content: z.string().trim().min(1).max(4_000),
+    linkedArtifact: z
+      .string()
+      .trim()
+      .min(1)
+      .max(500)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    actor: z.string().trim().min(1).max(128),
+    approved: z.boolean().optional(),
+    approvedBy: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    approvedAt: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    providedAt: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .nullish()
+      .transform((value) => value ?? undefined)
+  })
+  .strict();
+
+const pullRequestPreviewSchema = z
+  .object({
+    repositoryFullName: z
+      .string()
+      .trim()
+      .min(3)
+      .max(240)
+      .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u),
+    pullRequestNumber: z.number().int().positive().max(1_000_000),
+    title: z.string().trim().min(1).max(256),
+    authorLogin: z.string().trim().min(1).max(128),
+    baseBranch: z.string().trim().min(1).max(256),
+    headBranch: z.string().trim().min(1).max(256),
+    headSha: z.string().trim().min(1).max(256),
+    body: z
+      .string()
+      .max(200_000)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    labels: z
+      .array(z.string().trim().min(1).max(128))
+      .max(100)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    commits: z
+      .array(
+        z
+          .object({
+            sha: z.string().trim().min(1).max(256),
+            message: z.string().max(100_000),
+            authorLogin: z
+              .string()
+              .trim()
+              .min(1)
+              .max(128)
+              .nullish()
+              .transform((value) => value ?? undefined)
+          })
+          .strict()
+      )
+      .max(5_000)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    reviews: z
+      .array(pullRequestReviewPreviewSchema)
+      .max(5_000)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    manualEvidence: z
+      .array(manualEvidencePreviewSchema)
+      .max(100)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    markedAgentAssistedBy: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .nullish()
+      .transform((value) => value ?? undefined),
+    changedFiles: z.array(changedFilePreviewSchema).max(10_000)
+  })
+  .strict();
 const policyRevertSchema = z
   .object({
     targetVersionId: z.string().trim().min(1).max(200)
@@ -625,7 +810,7 @@ const policyRevertSchema = z
 const policyPreviewSchema = z
   .object({
     contentYaml: policyYamlPayloadSchema.optional(),
-    pr: z.custom<PullRequestInput>((value) => Boolean(value && typeof value === "object")),
+    pr: pullRequestPreviewSchema,
     persist: z.boolean().optional()
   })
   .strict();
@@ -712,6 +897,18 @@ export function createApp(
           connection: queueConnection
         })
       : undefined;
+  // BullMQ starts its shared Redis connection eagerly. When the endpoint is
+  // closed while that initialization is still in flight (for example, a
+  // readiness probe against an unreachable Redis instance), Queue.close()
+  // removes BullMQ's listeners before the shared connection's readiness
+  // promise settles. The late rejection then becomes an unhandled rejection in
+  // BullMQ/ioredis. Observe the initialization and let it settle before
+  // tearing down the queue so close remains quiet and bounded by Redis's
+  // configured connection timeout.
+  const evaluationQueueInitialization =
+    evaluationQueue && typeof evaluationQueue.waitUntilReady === "function"
+      ? evaluationQueue.waitUntilReady().catch(() => undefined)
+      : Promise.resolve();
   const persistence = prisma
     ? createPrismaPersistencePort(state, prisma)
     : createInMemoryPersistencePort(state);
@@ -877,9 +1074,10 @@ export function createApp(
 
   // Bind the authenticated actor's organization to the async context so the
   // Prisma RLS extension scopes tenant tables to it (AF-SEC M4 defense-in-depth).
-  // Best-effort and fail-open: unauthenticated routes (webhooks, health) and any
-  // resolution error simply leave the context unset, which the RLS policies treat
-  // permissively — route-level requireOrganizationAccess remains the primary check.
+  // Unauthenticated routes (webhooks, health) and resolution errors leave the
+  // context unset. RLS now fails closed for organization-owned rows when unset;
+  // nullable pre-attribution rows remain available to webhook ingestion. Route
+  // authorization remains the primary check, with RLS as an independent backstop.
   app.addHook("onRequest", async (request) => {
     try {
       const actor = await resolveApiActor(request);
@@ -893,6 +1091,7 @@ export function createApp(
   });
 
   app.addHook("onClose", async () => {
+    await evaluationQueueInitialization;
     if (ownsEvaluationQueue) {
       await evaluationQueue?.close().catch(() => undefined);
     }
@@ -928,7 +1127,8 @@ export function createApp(
     compliancePackageRequestSchema,
     config,
     dashboardSummary,
-    defaultDataHandlingSettings: () => defaultDataHandlingSettings(persistence, config),
+    defaultDataHandlingSettings: (organizationId?: string) =>
+      defaultDataHandlingSettings(persistence, config, organizationId),
     enqueueMergeGuardEvaluation,
     evaluationQueue,
     evidenceRejectionSchema,
@@ -937,8 +1137,8 @@ export function createApp(
     filterAndSortRecords,
     findReplayableDelivery: (target: z.infer<typeof queueReplaySchema>, organizationId?: string) =>
       findReplayableDelivery(persistence, target, organizationId),
-    findRepositoryIdByFullName: (fullName: string) =>
-      findRepositoryIdByFullName(persistence, fullName),
+    findRepositoryIdByFullName: (fullName: string, organizationId?: string) =>
+      findRepositoryIdByFullName(persistence, fullName, organizationId),
     fetchGithubInstallationAccount,
     getExportJob: (id: string) => getExportJob(persistence, id),
     getRecord,
@@ -1129,9 +1329,10 @@ async function listConfiguredOwnerMappings(
 
 async function defaultDataHandlingSettings(
   persistence: PersistencePort,
-  config: ReturnType<typeof loadConfig>
+  config: ReturnType<typeof loadConfig>,
+  organizationId?: string
 ): Promise<RepositoryDataHandlingState> {
-  return persistence.repositories.defaultDataHandling(dataHandlingDefaults(config));
+  return persistence.repositories.defaultDataHandling(dataHandlingDefaults(config), organizationId);
 }
 
 function dataHandlingDefaults(config: ReturnType<typeof loadConfig>): RepositoryDataHandlingState {
@@ -1433,9 +1634,12 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         });
         return repository?.organizationId;
       },
-      async findIdByFullName(fullName) {
+      async findIdByFullName(fullName, organizationId) {
         const repository = await prisma.repository.findFirst({
-          where: { fullName },
+          where: {
+            fullName,
+            ...(organizationId ? { organizationId } : {})
+          },
           select: { id: true }
         });
         return repository?.id;
@@ -1447,8 +1651,9 @@ function createPrismaPersistencePort(state: AppState, prisma: PrismaClient): Per
         });
         return repository?.mode || undefined;
       },
-      async defaultDataHandling(defaults) {
+      async defaultDataHandling(defaults, organizationId) {
         const retention = await prisma.retentionSetting.findFirst({
+          ...(organizationId ? { where: { organizationId } } : {}),
           orderBy: { createdAt: "desc" }
         });
         if (!retention) {
@@ -3063,41 +3268,51 @@ async function processGithubInstallationWebhook(
   envelope: GithubWebhookEnvelope,
   config?: ReturnType<typeof loadConfig>
 ): Promise<void> {
-  const installation = envelope.installation;
-  if (!installation) {
-    return;
-  }
-  const archiveAction =
-    envelope.event === "installation" &&
-    (envelope.action === "deleted" || envelope.action === "suspend");
-  const row = await persistence.githubInstallations.recordWebhook(envelope);
-  if (!row) {
-    return;
-  }
-  if (
-    row.organizationId &&
-    !archiveAction &&
-    row.status === "approved" &&
-    config &&
-    (await syncRepositoriesFromCurrentGithubInstallation(state, persistence, config, {
-      organizationId: row.organizationId,
-      githubInstallationId: row.githubInstallationId,
-      accountLogin: row.accountLogin,
-      accountType: row.accountType
-    }))
-  ) {
-    return;
-  }
-  if (row.organizationId && !archiveAction) {
-    await syncRepositoriesFromInstallation(state, persistence, row.organizationId, installation);
-  }
-  if (row.organizationId && installation.repositoriesRemoved.length > 0) {
-    await archiveRemovedRepositories(
-      persistence,
-      row.organizationId,
-      installation.repositoriesRemoved
-    );
-  }
+  // Webhook deliveries arrive without an authenticated dashboard actor. The
+  // installation lookup/transition therefore runs in an explicit, trusted
+  // system RLS context; subsequent repository synchronization binds the
+  // resolved organization separately.
+  return runWithSystemContext(async () => {
+    const installation = envelope.installation;
+    if (!installation) {
+      return;
+    }
+    const archiveAction =
+      envelope.event === "installation" &&
+      (envelope.action === "deleted" || envelope.action === "suspend");
+    const row = await persistence.githubInstallations.recordWebhook(envelope);
+    if (!row) {
+      return;
+    }
+    if (row.organizationId) {
+      const organizationId = row.organizationId;
+      await runWithOrgContext(organizationId, async () => {
+        if (
+          !archiveAction &&
+          row.status === "approved" &&
+          config &&
+          (await syncRepositoriesFromCurrentGithubInstallation(state, persistence, config, {
+            organizationId,
+            githubInstallationId: row.githubInstallationId,
+            accountLogin: row.accountLogin,
+            accountType: row.accountType
+          }))
+        ) {
+          return;
+        }
+        if (!archiveAction) {
+          await syncRepositoriesFromInstallation(state, persistence, organizationId, installation);
+        }
+        if (installation.repositoriesRemoved.length > 0) {
+          await archiveRemovedRepositories(
+            persistence,
+            organizationId,
+            installation.repositoriesRemoved
+          );
+        }
+      });
+    }
+  });
 }
 
 async function upsertPendingGithubInstallation(
@@ -4007,9 +4222,10 @@ function stableBigInt(value: string): bigint {
 
 async function findRepositoryIdByFullName(
   persistence: PersistencePort,
-  fullName: string
+  fullName: string,
+  organizationId?: string
 ): Promise<string | undefined> {
-  return persistence.repositories.findIdByFullName(fullName);
+  return persistence.repositories.findIdByFullName(fullName, organizationId);
 }
 
 async function getRepositoryModeOverride(

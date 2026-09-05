@@ -45,7 +45,11 @@ export function routeReviewers(
   pr: Pick<PullRequestInput, "reviews">,
   options: ReviewerRoutingOptions = {}
 ): ReviewerRequirement[] {
-  const merged = { ...defaultOptions, ...options };
+  const merged = {
+    maxRequiredReviewersWithoutCritical: normalizeReviewerCap(
+      options.maxRequiredReviewersWithoutCritical
+    )
+  };
   const requirements = new Map<string, ReviewerRequirement>();
 
   for (const hit of policyHits) {
@@ -454,12 +458,30 @@ function latestApproval(
   reviewer: string,
   reviewerType: ReviewerRequirement["reviewerType"]
 ): PullRequestReview | undefined {
-  return [...reviews]
-    .filter(
-      (review) =>
-        review.state === "APPROVED" && reviewMatchesReviewer(review, reviewer, reviewerType)
-    )
-    .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))[0];
+  // A newer CHANGES_REQUESTED or COMMENTED review revokes an older approval.
+  // Filtering to APPROVED before selecting the latest review lets stale
+  // approvals survive a subsequent rejection and can incorrectly clear a
+  // required reviewer gate.
+  const latest = reviews
+    .map((review, index) => ({ review, index }))
+    .filter(({ review }) => reviewMatchesReviewer(review, reviewer, reviewerType))
+    .sort((a, b) => {
+      const byTimestamp = b.review.submittedAt.localeCompare(a.review.submittedAt);
+      // GitHub timestamps should be unique, but preserving input order for a
+      // tie gives deterministic "last event wins" behavior for fixtures and
+      // provider adapters that coalesce events at the same timestamp.
+      return byTimestamp || b.index - a.index;
+    })[0]?.review;
+  return latest?.state === "APPROVED" ? latest : undefined;
+}
+
+function normalizeReviewerCap(value: number | undefined): number {
+  if (value === undefined || value === Number.POSITIVE_INFINITY) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Number.isSafeInteger(value) && value >= 0
+    ? value
+    : defaultOptions.maxRequiredReviewersWithoutCritical;
 }
 
 function reviewMatchesReviewer(
