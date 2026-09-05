@@ -6,6 +6,7 @@ import {
   applyOps,
   captureState,
   emptyState,
+  FileLineJournal,
   mintNodeIdent,
   stateAddress,
   type Cid,
@@ -148,8 +149,21 @@ describe("AgentClient", () => {
     client.approveProposal(proposal.id, "database-owner");
     client.provideEvidence(proposal.id, "rollback_plan");
     const after = await client.admitProposal(proposal.id);
-    expect(after.ok).toBe(true);
-    expect(client.getProposal(proposal.id)?.state).toBe("admitted");
+    expect(after.ok).toBe(false); // an approval cannot admit an empty proposal
+    expect(after.reason).toMatch(/at least one line update/);
+    expect(client.getProposal(proposal.id)?.state).toBe("proposed");
+  });
+
+  it("does not let the submitting agent self-approve a review gate", () => {
+    const client = new AgentClient({ root: ".", agentDid: AGENT, grantId: GRANT, writeScope: SCOPE });
+    const proposal = client.submitProposal({
+      title: "self review",
+      updates: [{ line: "main", expectedHead: "head" as never, expectedSequence: 0, newHead: "next" as never }],
+      requiredReviewers: ["maintainer"]
+    });
+    client.approveProposal(proposal.id, AGENT);
+    expect(client.getProposal(proposal.id)?.approvals).toEqual([]);
+
   });
 
   it("runs the full delegated-change workflow end to end", async () => {
@@ -171,6 +185,14 @@ describe("AgentClient", () => {
 
       const next = captureState(dir);
       const nextHead = stateAddress(next);
+      const lineJournal = new FileLineJournal(join(root, ".loom"));
+      await lineJournal.advance({
+        name: "main",
+        scope: "shared",
+        expectedHead: stateAddress(emptyState()) as never,
+        expectedSequence: 0,
+        newHead: stateAddress(base) as never
+      });
       const proposal = client.submitProposal({
         title: "bump v",
         updates: [

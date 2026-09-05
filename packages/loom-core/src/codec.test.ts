@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   MULTICODEC,
   MULTIHASH,
+  MAX_DAG_CBOR_BYTES,
   base32Decode,
   base32Encode,
   cidV1,
@@ -29,6 +30,11 @@ describe("base32 (RFC 4648 lowercase, no padding)", () => {
 
   it("rejects invalid base32 characters", () => {
     expect(() => base32Decode("abc!")).toThrow(/invalid base32/);
+  });
+
+  it("rejects non-zero unused padding bits", () => {
+    expect(() => base32Decode("ab")).toThrow(/padding bits/);
+    expect(base32Decode("aa")).toEqual(new Uint8Array([0]));
   });
 });
 
@@ -128,6 +134,23 @@ describe("DAG-CBOR canonical encoding", () => {
     expect(() => encodeDagCbor(1.5)).toThrow(/non-integer/);
     expect(() => encodeDagCbor(Number.NaN)).toThrow(/non-integer/);
     expect(() => encodeDagCbor(Number.POSITIVE_INFINITY)).toThrow(/non-integer/);
+    expect(() => encodeDagCbor(Number.MAX_SAFE_INTEGER + 1)).toThrow(/non-integer/);
+  });
+
+  it("bounds nesting and container cardinality", () => {
+    let nested: unknown = null;
+    for (let depth = 0; depth < 66; depth += 1) {
+      nested = [nested];
+    }
+    expect(() => encodeDagCbor(nested)).toThrow(/nesting exceeds depth/);
+    expect(() => encodeDagCbor(Array.from({ length: 100_001 }, () => null))).toThrow(
+      /array exceeds entry/
+    );
+  });
+
+  it("bounds encoded string and byte-string payloads", () => {
+    expect(() => encodeDagCbor("x".repeat(MAX_DAG_CBOR_BYTES))).toThrow(/size limit/);
+    expect(() => encodeDagCbor(new Uint8Array(MAX_DAG_CBOR_BYTES))).toThrow(/size limit/);
   });
 
   it("rejects undefined values", () => {
@@ -161,6 +184,12 @@ describe("DAG-CBOR strict decoding", () => {
     expect(() => decodeDagCbor(bytes)).toThrow(/map keys must be strings/);
   });
 
+  it("rejects prototype-polluting map keys", () => {
+    const key = new TextEncoder().encode("__proto__");
+    const bytes = Uint8Array.from([0xa1, 0x60 + key.length, ...key, 0x01]);
+    expect(() => decodeDagCbor(bytes)).toThrow(/unsafe DAG-CBOR map key/);
+  });
+
   it("rejects unsupported CBOR tags and floats", () => {
     // 0xc1 = tag(1)
     expect(() => decodeDagCbor(Uint8Array.from([0xc1, 0x00]))).toThrow(/unsupported CBOR tag/);
@@ -173,6 +202,14 @@ describe("DAG-CBOR strict decoding", () => {
     expect(() => decodeDagCbor(Uint8Array.from([0x81]))).toThrow(/unexpected end/);
     // byte string of length 256 with no content bytes.
     expect(() => decodeDagCbor(Uint8Array.from([0x59, 0x01, 0x00]))).toThrow(/unexpected end/);
+  });
+
+  it("rejects oversized declared containers and invalid UTF-8", () => {
+    // array(100001) with no elements: the entry limit must fire before iteration.
+    expect(() => decodeDagCbor(Uint8Array.from([0x9a, 0x00, 0x01, 0x86, 0xa1]))).toThrow(
+      /array exceeds entry/
+    );
+    expect(() => decodeDagCbor(Uint8Array.from([0x63, 0xed, 0xa0, 0x80]))).toThrow();
   });
 
   it("rejects map keys not in canonical order", () => {

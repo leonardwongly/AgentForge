@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -59,6 +59,22 @@ describe("FileLock", () => {
     });
   });
 
+  it("does not let a stolen holder release the new owner's lock", async () => {
+    await withRoot(async (root) => {
+      const first = new FileLock(root, "main", 100, 500);
+      const second = new FileLock(root, "main", 100, 500);
+      const releaseFirst = await first.acquire();
+      const lockPath = join(root, "locks", "main.lock");
+      const old = new Date(Date.now() - 10_000);
+      utimesSync(lockPath, old, old);
+      const releaseSecond = await second.acquire();
+      releaseFirst();
+      expect(existsSync(lockPath)).toBe(true);
+      releaseSecond();
+      expect(existsSync(lockPath)).toBe(false);
+    });
+  });
+
   it("times out rather than waiting forever on a live lock", async () => {
     await withRoot(async (root) => {
       const holder = new FileLock(root, "main", 30_000, 10_000);
@@ -66,6 +82,27 @@ describe("FileLock", () => {
       const release = await holder.acquire();
       await expect(contender.acquire()).rejects.toThrow(/timed out/);
       release();
+    });
+  });
+
+  it("allows only one contender to win a simultaneous stale-lock steal", async () => {
+    await withRoot(async (root) => {
+      const lockPath = join(root, "locks", "main.lock");
+      mkdirSync(join(root, "locks"), { recursive: true });
+      writeFileSync(lockPath, "{}", "utf8");
+      const old = new Date(Date.now() - 10_000);
+      utimesSync(lockPath, old, old);
+
+      const contenders = [new FileLock(root, "main", 100, 500), new FileLock(root, "main", 100, 500)];
+      const releases = await Promise.all(contenders.map((lock) => lock.acquire()));
+
+      expect(existsSync(lockPath)).toBe(true);
+      expect(existsSync(`${lockPath}.retired.`)).toBe(false);
+      const retiredFiles = readdirSync(join(root, "locks")).filter((file) => file.includes(".retired."));
+      expect(retiredFiles).toHaveLength(0);
+
+      releases.forEach((release) => release());
+      expect(existsSync(lockPath)).toBe(false);
     });
   });
 });

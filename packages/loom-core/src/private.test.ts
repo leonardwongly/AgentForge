@@ -15,12 +15,12 @@ describe("private-object encryption-at-rest", () => {
     expect(decryptPrivate(envelope, KEY)).toEqual(plaintext);
   });
 
-  it("is deterministic: identical plaintext + key yields an identical envelope (dedup)", () => {
+  it("uses a fresh IV so identical plaintext does not produce an identical envelope", () => {
     const plaintext = bytes("same content");
     const a = encryptPrivate(plaintext, KEY);
     const b = encryptPrivate(plaintext, KEY);
-    expect(a.iv).toEqual(b.iv);
-    expect(a.ciphertext).toEqual(b.ciphertext);
+    expect(a.iv).not.toEqual(b.iv);
+    expect(a.ciphertext).not.toEqual(b.ciphertext);
   });
 
   it("produces different ciphertext under a different key", () => {
@@ -47,7 +47,10 @@ describe("private-object encryption-at-rest", () => {
     const envelope = encryptPrivate(plaintext, KEY);
     const tampered = {
       ...envelope,
-      ciphertext: Uint8Array.from([...envelope.ciphertext.slice(0, -1), envelope.ciphertext.at(-1)! ^ 1])
+      ciphertext: Uint8Array.from([
+        ...envelope.ciphertext.slice(0, -1),
+        envelope.ciphertext.at(-1)! ^ 1
+      ])
     };
     expect(() => decryptPrivate(tampered, KEY)).toThrow();
   });
@@ -64,8 +67,6 @@ describe("private-object encryption-at-rest", () => {
     expect(() => encryptPrivate(bytes("x"), shortKey)).toThrow(/32 bytes/);
     const envelope = encryptPrivate(bytes("x"), KEY);
     expect(() => decryptPrivate({ ...envelope, version: 99 as never }, KEY)).toThrow(/version/);
-    expect(() => decryptPrivate({ ...envelope, iv: bytes("too-short") }, KEY)).toThrow(
-      /malformed/
-    );
+    expect(() => decryptPrivate({ ...envelope, iv: bytes("too-short") }, KEY)).toThrow(/malformed/);
   });
 });

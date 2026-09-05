@@ -7,7 +7,12 @@ describe("effectsForPath", () => {
     expect(effectsForPath("src/x.test.ts", "modified")).toEqual(["skips_test"]);
     expect(effectsForPath("src/x.test.ts", "removed")).toEqual(["deletes_test"]);
     expect(effectsForPath(".github/workflows/ci.yml", "modified")).toEqual(["changes_ci"]);
-    expect(effectsForPath("src/billing/checkout.ts", "modified")).toEqual(["touches_sensitive_path"]);
+    expect(effectsForPath("src/billing/checkout.ts", "modified")).toEqual([
+      "touches_sensitive_path"
+    ]);
+    expect(effectsForPath(".env", "modified")).toEqual(["touches_sensitive_path"]);
+    expect(effectsForPath("config/secrets.json", "modified")).toEqual(["touches_sensitive_path"]);
+    expect(effectsForPath("src/billing-old.ts", "modified")).toEqual(["edits_source"]);
     expect(effectsForPath("src/app.ts", "modified")).toEqual(["edits_source"]);
     expect(effectsForPath("src/app.ts", "removed")).toEqual(["deletes_source"]);
   });

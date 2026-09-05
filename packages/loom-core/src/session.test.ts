@@ -50,4 +50,22 @@ describe("delegated agent sessions", () => {
     expect(store.canWrite(a, "src/a/x.ts")).toBe(true);
     expect(store.canWrite(b, "src/a/x.ts")).toBe(false);
   });
+
+  it("does not accept a caller-forged session object", () => {
+    const store = new SessionStore();
+    const session = store.create({ agentDid: AGENT, grantId: "g1", writeScope: ["src/"] });
+    const forged = { ...session, writeScope: ["secrets/"] };
+    expect(store.canWrite(forged, "secrets/key")).toBe(false);
+    expect(store.recordWrite(forged, "secrets/key")).toBe(false);
+    expect(session.writes).toBe(0);
+  });
+
+  it("matches scope boundaries instead of textual prefixes", () => {
+    const store = new SessionStore();
+    const session = store.create({ agentDid: AGENT, grantId: "g1", writeScope: ["src"] });
+    expect(store.canWrite(session, "src/app.ts")).toBe(true);
+    expect(store.canWrite(session, "src")).toBe(true);
+    expect(store.canWrite(session, "src-private/app.ts")).toBe(false);
+    expect(store.canWrite(session, "src/../secrets/key")).toBe(false);
+  });
 });

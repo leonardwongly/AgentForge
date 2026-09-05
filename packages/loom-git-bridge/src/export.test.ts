@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -85,6 +86,52 @@ describe("stateToGitWorkingCopy (pure export)", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("reports symlink targets as losses instead of following them", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "loom-export-symlink-"));
+    const outside = join(dir, "..", "loom-export-outside.txt");
+    try {
+      await writeFile(outside, "keep", "utf8");
+      await symlink(outside, join(dir, "output.txt"));
+      const state = requireState([
+        {
+          op: "put_cell",
+          at: "output.txt",
+          ident: mintNodeIdent(T0, 0, "output.txt"),
+          facet: "text",
+          text: "overwrite"
+        }
+      ]);
+      const report = stateToGitWorkingCopy(state, dir);
+      expect(report.written).toBe(0);
+      expect(report.losses[0]?.path).toBe("output.txt");
+      expect(await readFile(outside, "utf8")).toBe("keep");
+    } finally {
+      await rm(outside, { force: true });
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("never materializes Git metadata or hooks", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "loom-export-git-meta-"));
+    try {
+      const state = requireState([
+        {
+          op: "put_cell",
+          at: ".git/hooks/pre-commit",
+          ident: mintNodeIdent(T0, 0, "pre-commit"),
+          facet: "text",
+          text: "#!/bin/sh\ntouch escaped-hook\n"
+        }
+      ]);
+      const report = stateToGitWorkingCopy(state, dir);
+      expect(report.written).toBe(0);
+      expect(report.losses[0]?.reason).toMatch(/Git metadata/);
+      expect(existsSync(join(dir, ".git"))).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("exportStateToGit (mirror commit)", () => {
@@ -115,6 +162,23 @@ describe("exportStateToGit (mirror commit)", () => {
       expect(result.written).toBe(1);
       expect(result.losses).toHaveLength(1);
       expect(await readFile(join(repoDir, "ok.txt"), "utf8")).toBe("fine");
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it("disables repository hooks during mirror commits", async () => {
+    const repoDir = await initGitRepo();
+    try {
+      const hook = join(repoDir, ".git", "hooks", "pre-commit");
+      const marker = join(repoDir, "hook-ran.txt");
+      await writeFile(hook, `#!/bin/sh\ntouch '${marker}'\n`, "utf8");
+      await chmod(hook, 0o755);
+      const state = requireState([
+        { op: "put_cell", at: "README.md", ident: mintNodeIdent(T0, 0, "README.md"), facet: "text", text: "# exported\n" }
+      ]);
+      exportStateToGit(state, repoDir, { message: "hook isolation" });
+      expect(existsSync(marker)).toBe(false);
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }

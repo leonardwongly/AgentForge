@@ -7,7 +7,7 @@ import type {
   VerifiedFact
 } from "@agentforge/core";
 import { detectorConfigFromPolicy, extractVerifiedFacts } from "@agentforge/detectors";
-import { stateAddress, type Effect, type State } from "@agentforge/loom-core";
+import { effectsFromChangeJournal, stateAddress, type Effect, type State } from "@agentforge/loom-core";
 import { evaluateMergeGuard, type PolicyConfig } from "@agentforge/policy";
 import { fabricDiffView } from "./diff-view.js";
 import { factsFromEffects } from "./facts.js";
@@ -72,10 +72,25 @@ export function evaluateTransformSet(input: TransformEvaluationInput): Transform
   };
 
   const config = detectorConfigFromPolicy(input.policy);
-  const facts =
-    input.effects !== undefined
-      ? factsFromEffects({ effects: input.effects, paths: diff.map((file) => file.filename) })
-      : extractVerifiedFacts(pr, config);
+  // A caller-supplied declaration is advisory, not an authority boundary. An
+  // attacker must not be able to pass `effects: []` and suppress a sensitive
+  // path or CI fact that is objectively visible in the Transform. Derive the
+  // conservative structural effects from the diff and union any declared
+  // semantic effects on top; declarations can add meaning, never remove facts.
+  const inferredEffects = effectsFromChangeJournal({
+    added: diff.filter((file) => file.status === "added").map((file) => file.filename),
+    modified: diff
+      .filter((file) => file.status === "modified" || file.status === "renamed" || file.status === "changed")
+      .map((file) => file.filename),
+    removed: diff.filter((file) => file.status === "removed").map((file) => file.filename)
+  });
+  const effects = [...new Set<Effect>([...inferredEffects, ...(input.effects ?? [])])];
+  const detectedFacts = extractVerifiedFacts(pr, config);
+  const declaredFacts = factsFromEffects({ effects, paths: diff.map((file) => file.filename) });
+  // Keep policy-derived detector facts even when declarations are present so
+  // path-to-rule mapping (for example `sensitive_paths.billing`) remains
+  // authoritative. Deduplicate by fact id while preserving both evidence lanes.
+  const facts = [...new Map([...detectedFacts, ...declaredFacts].map((fact) => [fact.id, fact])).values()];
   const result = evaluateMergeGuard(pr, facts, input.policy);
 
   return { diff, facts, result, synthesizedInput: pr };

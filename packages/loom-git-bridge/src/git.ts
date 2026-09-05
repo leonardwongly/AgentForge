@@ -13,13 +13,36 @@
 import { execFileSync } from "node:child_process";
 import { TextDecoder } from "node:util";
 import { sha256Hex, type Cell, type NodeIdent, type State } from "@agentforge/loom-core";
-import { facetFromAttributes, filterForPath, parseGitAttributes, type GitAttributes } from "./gitattributes.js";
+import {
+  facetFromAttributes,
+  filterForPath,
+  parseGitAttributes,
+  type GitAttributes
+} from "./gitattributes.js";
 import type { GitReader, GitTreeEntry, TransformStates } from "./types.js";
 
 /** Upper bound for captured git stdout (bytes); large enough for big blobs/trees. */
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
 const FULL_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const LS_TREE_METADATA = /^([0-7]{6}) (blob|tree|commit) ([0-9a-f]{40}|[0-9a-f]{64})$/;
+
+/**
+ * Git revision arguments are passed directly to the CLI. Reject option-like
+ * and control-containing values before they can be interpreted as flags or
+ * alter the command grammar. Revision expressions such as `HEAD^` remain
+ * supported; callers needing arbitrary text must resolve it to an object ID.
+ */
+function assertSafeGitRef(ref: string): string {
+  if (
+    ref.length === 0 ||
+    ref.startsWith("-") ||
+    /[\u0000-\u001f\u007f\s:]/u.test(ref) ||
+    !/^[A-Za-z0-9._/@^~+-]+$/u.test(ref)
+  ) {
+    throw new Error("loom-git-bridge: unsafe Git ref");
+  }
+  return ref;
+}
 
 function decodeUtf8(bytes: Uint8Array, subject: string): string {
   try {
@@ -109,7 +132,8 @@ export async function stateFromGitRef(reader: GitReader, ref: string): Promise<S
       };
       continue;
     }
-    const forcedFacet = attributes === undefined ? undefined : facetFromAttributes(attributes, entry.path);
+    const forcedFacet =
+      attributes === undefined ? undefined : facetFromAttributes(attributes, entry.path);
     // blob
     if (entry.objectId !== undefined && reader.readBlobBytes !== undefined) {
       const bytes = await reader.readBlobBytes(entry.objectId);
@@ -120,8 +144,16 @@ export async function stateFromGitRef(reader: GitReader, ref: string): Promise<S
           ident: nodeIdentForPath(entry.path),
           text: Buffer.from(bytes).toString("base64")
         };
+      } else if (forcedFacet === "text" && text === undefined) {
+        throw new Error(
+          `loom-git-bridge: .gitattributes forces text but blob is not valid UTF-8 (${entry.path})`
+        );
       } else {
-        cells[entry.path] = { facet: "text", ident: nodeIdentForPath(entry.path), text: text ?? "" };
+        cells[entry.path] = {
+          facet: "text",
+          ident: nodeIdentForPath(entry.path),
+          text: text ?? ""
+        };
       }
       continue;
     }
@@ -166,7 +198,10 @@ export async function reportUnsupportedFilters(
 }
 
 /** Read and parse `.gitattributes` from a ref, or undefined if absent. */
-async function readGitAttributes(reader: GitReader, ref: string): Promise<GitAttributes | undefined> {
+async function readGitAttributes(
+  reader: GitReader,
+  ref: string
+): Promise<GitAttributes | undefined> {
   try {
     const content =
       reader.readBlob !== undefined
@@ -219,7 +254,8 @@ export async function* streamStateFromGitRef(
       };
       continue;
     }
-    const forcedFacet = attributes === undefined ? undefined : facetFromAttributes(attributes, entry.path);
+    const forcedFacet =
+      attributes === undefined ? undefined : facetFromAttributes(attributes, entry.path);
     if (entry.objectId !== undefined && reader.readBlobBytes !== undefined) {
       const bytes = await reader.readBlobBytes(entry.objectId);
       const text = tryUtf8(bytes);
@@ -232,8 +268,15 @@ export async function* streamStateFromGitRef(
             text: Buffer.from(bytes).toString("base64")
           }
         };
+      } else if (forcedFacet === "text" && text === undefined) {
+        throw new Error(
+          `loom-git-bridge: .gitattributes forces text but blob is not valid UTF-8 (${entry.path})`
+        );
       } else {
-        yield { path: entry.path, cell: { facet: "text", ident: nodeIdentForPath(entry.path), text: text ?? "" } };
+        yield {
+          path: entry.path,
+          cell: { facet: "text", ident: nodeIdentForPath(entry.path), text: text ?? "" }
+        };
       }
       continue;
     }
@@ -261,7 +304,9 @@ export async function transformSetFromGit(
   const [base, result, renames] = await Promise.all([
     stateFromGitRef(reader, baseRef),
     stateFromGitRef(reader, headRef),
-    reader.detectRenames !== undefined ? reader.detectRenames(baseRef, headRef) : Promise.resolve([])
+    reader.detectRenames !== undefined
+      ? reader.detectRenames(baseRef, headRef)
+      : Promise.resolve([])
   ]);
 
   // Preserve identity across renames: a renamed cell keeps its base NodeIdent,
@@ -311,9 +356,14 @@ export function execGitReader(repoDir: string): GitReader {
     return Promise.resolve(runGit(["cat-file", "blob", objectId]));
   }
 
-  function detectRenames(baseRef: string, headRef: string): Promise<ReadonlyArray<{ from: string; to: string }>> {
+  function detectRenames(
+    baseRef: string,
+    headRef: string
+  ): Promise<ReadonlyArray<{ from: string; to: string }>> {
+    const safeBaseRef = assertSafeGitRef(baseRef);
+    const safeHeadRef = assertSafeGitRef(headRef);
     // `--name-status -z` emits NUL-delimited records; a rename is `R<score>\0<old>\0<new>\0`.
-    const out = runGit(["diff", "--find-renames", "--name-status", "-z", baseRef, headRef]);
+    const out = runGit(["diff", "--find-renames", "--name-status", "-z", safeBaseRef, safeHeadRef]);
     const renames: Array<{ from: string; to: string }> = [];
     let offset = 0;
     while (offset < out.length) {
@@ -351,14 +401,16 @@ export function execGitReader(repoDir: string): GitReader {
 
   return {
     lsTree(ref: string): Promise<ReadonlyArray<GitTreeEntry>> {
-      return Promise.resolve(parseLsTree(runGit(["ls-tree", "-r", "-z", "--full-tree", ref])));
+      const safeRef = assertSafeGitRef(ref);
+      return Promise.resolve(parseLsTree(runGit(["ls-tree", "-r", "-z", "--full-tree", safeRef])));
     },
     readBlob,
     readBlobBytes,
     detectRenames,
     readFile(ref: string, path: string): Promise<string> {
-      const subject = `blob ${ref}:${path}`;
-      return Promise.resolve(decodeUtf8(runGit(["show", `${ref}:${path}`]), subject));
+      const safeRef = assertSafeGitRef(ref);
+      const subject = `blob ${safeRef}:${path}`;
+      return Promise.resolve(decodeUtf8(runGit(["show", `${safeRef}:${path}`]), subject));
     }
   };
 }

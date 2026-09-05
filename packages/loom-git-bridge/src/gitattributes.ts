@@ -1,4 +1,3 @@
-
 /**
  * @agentforge/loom-git-bridge — `.gitattributes` text/binary/filter support
  * (Phase 1 Git fidelity, item #5).
@@ -15,15 +14,27 @@
 export interface GitAttributes {
   readonly textPaths: string[];
   readonly binaryPaths: string[];
+  /** Ordered text declarations; the last matching declaration wins. */
+  readonly facetRules?: ReadonlyArray<{
+    readonly pattern: string;
+    readonly facet: "text" | "bytes";
+  }>;
   /** Patterns that declare a `filter=<name>` attribute (pattern -> filter). */
   readonly filterPaths: ReadonlyArray<{ readonly pattern: string; readonly filter: string }>;
+  /** Ordered filter declarations, including `-filter` unsets. */
+  readonly filterRules?: ReadonlyArray<{
+    readonly pattern: string;
+    readonly filter?: string | undefined;
+  }>;
 }
 
 /** Parse `.gitattributes` content into text, binary, and filter patterns. */
 export function parseGitAttributes(content: string): GitAttributes {
   const textPaths: string[] = [];
   const binaryPaths: string[] = [];
+  const facetRules: Array<{ pattern: string; facet: "text" | "bytes" }> = [];
   const filterPaths: Array<{ pattern: string; filter: string }> = [];
+  const filterRules: Array<{ pattern: string; filter?: string | undefined }> = [];
   for (const rawLine of content.split("\n")) {
     const line = rawLine.trim();
     if (line === "" || line.startsWith("#")) {
@@ -38,24 +49,35 @@ export function parseGitAttributes(content: string): GitAttributes {
     const attributes = parts.slice(1);
     if (attributes.includes("text")) {
       textPaths.push(pattern);
+      facetRules.push({ pattern, facet: "text" });
     } else if (attributes.includes("-text")) {
       binaryPaths.push(pattern);
+      facetRules.push({ pattern, facet: "bytes" });
     }
     for (const attr of attributes) {
       if (attr.startsWith("filter=")) {
-        filterPaths.push({ pattern, filter: attr.slice("filter=".length) });
+        const filter = attr.slice("filter=".length);
+        filterPaths.push({ pattern, filter });
+        filterRules.push({ pattern, filter });
       } else if (attr === "filter") {
         // Bare `filter` (empty value) still marks the path as filtered.
         filterPaths.push({ pattern, filter: "" });
+        filterRules.push({ pattern, filter: "" });
+      } else if (attr === "-filter") {
+        // A later unset must cancel an earlier filter declaration, otherwise
+        // the importer would report a filter Git itself would not apply.
+        filterRules.push({ pattern });
       }
     }
   }
-  return { textPaths, binaryPaths, filterPaths };
+  return { textPaths, binaryPaths, facetRules, filterPaths, filterRules };
 }
 
 /** The filter name declared for a path, or undefined if none. */
 export function filterForPath(attributes: GitAttributes, path: string): string | undefined {
-  for (const { pattern, filter } of attributes.filterPaths) {
+  // Git attributes are applied in order; a later matching declaration wins.
+  const rules = attributes.filterRules ?? attributes.filterPaths;
+  for (const { pattern, filter } of [...rules].reverse()) {
     if (matchesGitAttributePattern(pattern, path)) {
       return filter;
     }
@@ -83,13 +105,17 @@ export function facetFromAttributes(
   attributes: GitAttributes,
   path: string
 ): "text" | "bytes" | undefined {
-  const isText = attributes.textPaths.some((pattern) => matchesGitAttributePattern(pattern, path));
-  if (isText) {
-    return "text";
+  for (const { pattern, facet } of [...(attributes.facetRules ?? [])].reverse()) {
+    if (matchesGitAttributePattern(pattern, path)) {
+      return facet;
+    }
   }
-  const isBinary = attributes.binaryPaths.some((pattern) => matchesGitAttributePattern(pattern, path));
-  if (isBinary) {
-    return "bytes";
+  // Compatibility with callers that construct GitAttributes manually.
+  if (attributes.facetRules === undefined) {
+    if (attributes.textPaths.some((pattern) => matchesGitAttributePattern(pattern, path)))
+      return "text";
+    if (attributes.binaryPaths.some((pattern) => matchesGitAttributePattern(pattern, path)))
+      return "bytes";
   }
   return undefined;
 }

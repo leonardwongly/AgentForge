@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildRequest,
   canonicalRequest,
+  NonceReplayGuard,
   negotiate,
   signRequest,
   validateWireMessage,
@@ -36,6 +37,14 @@ describe("wire request signing", () => {
     expect(verifyRequest(request, signature, SECRET, now)).toBeUndefined();
     // 60s later the request is outside the 30s window.
     expect(verifyRequest(request, signature, SECRET, now + 60_000)).toMatch(/replay/);
+  });
+
+  it("consumes a nonce when a replay guard is supplied", () => {
+    const now = Date.now();
+    const { request, signature } = buildRequest("hello", {}, SECRET, now);
+    const guard = new NonceReplayGuard();
+    expect(verifyRequest(request, signature, SECRET, now, guard)).toBeUndefined();
+    expect(verifyRequest(request, signature, SECRET, now, guard)).toMatch(/replayed nonce/);
   });
 
   it("is deterministic: same request signs identically", () => {

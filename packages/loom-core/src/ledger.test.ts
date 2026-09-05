@@ -67,4 +67,40 @@ describe("tamper-evident admission ledger", () => {
       expect(reloaded.verify()).toEqual({ valid: true });
     });
   });
+
+  it("authenticates entries and detects a forged chain when keyed", () => {
+    withLedger((file) => {
+      const key = "ledger-test-key";
+      const ledger = new FileLedger(file, key);
+      ledger.append({ proposal: "p1", decision: "admitted" });
+      const checkpoint = ledger.checkpoint();
+      expect(ledger.verify(checkpoint)).toEqual({ valid: true });
+
+      const raw = readFileSync(file, "utf8").replace(
+        '"decision":"admitted"',
+        '"decision":"forged"'
+      );
+      writeFileSync(file, raw, "utf8");
+      expect(ledger.verify(checkpoint).valid).toBe(false);
+      // A fresh keyed verifier also rejects the forged entry's stale MAC.
+      expect(new FileLedger(file, key).verify(checkpoint).valid).toBe(false);
+    });
+  });
+
+  it("rejects an empty integrity key instead of silently disabling MACs", () => {
+    withLedger((file) => {
+      expect(() => new FileLedger(file, "")).toThrow(/integrity key/);
+    });
+  });
+
+  it("read() returns a verification failure rather than throwing on a corrupt JSON line", () => {
+    withLedger((file, ledger) => {
+      ledger.append({ proposal: "p1" });
+      writeFileSync(file, `${readFileSync(file, "utf8").trimEnd()}\nnot-json{\n`, "utf8");
+
+      const reloaded = new FileLedger(file);
+      expect(reloaded.read()).toHaveLength(1);
+      expect(reloaded.verify()).toEqual({ valid: false, firstInvalid: 1 });
+    });
+  });
 });

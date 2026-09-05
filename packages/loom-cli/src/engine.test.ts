@@ -116,7 +116,8 @@ describe("loom CLI engine — git refs -> decision -> provenance", () => {
       baseRef: "base",
       headRef: "head_sensitive",
       envelope,
-      publicKeyPem: key.publicKeyPem
+      publicKeyPem: key.publicKeyPem,
+      policyVersion: "1"
     });
     expect(verified.verdict.ok).toBe(true);
     expect(verified.baseAddress).toBe(res.baseAddress);
@@ -142,7 +143,8 @@ describe("loom CLI engine — git refs -> decision -> provenance", () => {
       baseRef: "base",
       headRef: "head_clean",
       envelope,
-      publicKeyPem: key.publicKeyPem
+      publicKeyPem: key.publicKeyPem,
+      policyVersion: "1"
     });
     expect(verified.verdict.ok).toBe(false);
   });
@@ -177,14 +179,16 @@ describe("loom CLI engine — git refs -> decision -> provenance", () => {
       baseRef: "base",
       headRef: "head_sensitive",
       envelope,
-      publicKeyPem: key.publicKeyPem
+      publicKeyPem: key.publicKeyPem,
+      policyVersion: "1"
     });
     const replayed = await verifyAttestation({
       reader: fakeReader(),
       baseRef: "base_with_sensitive",
       headRef: "head_sensitive",
       envelope,
-      publicKeyPem: key.publicKeyPem
+      publicKeyPem: key.publicKeyPem,
+      policyVersion: "1"
     });
 
     expect(original.verdict).toEqual({ ok: true });

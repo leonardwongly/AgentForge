@@ -51,7 +51,8 @@ const baseInput: DeterministicCheckInput = {
 
 const expectedTransition = {
   baseState: baseInput.baseState,
-  resultState: baseInput.resultState
+  resultState: baseInput.resultState,
+  policyVersion: baseInput.policyVersion
 };
 
 describe("generateKeyPair", () => {
@@ -70,6 +71,13 @@ describe("generateKeyPair", () => {
     const key = generateKeyPair();
     const envelope = signStatement(buildDeterministicCheckStatement(baseInput), key);
     expect(verifyEnvelope(envelope, key.publicKeyPem)).toBe(true);
+  });
+
+  it("generates distinct key material on every call", () => {
+    const a = generateKeyPair();
+    const b = generateKeyPair();
+    expect(a.publicKeyPem).not.toBe(b.publicKeyPem);
+    expect(a.privateKeyPem).not.toBe(b.privateKeyPem);
   });
 });
 
@@ -150,6 +158,36 @@ describe("verifyEnvelope", () => {
 
     expect(verifyEnvelope(envelope, publicKeyPem)).toBe(false);
   });
+
+  it("fails closed (false, not throw) on malformed untrusted input", () => {
+    const key = generateKeyPair();
+    const envelope = signStatement(buildDeterministicCheckStatement(baseInput), key);
+    expect(verifyEnvelope(envelope, "not a pem at all")).toBe(false);
+    expect(verifyEnvelope({ ...envelope, signatures: [] }, key.publicKeyPem)).toBe(false);
+    expect(
+      verifyEnvelope({ ...envelope, signatures: [{ sig: "not base64 ###" }] }, key.publicKeyPem)
+    ).toBe(false);
+  });
+
+  it("accepts an envelope whose signature list also contains invalid entries", () => {
+    const key = generateKeyPair();
+    const envelope = signStatement(buildDeterministicCheckStatement(baseInput), key);
+    const multi: DsseEnvelope = {
+      ...envelope,
+      signatures: [{ sig: Buffer.from("garbage").toString("base64") }, ...envelope.signatures]
+    };
+    expect(verifyEnvelope(multi, key.publicKeyPem)).toBe(true);
+  });
+
+  it("throws (rather than mis-signing) when the private key is not parseable", () => {
+    const key = generateKeyPair();
+    expect(() =>
+      signStatement(buildDeterministicCheckStatement(baseInput), {
+        publicKeyPem: key.publicKeyPem,
+        privateKeyPem: "-----BEGIN PRIVATE KEY-----\ngarbage\n-----END PRIVATE KEY-----\n"
+      })
+    ).toThrow();
+  });
 });
 
 describe("pae", () => {
@@ -170,6 +208,23 @@ describe("pae", () => {
       "ascii"
     );
     expect(result.equals(Buffer.concat([header, payload]))).toBe(true);
+  });
+
+  it("counts multibyte UTF-8 payloads in bytes, not characters", () => {
+    // "😀😀" is 2 characters / 2 UTF-16 code units, but 8 bytes.
+    const payload = Buffer.from("😀😀", "utf8");
+    const payloadType = "t";
+    expect(payload.length).toBe(8);
+    const expected = Buffer.concat([
+      Buffer.from(`DSSEv1 ${Buffer.byteLength(payloadType)} ${payloadType} ${payload.length} `, "ascii"),
+      payload
+    ]);
+
+    expect(pae(payloadType, payload).equals(expected)).toBe(true);
+  });
+
+  it("handles empty payloadType and payload", () => {
+    expect(pae("", Buffer.alloc(0)).toString("ascii")).toBe("DSSEv1 0  0 ");
   });
 });
 
@@ -200,6 +255,18 @@ describe("factsDigest", () => {
 
   it("changes when fact content changes", () => {
     expect(factsDigest([fact("f1")])).not.toBe(factsDigest([fact("f2")]));
+  });
+
+  it("throws on facts containing non-finite numbers (fail loud, not a silent digest)", () => {
+    const poisoned: VerifiedFact = {
+      ...fact("f1"),
+      metadata: { ratio: Number.NaN }
+    };
+    expect(() => factsDigest([poisoned])).toThrow(/non-finite/u);
+  });
+
+  it("is order-sensitive across the facts array", () => {
+    expect(factsDigest([fact("f1"), fact("f2")])).not.toBe(factsDigest([fact("f2"), fact("f1")]));
   });
 });
 
@@ -297,6 +364,7 @@ describe("verifyProvenance", () => {
       verifyProvenance({
         baseState: cid("loom:sha256:anotherbase"),
         resultState: baseInput.resultState,
+        policyVersion: baseInput.policyVersion,
         envelope,
         publicKeyPem: key.publicKeyPem
       })
@@ -345,6 +413,19 @@ describe("verifyProvenance", () => {
     expect(
       verifyProvenance({
         ...expectedTransition,
+        envelope,
+        publicKeyPem: key.publicKeyPem
+      })
+    ).toEqual({ ok: false, reason: "predicate inputs do not match expected transition" });
+  });
+
+  it("rejects an attestation when the expected policy version differs", () => {
+    const key = generateKeyPair();
+    const envelope = signStatement(buildDeterministicCheckStatement(baseInput), key);
+    expect(
+      verifyProvenance({
+        ...expectedTransition,
+        policyVersion: "policy@2",
         envelope,
         publicKeyPem: key.publicKeyPem
       })

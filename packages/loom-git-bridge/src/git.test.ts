@@ -293,6 +293,18 @@ describe("transformSetFromGit", () => {
 });
 
 describe("execGitReader", () => {
+  it("rejects option-like and control-containing refs before invoking git", async () => {
+    const repoDir = await createCommittedGitRepository([["README.md", "safe\n"]]);
+    try {
+      const reader = execGitReader(repoDir);
+      expect(() => reader.lsTree("--output=/tmp/pwned")).toThrow(/unsafe Git ref/);
+      expect(() => reader.readFile("HEAD\u0000--output", "README.md")).toThrow(/unsafe Git ref/);
+      expect(() => reader.detectRenames?.("HEAD", "refs/heads/main\n")).toThrow(/unsafe Git ref/);
+    } finally {
+      await rm(repoDir, { force: true, recursive: true });
+    }
+  });
+
   it("preserves prototype-named paths as addressable own cells", async () => {
     const fixtureFiles: ReadonlyArray<FixtureFile> = [
       ["__proto__", "proto content\n"],

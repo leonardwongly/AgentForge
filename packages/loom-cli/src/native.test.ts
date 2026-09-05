@@ -70,6 +70,24 @@ describe("native loom commands", () => {
     });
   });
 
+  it("does not directly advance a shared Line", async () => {
+    await withRepo(async (dir) => {
+      writeFileSync(join(dir, "a.txt"), "hello", "utf8");
+      initRepo(dir);
+      // A shared scope can only be represented by the authenticated admission
+      // path; native propose must fail closed if one is present.
+      const head = readFileSync(join(dir, ".loom", "head"), "utf8").trim();
+      mkdirSync(join(dir, ".loom", "lines"), { recursive: true });
+      writeFileSync(
+        join(dir, ".loom", "lines", "main.json"),
+        JSON.stringify({ name: "main", scope: "shared", head, sequence: 0 }),
+        "utf8"
+      );
+      writeFileSync(join(dir, "a.txt"), "changed", "utf8");
+      expect(await proposeRepo(dir, "unsafe")).toMatch(/authenticated admission/);
+    });
+  });
+
   it("log reports a valid ledger", async () => {
     await withRepo(async (dir) => {
       writeFileSync(join(dir, "a.txt"), "hello", "utf8");

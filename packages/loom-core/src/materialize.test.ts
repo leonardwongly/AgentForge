@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -72,6 +72,18 @@ describe("materializeState / captureState", () => {
       // Path validation rejects the ".." segment before any write happens.
       expect(() => materializeState(state, dir)).toThrow(/not allowed/);
       expect(existsSync(join(dir, "..", "escape.txt"))).toBe(false);
+    });
+  });
+
+  it("refuses to write through an existing symlink", () => {
+    withDir((dir) => {
+      const outside = join(dir, "..", "loom-materialize-outside.txt");
+      writeFileSync(outside, "keep", "utf8");
+      symlinkSync(outside, join(dir, "output.txt"));
+      const state: State = { kind: "state", cells: { "output.txt": cell("overwrite", "output.txt") } };
+      expect(() => materializeState(state, dir)).toThrow(/ELOOP|symlink|symbolic/u);
+      expect(readFileSync(outside, "utf8")).toBe("keep");
+      rmSync(outside, { force: true });
     });
   });
 

@@ -133,7 +133,12 @@ export function reapply(
   }
 
   // Execute the rule hermetically against newBase (not against the old diff).
-  const writes = engine.run(inputs);
+  let writes: Writes;
+  try {
+    writes = engine.run(inputs);
+  } catch {
+    return hardFailure("engine_error", "recipe engine rejected an unsafe or oversized input");
+  }
 
   // writeScope enforcement: a write outside the declared scope hard-fails.
   const scope = writeScopePaths(recipe.writeScope, newBase);
@@ -152,7 +157,12 @@ export function reapply(
   // (foo(x) -> foo(x, ctx)) is deterministic but is NOT a fixpoint of itself and
   // must remain reapply-able (§3.3). A pure engine always passes; this guards
   // future non-pure engines (clock/network/locale).
-  const writesSecondRun = engine.run(inputs);
+  let writesSecondRun: Writes;
+  try {
+    writesSecondRun = engine.run(inputs);
+  } catch {
+    return hardFailure("engine_error", "recipe engine rejected an unsafe or oversized input");
+  }
   const candidateSecondRun = applyWrites(newBase, writesSecondRun);
   if (stateAddress(candidateSecondRun) !== candidateAddress) {
     return hardFailure(
@@ -231,7 +241,7 @@ function buildRegexReplace(rule: Readonly<Record<string, unknown>>): EngineRunne
 
   // Reject uncompilable patterns/flags up front.
   try {
-    compileRegExp(find, flags);
+    compileRegExp(find, flags, true);
   } catch {
     return undefined;
   }
@@ -240,7 +250,10 @@ function buildRegexReplace(rule: Readonly<Record<string, unknown>>): EngineRunne
     run(inputs) {
       const writes = new Map<string, string>();
       for (const input of inputs) {
-        const regex = compileRegExp(find, flags);
+        if (input.cell.text.length > MAX_REGEX_INPUT_LENGTH) {
+          throw new Error("regex input exceeds safety limit");
+        }
+        const regex = compileRegExp(find, flags, true);
         const next = input.cell.text.replace(regex, replace);
         if (next !== input.cell.text) {
           writes.set(input.path, next);
@@ -285,7 +298,26 @@ function buildDepBump(rule: Readonly<Record<string, unknown>>): EngineRunner | u
   };
 }
 
-function compileRegExp(source: string, flags: string | undefined): RegExp {
+const MAX_REGEX_SOURCE_LENGTH = 512;
+const MAX_REGEX_INPUT_LENGTH = 256 * 1024;
+
+function compileRegExp(
+  source: string,
+  flags: string | undefined,
+  protectAgainstReDoS = false
+): RegExp {
+  if (protectAgainstReDoS) {
+    if (source.length > MAX_REGEX_SOURCE_LENGTH) {
+      throw new Error("regex source exceeds safety limit");
+    }
+    // JavaScript's backtracking engine has no execution timeout. Reject the
+    // constructs most commonly used to create catastrophic backtracking in
+    // attacker-controlled recipes: backreferences, lookarounds, and a
+    // quantified group that itself contains a quantifier.
+    if (/\\[1-9]|\(\?[=!<]|\([^)]*[+*?{][^)]*\)[+*?{]/u.test(source)) {
+      throw new Error("regex contains an unsafe backtracking construct");
+    }
+  }
   return flags === undefined ? new RegExp(source) : new RegExp(source, flags);
 }
 

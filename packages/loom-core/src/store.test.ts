@@ -56,14 +56,57 @@ describe("FileObjectStore (content-addressed, crash-safe)", () => {
     });
   });
 
+  it("rejects path-traversal CIDs without touching outside the object directory", () => {
+    withTemporaryRoot((root) => {
+      const store = new FileObjectStore(root);
+      const malicious = "../outside" as Cid;
+      expect(store.get(malicious)).toBeUndefined();
+      expect(store.has(malicious)).toBe(false);
+      store.delete(malicious);
+      expect(existsSync(join(root, "outside.json"))).toBe(false);
+    });
+  });
+
   it("rejects a file whose bytes do not match its requested CID", () => {
     withTemporaryRoot((root) => {
       const store = new FileObjectStore(root);
       const value = { payload: "hello" };
       const cid = store.put(value);
       // Tamper with the stored bytes so they no longer hash to the CID.
-      writeFileSync(join(root, "objects", `${cid}.json`), JSON.stringify({ payload: "tampered" }), "utf8");
+      writeFileSync(
+        join(root, "objects", `${cid}.json`),
+        JSON.stringify({ payload: "tampered" }),
+        "utf8"
+      );
       expect(store.get(cid)).toBeUndefined();
+    });
+  });
+
+  it("restoreFrom rejects backup files whose bytes do not match their CID filename", () => {
+    withTemporaryRoot((root) => {
+      const store = new FileObjectStore(root);
+      const value = { payload: "valid" };
+      const cid = store.put(value);
+      store.putRaw(new Uint8Array([1, 2, 3]));
+
+      const backupDir = join(root, "backup");
+      store.backupTo(backupDir);
+      const backupJsonPath = join(backupDir, `${cid}.json`);
+      writeFileSync(backupJsonPath, JSON.stringify({ payload: "tampered" }), "utf8");
+
+      expect(() => store.restoreFrom(backupDir)).toThrow(/does not match its CID/);
+      expect(readdirSync(join(root, "objects")).filter((file) => file.endsWith(".tmp"))).toHaveLength(0);
+
+      // Fail closed: no corrupt backup file may enter the live object directory.
+      expect(store.get(cid)).toEqual(value);
+
+      const rawCid = store.putRaw(new Uint8Array([4, 5, 6]));
+      const rawBackupDir = join(root, "raw-backup");
+      store.backupTo(rawBackupDir);
+      writeFileSync(join(rawBackupDir, `${rawCid}.bin`), Buffer.from("corrupt"), "utf8");
+      expect(() => store.restoreFrom(rawBackupDir)).toThrow(/does not match its CID/);
+      // Validation happens before any copy, so an existing live object remains intact.
+      expect(store.getRaw(rawCid)).toEqual(Buffer.from([4, 5, 6]));
     });
   });
 
@@ -117,14 +160,32 @@ describe("FileLineJournal (transactional CAS + idempotency)", () => {
       const head2 = address({ v: 2 });
       const head3 = address({ v: 3 });
 
-      await journal.advance({ name: "main", scope: "shared", expectedHead: genesisHead, expectedSequence: 0, newHead: head1 });
-      const second = await journal.advance({ name: "main", scope: "shared", expectedHead: head1, expectedSequence: 0, newHead: head2 });
+      await journal.advance({
+        name: "main",
+        scope: "shared",
+        expectedHead: genesisHead,
+        expectedSequence: 0,
+        newHead: head1
+      });
+      const second = await journal.advance({
+        name: "main",
+        scope: "shared",
+        expectedHead: head1,
+        expectedSequence: 0,
+        newHead: head2
+      });
       expect(second).toMatchObject({ ok: true, applied: true });
       if (second.ok) {
         expect(second.entry).toMatchObject({ head: head2, sequence: 1 });
       }
 
-      const third = await journal.advance({ name: "main", scope: "shared", expectedHead: head2, expectedSequence: 1, newHead: head3 });
+      const third = await journal.advance({
+        name: "main",
+        scope: "shared",
+        expectedHead: head2,
+        expectedSequence: 1,
+        newHead: head3
+      });
       expect(third).toMatchObject({ ok: true, applied: true });
       if (third.ok) {
         expect(third.entry).toMatchObject({ head: head3, sequence: 2 });
@@ -137,11 +198,29 @@ describe("FileLineJournal (transactional CAS + idempotency)", () => {
       const journal = new FileLineJournal(root);
       const head1 = address({ v: 1 });
       const head2 = address({ v: 2 });
-      await journal.advance({ name: "main", scope: "shared", expectedHead: genesisHead, expectedSequence: 0, newHead: head1 });
+      await journal.advance({
+        name: "main",
+        scope: "shared",
+        expectedHead: genesisHead,
+        expectedSequence: 0,
+        newHead: head1
+      });
 
       // A concurrent writer already moved the head to head2; a stale write must fail.
-      await journal.advance({ name: "main", scope: "shared", expectedHead: head1, expectedSequence: 0, newHead: head2 });
-      const stale = await journal.advance({ name: "main", scope: "shared", expectedHead: head1, expectedSequence: 0, newHead: address({ v: "other" }) });
+      await journal.advance({
+        name: "main",
+        scope: "shared",
+        expectedHead: head1,
+        expectedSequence: 0,
+        newHead: head2
+      });
+      const stale = await journal.advance({
+        name: "main",
+        scope: "shared",
+        expectedHead: head1,
+        expectedSequence: 0,
+        newHead: address({ v: "other" })
+      });
       expect(stale).toMatchObject({ ok: false, reason: "stale" });
       expect(journal.read("main")?.head).toBe(head2);
     });
@@ -151,8 +230,20 @@ describe("FileLineJournal (transactional CAS + idempotency)", () => {
     await withTemporaryRoot(async (root) => {
       const journal = new FileLineJournal(root);
       const head1 = address({ v: 1 });
-      await journal.advance({ name: "main", scope: "shared", expectedHead: genesisHead, expectedSequence: 0, newHead: head1 });
-      const conflict = await journal.advance({ name: "main", scope: "shared", expectedHead: head1, expectedSequence: 5, newHead: address({ v: 9 }) });
+      await journal.advance({
+        name: "main",
+        scope: "shared",
+        expectedHead: genesisHead,
+        expectedSequence: 0,
+        newHead: head1
+      });
+      const conflict = await journal.advance({
+        name: "main",
+        scope: "shared",
+        expectedHead: head1,
+        expectedSequence: 5,
+        newHead: address({ v: 9 })
+      });
       expect(conflict).toMatchObject({ ok: false, reason: "conflict" });
     });
   });
@@ -179,18 +270,26 @@ describe("FileLineJournal (transactional CAS + idempotency)", () => {
       const key = "request-abc-123";
 
       const first = await journal.advance({
-        name: "main", scope: "shared", expectedHead: genesisHead, expectedSequence: 0, newHead: head1, idempotencyKey: key
+        name: "main",
+        scope: "shared",
+        expectedHead: genesisHead,
+        expectedSequence: 0,
+        newHead: head1,
+        idempotencyKey: key
       });
       expect(first).toMatchObject({ ok: true, applied: true });
 
-      // Retry with the same key but a different (would-be) newHead: must not apply.
+      // Reusing a key with a different request must fail closed rather than
+      // returning the result for an unrelated operation.
       const retry = await journal.advance({
-        name: "main", scope: "shared", expectedHead: genesisHead, expectedSequence: 0, newHead: address({ v: "DIFFERENT" }), idempotencyKey: key
+        name: "main",
+        scope: "shared",
+        expectedHead: genesisHead,
+        expectedSequence: 0,
+        newHead: address({ v: "DIFFERENT" }),
+        idempotencyKey: key
       });
-      expect(retry).toMatchObject({ ok: true, applied: false });
-      if (retry.ok) {
-        expect(retry.entry).toMatchObject({ head: head1, sequence: 0 });
-      }
+      expect(retry).toMatchObject({ ok: false, reason: "conflict" });
       expect(journal.read("main")?.head).toBe(head1);
     });
   });
@@ -198,7 +297,13 @@ describe("FileLineJournal (transactional CAS + idempotency)", () => {
   it("serializes concurrent advances without lost updates", async () => {
     await withTemporaryRoot(async (root) => {
       const journal = new FileLineJournal(root);
-      await journal.advance({ name: "main", scope: "shared", expectedHead: genesisHead, expectedSequence: 0, newHead: address({ v: 0 }) });
+      await journal.advance({
+        name: "main",
+        scope: "shared",
+        expectedHead: genesisHead,
+        expectedSequence: 0,
+        newHead: address({ v: 0 })
+      });
 
       // Fire many advances concurrently from the same genesis snapshot; only one
       // may win because the others see a stale head/sequence.

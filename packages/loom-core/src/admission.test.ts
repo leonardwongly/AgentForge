@@ -21,6 +21,13 @@ function withStore(run: (root: string, journal: FileLineJournal, store: Proposal
 describe("Proposal/admission state machine", () => {
   it("moves draft -> proposed -> admitted with approvals and evidence", async () => {
     await withStore(async (_root, journal, store) => {
+      await journal.advance({
+        name: "billing",
+        scope: "shared",
+        expectedHead: GENESIS,
+        expectedSequence: 0,
+        newHead: GENESIS
+      });
       const proposal = store.create({
         title: "billing change",
         updates: [{ line: "billing", expectedHead: GENESIS, expectedSequence: 0, newHead: address({ v: 1 }) }],

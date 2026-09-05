@@ -75,6 +75,8 @@ export interface DeterministicCheckInput extends StateTransitionInput {
 
 /** Expected transition and trust material used to verify an untrusted envelope. */
 export interface VerifyProvenanceInput extends StateTransitionInput {
+  /** Policy version expected by the verifier; it is part of the signed predicate. */
+  readonly policyVersion: string;
   readonly envelope: DsseEnvelope;
   readonly publicKeyPem: string;
 }

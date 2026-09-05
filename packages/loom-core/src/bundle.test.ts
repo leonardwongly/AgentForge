@@ -31,7 +31,7 @@ function bundle(
     authority,
     cid,
     sequence,
-    sigDids.map((did) => set.sign(did, cid, sequence))
+    sigDids.map((did) => set.sign(did, cid, sequence, authority))
   );
 }
 
@@ -40,6 +40,15 @@ describe("verification bundles", () => {
     const b = bundle("auth-a", "cid:c", 1, ["did:loom:w1", "did:loom:w2"]);
     expect(verifyBundle(b, witnesses, 2)).toBe(true);
     expect(verifyBundle(b, witnesses, 3)).toBe(false);
+  });
+
+  it("rejects signatures collected for a different authority", () => {
+    const signatures = [
+      witnesses.sign("did:loom:w1", "cid:c", 1, "auth-a"),
+      witnesses.sign("did:loom:w2", "cid:c", 1, "auth-a")
+    ];
+    const b = createVerificationBundle("auth-b", "cid:c", 1, signatures);
+    expect(verifyBundle(b, witnesses, 2)).toBe(false);
   });
 
   it("reconciles two consistent bundles", () => {
@@ -148,7 +157,13 @@ describe("partition fault-injection", () => {
           checkpointCid: "cid:a",
           sequence: 1,
           authorities: [
-            { name: "auth-a", signatures: [many.sign("did:loom:w1", "cid:a", 1), many.sign("did:loom:w2", "cid:a", 1)] }
+            {
+              name: "auth-a",
+              signatures: [
+                many.sign("did:loom:w1", "cid:a", 1, "auth-a"),
+                many.sign("did:loom:w2", "cid:a", 1, "auth-a")
+              ]
+            }
           ]
         },
         {
@@ -156,7 +171,13 @@ describe("partition fault-injection", () => {
           checkpointCid: "cid:b",
           sequence: 1,
           authorities: [
-            { name: "auth-b", signatures: [many.sign("did:loom:w3", "cid:b", 1), many.sign("did:loom:w4", "cid:b", 1)] }
+            {
+              name: "auth-b",
+              signatures: [
+                many.sign("did:loom:w3", "cid:b", 1, "auth-b"),
+                many.sign("did:loom:w4", "cid:b", 1, "auth-b")
+              ]
+            }
           ]
         }
       ],
@@ -174,7 +195,13 @@ describe("partition fault-injection", () => {
           checkpointCid: "cid:c",
           sequence: 1,
           authorities: [
-            { name: "auth-a", signatures: [many.sign("did:loom:w1", "cid:c", 1), many.sign("did:loom:w2", "cid:c", 1)] }
+            {
+              name: "auth-a",
+              signatures: [
+                many.sign("did:loom:w1", "cid:c", 1, "auth-a"),
+                many.sign("did:loom:w2", "cid:c", 1, "auth-a")
+              ]
+            }
           ]
         },
         {
@@ -182,7 +209,13 @@ describe("partition fault-injection", () => {
           checkpointCid: "cid:c",
           sequence: 1,
           authorities: [
-            { name: "auth-b", signatures: [many.sign("did:loom:w3", "cid:c", 1), many.sign("did:loom:w4", "cid:c", 1)] }
+            {
+              name: "auth-b",
+              signatures: [
+                many.sign("did:loom:w3", "cid:c", 1, "auth-b"),
+                many.sign("did:loom:w4", "cid:c", 1, "auth-b")
+              ]
+            }
           ]
         }
       ],
@@ -199,13 +232,17 @@ describe("partition fault-injection", () => {
           name: "p1",
           checkpointCid: "cid:a",
           sequence: 1,
-          authorities: [{ name: "auth-a", signatures: [many.sign("did:loom:w1", "cid:a", 1)] }]
+          authorities: [
+            { name: "auth-a", signatures: [many.sign("did:loom:w1", "cid:a", 1, "auth-a")] }
+          ]
         },
         {
           name: "p2",
           checkpointCid: "cid:b",
           sequence: 1,
-          authorities: [{ name: "auth-b", signatures: [many.sign("did:loom:w2", "cid:b", 1)] }]
+          authorities: [
+            { name: "auth-b", signatures: [many.sign("did:loom:w2", "cid:b", 1, "auth-b")] }
+          ]
         }
       ],
       many,

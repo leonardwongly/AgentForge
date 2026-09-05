@@ -12,20 +12,40 @@ import type { ChangeJournal } from "./materialize.js";
 import type { Effect } from "./types.js";
 
 const CI_PATH = /(^|\/)\.github\/workflows\/|(^|\/)\.gitlab-ci\.yml$|(^|\/)\.circleci\//iu;
-const SENSITIVE_PATH = /(^|\/)(?:src\/billing|src\/payments|config\/secrets|\.env)\//iu;
+
+/**
+ * Sensitive paths are matched by normalized path components, not a permissive
+ * substring regex. The previous expression required a trailing slash after
+ * `.env`, so a directly modified `.env` file was classified as ordinary source
+ * and could bypass the security-review effect.
+ */
+function isSensitivePath(path: string): boolean {
+  const normalized = path.replaceAll("\\", "/").replace(/^\.\//u, "");
+  const segments = normalized.split("/").filter(Boolean);
+  return (
+    segments.includes(".env") ||
+    segments.some(
+      (segment, index) =>
+        (segment === "src" &&
+          (segments[index + 1] === "billing" || segments[index + 1] === "payments")) ||
+        (segment === "config" && segments[index + 1]?.startsWith("secrets"))
+    )
+  );
+}
 
 /** The effect(s) implied by a single changed path. */
 export function effectsForPath(path: string, kind: "added" | "modified" | "removed"): Effect[] {
+  const normalizedPath = path.replaceAll("\\", "/");
   if (kind === "removed") {
-    return [isTestPath(path) ? "deletes_test" : "deletes_source"];
+    return [isTestPath(normalizedPath) ? "deletes_test" : "deletes_source"];
   }
-  if (isTestPath(path)) {
+  if (isTestPath(normalizedPath)) {
     return ["skips_test"];
   }
-  if (CI_PATH.test(path)) {
+  if (CI_PATH.test(normalizedPath)) {
     return ["changes_ci"];
   }
-  if (SENSITIVE_PATH.test(path)) {
+  if (isSensitivePath(normalizedPath)) {
     return ["touches_sensitive_path"];
   }
   return ["edits_source"];

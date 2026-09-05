@@ -141,7 +141,12 @@ export class AgentClient {
    * `withinScope: false` if any path fell outside the session's write scope.
    */
   captureChange(session: AgentSession, input: CaptureChangeInput): ChangeReport {
-    const journal = diffWorkingCopy(input.workingDir, input.baseState, input.exclude);
+    // Administrative trees are never delegated content. In particular, do not
+    // let a working copy's `.git` hooks/objects become proposed Loom writes
+    // when callers omit an exclude set.
+    const exclude = new Set(input.exclude ?? []);
+    exclude.add(".git");
+    const journal = diffWorkingCopy(input.workingDir, input.baseState, exclude);
     const effects = effectsFromChangeJournal(journal);
     const reviewRequirements = reviewRequirementsForEffects(effects);
 
@@ -200,6 +205,7 @@ export class AgentClient {
     const proposal = this.proposals.create({
       title: input.title,
       updates: input.updates,
+      author: String(this.options.agentDid),
       requiredReviewers: input.requiredReviewers,
       requiredEvidence: input.requiredEvidence
     });
@@ -212,6 +218,11 @@ export class AgentClient {
 
   /** Approve a proposal as a reviewer (idempotent). */
   approveProposal(id: string, reviewer: string): Proposal | undefined {
+    // The submitting agent cannot satisfy its own review gate merely by
+    // echoing its caller-controlled DID as the reviewer identity.
+    if (reviewer === String(this.options.agentDid)) {
+      return this.proposals.get(id);
+    }
     return this.proposals.approve(id, reviewer);
   }
 
