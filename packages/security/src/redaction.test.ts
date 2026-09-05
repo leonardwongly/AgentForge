@@ -465,5 +465,21 @@ describe("redaction", () => {
       expect(summarizeSafeSnippet("😀abc", 2)).toBe("😀…");
       expect([...summarizeSafeSnippet("😀abc", 2)]).toHaveLength(2);
     });
+
+    it("truncates large Unicode input without materializing every code point", () => {
+      const input = "😀".repeat(100_000);
+      const snippet = summarizeSafeSnippet(input, 8);
+
+      expect(snippet).toBe("😀😀😀😀😀😀😀…");
+      expect([...snippet]).toHaveLength(8);
+    });
+
+    it("bounds metadata truncation for large Unicode input without splitting", () => {
+      const input = "😀".repeat(100_000);
+      const metadata = sanitizeExternalMetadataText(input, 8);
+
+      expect(metadata).toBe("😀😀😀😀😀😀😀😀");
+      expect([...metadata]).toHaveLength(8);
+    });
   });
 });

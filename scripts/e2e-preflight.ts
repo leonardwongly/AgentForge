@@ -75,8 +75,11 @@ export function assertDistinctPorts(targets: E2eTarget[]): void {
 }
 
 function targetHostKey(hostname: string): string {
-  const normalized = hostname.toLowerCase().replace(/\.$/u, "");
-  return ["localhost", "127.0.0.1", "[::1]"].includes(normalized) ? "loopback" : normalized;
+  const normalized = hostname
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/u, "$1")
+    .replace(/\.$/u, "");
+  return ["localhost", "127.0.0.1", "::1"].includes(normalized) ? "loopback" : normalized;
 }
 
 export async function assertPortsAvailable(targets: E2eTarget[]): Promise<void> {

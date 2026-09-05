@@ -219,8 +219,34 @@ export function summarizeSafeSnippet(input: string, maxLength = 180): string {
   }
   const compact = redactSecrets(input).replace(/\s+/g, " ").trim();
   return compact.length > boundedLength
-    ? `${[...compact].slice(0, Math.max(0, boundedLength - 1)).join("")}…`
+    ? `${takeCodePoints(compact, boundedLength - 1)}…`
     : compact;
+}
+
+/**
+ * Takes at most the requested number of Unicode code points without first
+ * materializing an array for the entire input. This keeps bounded snippets
+ * bounded even when the source text is attacker-controlled and very large.
+ */
+function takeCodePoints(value: string, maxCodePoints: number): string {
+  const limit = Number.isSafeInteger(maxCodePoints) ? Math.max(0, maxCodePoints) : 0;
+  if (limit === 0 || value.length === 0) {
+    return "";
+  }
+  if (value.length <= limit) {
+    return value;
+  }
+
+  let end = 0;
+  let count = 0;
+  for (const codePoint of value) {
+    if (count >= limit) {
+      break;
+    }
+    end += codePoint.length;
+    count += 1;
+  }
+  return value.slice(0, end);
 }
 
 function preservePrefix(match: string): string {
@@ -398,5 +424,5 @@ export function sanitizeExternalMetadataText(value: string, maxLength: number): 
     .replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
-  return [...normalized].slice(0, boundedLength).join("");
+  return takeCodePoints(normalized, boundedLength);
 }

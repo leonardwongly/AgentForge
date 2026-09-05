@@ -332,7 +332,7 @@ describe("dashboard actor context", () => {
       resolveDashboardActorContext({
         env: {
           SESSION_SECRET: "test-session-secret",
-          AGENTFORCE_GITHUB_ADMIN_LOGINS: "octocat",
+          AGENTFORGE_GITHUB_ADMIN_LOGINS: "octocat",
           AGENTFORGE_DASHBOARD_ORGANIZATION: "org-b"
         },
         headers: headers({ cookie: `${DASHBOARD_SESSION_COOKIE}=${session}` }),
