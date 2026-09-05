@@ -8,14 +8,14 @@ import FoundationNetworking
 
 final class APIClientNetworkTests: XCTestCase {
     func testFetchHealthAcceptsMinimalPublicPayloadOverHTTP() async throws {
-        StubURLProtocol.body = #"{"status":"ok","version":"1.1.0"}"#.data(using: .utf8)!
+        StubURLProtocol.body = #"{"status":"ok","version":"1.2.0"}"#.data(using: .utf8)!
         StubURLProtocol.statusCode = 200
         let client = makeClient()
 
         let snapshot = try await client.fetchHealth(from: URL(string: "https://agentforge.test/health")!)
 
         XCTAssertTrue(snapshot.isProcessHealthy)
-        XCTAssertEqual(snapshot.version, "1.1.0")
+        XCTAssertEqual(snapshot.version, "1.2.0")
         XCTAssertEqual(snapshot.database, "")
     }
 

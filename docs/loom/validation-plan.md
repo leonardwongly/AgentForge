@@ -19,8 +19,9 @@ commercialization rather than deciding whether Loom remains a Git layer.
    result can compensate for lost or silently corrupted history.
 2. **Executable evidence beats prose.** Every normative invariant needs a test,
    proof vector, fault-injection scenario, or documented manual procedure.
-3. **Current and target truth remain separate.** Prototype tests demonstrate the
-   implemented slice; they do not prove native storage, admission, or recovery.
+3. **Current and target truth remain separate.** Prototype tests demonstrate
+   implemented slices; they do not prove a complete conformance profile,
+   independent interoperability, or the operational Phase 4 pilot.
 4. **Failures remain visible.** Skipped, flaky, quarantined, unsupported, and
    externally blocked checks are reported separately from passes.
 5. **Independent implementations matter.** Canonical encoding, proof formats,
@@ -65,21 +66,22 @@ pnpm release:check
 git diff --check
 ```
 
-At the time this specification was introduced, the targeted Loom suites covered
-the core algebra, merge/reapply, Grants, Git bridge, ratification adapter,
-provenance, and CLI. These are **prototype baseline checks**, not a
-`LOOM-CORE` conformance claim.
+The targeted Loom suites now cover the core algebra, merge/reapply, Grants,
+durable storage and recovery, canonical encoding, Git bridge, ratification,
+provenance, witnessed trust, agent workflows, and CLI pilot tooling. These are
+**implementation baseline checks**, not a `LOOM-CORE` conformance claim.
 
-Current prototype gaps that MUST remain visible in test reports include:
+Current implementation boundaries that MUST remain visible in test reports
+include:
 
-- canonical JSON instead of normative DAG-CBOR/CIDv1;
-- flat text-only States instead of binary-safe Weave/Blob objects;
-- no durable native object store or working-copy journal;
-- no native persistent Lines, Proposal state machine, or atomic admission;
-- no persistent actor key lifecycle or Grant revocation;
-- no ledger, witness, sync, GC, backup, or restore implementation;
-- Git-derived identities in the bridge; and
-- ephemeral CLI signing keys.
+- no complete `LOOM-CORE` profile declaration or independently implemented
+  interoperability vectors;
+- the Loom-to-governance adapter still supplies a synthesized pull-request
+  envelope to the existing policy engine;
+- the Phase 4 dual-safety pilot is tooling and a runbook, not an executed
+  30-day operational pilot; and
+- production distribution, external witness operations, and long-running
+  deployment evidence remain outside the repository test suites.
 
 ## 4. Required conformance suites
 

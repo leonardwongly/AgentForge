@@ -5,6 +5,10 @@ specification are tracked here.
 
 ## [Unreleased]
 
+Changes after v1.2.0 will be recorded here.
+
+## [1.2.0] - 2026-09-05
+
 ### Added
 
 - Established the authoritative Loom VCS specification covering the native

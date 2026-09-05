@@ -19,9 +19,10 @@ identity system, authorization system, or admission path.
 | Last major direction decision | Native Loom VCS is the destination; Git is a bridge |
 
 The specification is intentionally stricter than the current executable
-prototype. A requirement marked `MUST` is a target conformance requirement even
-when the current TypeScript packages do not implement it yet. Implementation
-status and gaps are recorded explicitly rather than weakening the target model.
+implementation. A requirement marked `MUST` is a target conformance requirement
+even when the current TypeScript packages have an implementation slice for it.
+Implementation status, required independent evidence, and remaining operational
+gaps are recorded explicitly rather than weakening the target model.
 
 ## Authoritative documents
 
@@ -59,15 +60,17 @@ normative unless they restate an explicit requirement.
 
 ## Current implementation mapping
 
-The repository currently contains these executable Loom slices:
+The repository currently contains these executable Loom slices. The detailed
+design's phase table is the source of truth for implementation evidence; this
+table highlights the remaining conformance and operational work.
 
-| Package                       | Current proof                                                                                       | Important missing target behavior                                                                         |
-| ----------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `@agentforge/loom-core`       | Canonical JSON addressing, flat States, stable identities, typed operations, merge, reapply, Grants | DAG-CBOR/CIDv1 objects, binary blobs, durable object store, working-copy journal, native Line persistence |
-| `@agentforge/loom-ratify`     | Existing deterministic policy evaluation over Loom-derived text diffs                               | Native Proposal and AdmissionRecord inputs without synthesized pull-request fields                        |
-| `@agentforge/loom-provenance` | DSSE/in-toto deterministic-check signatures with subject pinning                                    | Persistent actor keys, key rotation/revocation, admission-set binding, ledger and witnesses               |
-| `@agentforge/loom-git-bridge` | Git refs imported as Loom prototype States                                                          | Lossless native import/export, rename identity recovery, submodules, filters, large-repository streaming  |
-| `@agentforge/loom-cli`        | Repository-local `ratify` and `verify` demonstration                                                | Native init/checkout/status/diff/propose/admit/sync/recover commands and production key management        |
+| Package                       | Current proof                                                                                                                                                 | Important remaining evidence or boundary                                                      |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `@agentforge/loom-core`       | Canonical DAG-CBOR/CIDv1, binary blobs, durable store/journal, Lines, working copies, merge/reapply, Grants, admission, ledger, sync, GC, recovery, witnesses | Full cross-implementation conformance vectors and long-running operational evidence           |
+| `@agentforge/loom-ratify`     | Deterministic policy evaluation over Loom-derived diffs and native effect facts                                                                               | Native governance schemas still adapt to the existing policy engine's synthesized PR envelope |
+| `@agentforge/loom-provenance` | DSSE/in-toto attestations, subject pinning, actor keys, revocation, admission binding, and verification bundles                                               | External deployment and independent-implementation verification                               |
+| `@agentforge/loom-git-bridge` | Git import/export fidelity, binary and rename handling, filters, submodules, streaming, and mirror divergence evidence                                        | Phase 4's real-project dual-safety pilot                                                      |
+| `@agentforge/loom-cli`        | `ratify`, `verify`, `init`, `status`, `propose`, `log`, and `pilot` (`mirror`, `verify`, `restore`)                                                           | Durable user-facing distribution and production operations                                    |
 
 The `@agentforge` package namespace is a transitional implementation detail. It
 does not change the product or protocol name: **Loom**.

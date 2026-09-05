@@ -90,7 +90,13 @@ Manual fallback:
 
 If the callback is unavailable, use Settings to record the numeric installation ID and account login manually, then approve it as a platform admin.
 
-Production deployments that enable the sample preview must set both `AGENTFORGE_ENABLE_SAMPLE_PREVIEW=true` and `AGENTFORGE_SAMPLE_FIXTURE_ROOT=<absolute-project-root-containing-fixtures>`. Without an explicit fixture root, production sample preview stays disabled instead of probing the deployment filesystem.
+Production deployments that enable the sample preview must set
+`AGENTFORGE_ENABLE_SAMPLE_PREVIEW=true`. `AGENTFORGE_SAMPLE_FIXTURE_ROOT` is
+optional when the bundled `fixtures/` directory is discoverable; set it to an
+absolute project root when the deployment layout does not include that bundled
+directory. Without a discoverable or explicitly configured fixture root, the
+sample preview action fails closed with an error instead of probing arbitrary
+filesystem paths.
 
 ## Local Development
 

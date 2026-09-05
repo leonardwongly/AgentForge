@@ -1553,7 +1553,7 @@ describe("security and audit hardening", () => {
     const ready = await app.inject({ method: "GET", url: "/ready" });
 
     expect(health.statusCode).toBe(200);
-    expect(health.json()).toEqual({ status: "ok", version: "1.1.0" });
+    expect(health.json()).toEqual({ status: "ok", version: "1.2.0" });
     expect(health.body).not.toContain("workerQueue");
     expect(health.body).not.toContain("database");
     expect(ready.statusCode).toBe(503);
@@ -1584,7 +1584,7 @@ describe("security and audit hardening", () => {
 
     const health = await app.inject({ method: "GET", url: "/health" });
     expect(health.statusCode).toBe(200);
-    expect(health.json()).toEqual({ status: "ok", version: "1.1.0" });
+    expect(health.json()).toEqual({ status: "ok", version: "1.2.0" });
 
     const unauthenticatedReady = await app.inject({ method: "GET", url: "/ready" });
     expect(unauthenticatedReady.statusCode).toBe(401);

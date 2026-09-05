@@ -1,13 +1,14 @@
 # Public OSS Release Checklist
 
-Use this checklist before making the repository public or cutting a tagged release.
+Use this checklist before cutting a tagged release. Replace `v1.2.0` below with
+the release being prepared.
 
 ## Repository Metadata
 
 - [ ] `LICENSE` is present and matches Apache-2.0.
 - [ ] `NOTICE` is present.
 - [ ] `README.md` describes setup, architecture, configuration, testing, GitHub App setup, and security posture.
-- [ ] `CHANGELOG.md` and `RELEASE_NOTES.md` include the intended `v1.0.0` release summary.
+- [ ] `CHANGELOG.md` and `RELEASE_NOTES.md` include the intended `v1.2.0` release summary.
 - [ ] `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `SECURITY.md` are present.
 - [ ] Issue templates, PR template, CODEOWNERS, Dependabot, CodeQL, dependency review, and CI workflows are enabled.
 - [ ] `.gitignore` excludes local metadata, logs, build output, coverage, Playwright output, and `.env` files.
@@ -81,8 +82,8 @@ Manual browser QA:
 
 - [ ] Merge release-readiness changes to `main`.
 - [ ] Confirm `CI`, `Security`, `CodeQL`, blocking dependency review, and E2E workflows pass on `main`.
-- [ ] Create and push the `v1.0.0` tag.
+- [ ] Create and push the `v1.2.0` tag.
 - [ ] Create the GitHub Release from `RELEASE_NOTES.md`.
 - [ ] Set repository topics, homepage/docs URL, and description.
 - [ ] Switch repository visibility to public only after secret/history scan and fresh-clone validation are complete.
-- [ ] Verify the public anonymous repository page shows README, license, security policy, and the `v1.0.0` release.
+- [ ] Verify the public anonymous repository page shows README, license, security policy, and the `v1.2.0` release.

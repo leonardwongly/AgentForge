@@ -397,7 +397,7 @@ function buildSigningPlan(flags: Flags): SigningPlan {
     options: {
       key: generateKeyPair(),
       checkerDid: optionalString(flags, "did", "did:loom:local-checker"),
-      detectorSuiteVersion: optionalString(flags, "suite-version", "loom-ratify@1.1.0"),
+      detectorSuiteVersion: optionalString(flags, "suite-version", "loom-ratify@1.2.0"),
       policyVersion: optionalString(flags, "policy-version", "1")
     },
     envelopePath,

@@ -1,165 +1,166 @@
 # AgentForge
 
-AgentForge is a deterministic, evidence-based change-control and governance platform for high-risk and agent-assisted changes. It evaluates changes against policy-as-code rules, requires evidence and reviewer approval, and records a durable, tamper-evident decision trail. The platform is designed to be **standalone**: GitHub is an optional integration bridge, not a dependency.
-
-The operating principle is simple:
+AgentForge is a self-hosted, deterministic change-control platform for
+high-risk and agent-assisted software changes. It evaluates pull requests
+against policy-as-code, records evidence and reviewer decisions, and keeps a
+tamper-evident audit trail.
 
 > Deterministic checks decide. AI explains and assists. Humans approve risk.
 
-AgentForge is not an AI code review replacement and does not certify that a change is secure, correct, compliant, or vulnerability-free. It reports whether configured policy requirements are satisfied, records the decision trail, and keeps LLM features disabled by default and advisory only when enabled.
+AgentForge reports whether configured governance requirements are satisfied. It
+does not certify that code is secure, correct, compliant, or vulnerability-free.
+Optional LLM features are disabled by default, advisory only, and can never
+make a blocking decision.
 
-The shipped **Merge Guard** runtime is the GitHub-first pull request governance service that implements this model today. Its reusable policy, evidence, and provenance work is being evolved into **Loom**, a native agent-first version-control system in which Git and GitHub are optional bridges rather than the source of truth. Merge Guard is the current source of value (the wedge); Loom is the long-term destination (the moat).
+## What is shipped
 
-## Current State
+The current release is **AgentForge Merge Guard v1.2.0**. Merge Guard is the
+GitHub-first product in this repository:
 
-This repository is a working TypeScript monorepo for the Merge Guard V1 runtime:
+- **API** — Fastify endpoints for GitHub webhooks, policy validation and
+  previews, repository settings, queue administration, evidence, reviewers,
+  overrides, records, exports, health, readiness, metrics, and audit access.
+- **Dashboard** — Next.js onboarding and operations UI for repositories, policy
+  packs, evidence queues, policy insights, governance health, records, exports,
+  and GitHub App installation approval.
+- **Worker** — BullMQ processing for deterministic pull-request evaluation,
+  bounded retries, safe failure summaries, check publication, and optional
+  governance notifications.
+- **Durable records** — Prisma/PostgreSQL stores repository settings, policy
+  versions, webhook deliveries, evaluations, Change Control Records (CCRs),
+  audit events, export jobs, and queue operations. Audit events can be chained
+  and streamed to a SIEM-style webhook.
+- **Governance** — Built-in YAML policy packs, deterministic detectors, required
+  evidence, CODEOWNERS/team reviewer routing, policy tuning reports, per-detector
+  precision proxies, and human-gated recommendations.
+- **Security defaults** — Signed webhooks, fail-closed production startup,
+  nonce-protected trusted-proxy identity, request-time header-stripping
+  enforcement, tenant isolation with Postgres RLS, secret redaction, bounded
+  exports, and source-code storage disabled by default.
+- **Operator clients** — Native Android and iOS read-only consoles for `/health`,
+  `/ready`, runtime interpretation, persisted endpoint settings, and GitHub
+  OAuth handoff. They never receive database, queue, webhook, OAuth, or GitHub
+  private-key credentials.
+- **Operations** — `pnpm doctor`, non-destructive `pnpm setup`, fixture replay,
+  deterministic benchmarking, Docker images, Helm, AWS Terraform, and
+  Cloudflare Tunnel/Pages reference deployments.
 
-- Fastify API for GitHub webhooks, dashboard APIs, queue administration, policy previews, evidence updates, overrides, exports, health, and readiness.
-- Next.js dashboard for repositories, policy setup, dashboard views, evidence queues, overrides, records, and policy insights.
-- BullMQ worker for asynchronous pull request evaluations and GitHub check publication.
-- Prisma/PostgreSQL persistence for repository settings, policy versions, webhook deliveries, evaluations, Change Control Records, audit events, exports, and queue operations.
-- Redis-backed queue processing, with explicit readiness checks for queue health.
-- Built-in policy packs and YAML policy validation/preview tooling.
-- Security-focused defaults: signed GitHub webhooks, fail-closed production config, metadata-only storage, secret redaction, source-code storage disabled, and trusted-proxy identity requirements for deployed state-changing actions.
-- Dashboard authentication supports both trusted proxy identity and built-in GitHub OAuth, with GitHub App installations requiring platform admin approval before repositories are governed.
-- Native Android and iOS operator consoles for read-only health/readiness monitoring and GitHub OAuth handoff, built and tested in a dedicated mobile CI workflow.
-- Local Docker Compose services for Postgres, Redis, and optional MinIO-backed export experiments.
+The product is designed around a standalone governance domain, but the shipped
+Merge Guard integration is currently GitHub-first. See
+[the product overview](docs/product-overview.md) for scope and non-goals.
 
-For product positioning and non-goals, see [docs/product-overview.md](docs/product-overview.md) and [docs/launch-positioning-and-pricing.md](docs/launch-positioning-and-pricing.md).
+## Loom status
 
-## Loom VCS Direction
+This repository also contains **Loom**, a native agent-first version-control
+research program and specification. Loom is pre-1.0 and is not a replacement
+for the Merge Guard deployment described above.
 
-> **Product vs. research.** For buyers and operators, **AgentForge Merge Guard**
-> (below) is the shipped product. **Loom** is a pre-1.0 research program and
-> specification that evolves the reusable policy, evidence, and provenance work
-> into a native agent-first version-control model. Loom is not yet a product and
-> does not change how Merge Guard is deployed or used today.
+The executable Loom packages currently cover tested slices across canonical
+DAG-CBOR/CID addressing, binary-safe objects, durable content-addressed storage
+and journals, working copies, merge/reapply, Grants and key lifecycle, native
+admission and ledger state, replication and recovery, Git import/export,
+delegated agent sessions and work graphs, the Wire v1 transport, provenance,
+witnessed trust, and the `loom` CLI. The detailed design records phase evidence
+and implementation boundaries.
 
-This repository also contains the pre-1.0 implementation and authoritative
-specification for **Loom**, a native version-control system designed for software
-development in which humans, agents, and automation are first-class actors.
+Phase 4 is different: the pilot tooling exists, but the required operational
+30-day dual-safety pilot (Loom authority continuously mirrored to Git with
+restore evidence) has not yet run. Loom therefore makes **no `LOOM-CORE`
+conformance claim**. Start with the [Loom specification index](docs/loom/README.md),
+[current implementation status](docs/loom/loom-detailed-design.md#20-current-implementation-status),
+and [pilot runbook](docs/loom/pilot-runbook.md).
 
-Loom is the product and protocol name. Its destination is a native object,
-history, identity, capability, synchronization, and governed-admission model.
-Git and GitHub are migration and interoperability bridges, not Loom's source of
-truth. The released Merge Guard runtime remains documented below as the current
-operational system while its reusable policy, evidence, and provenance work is
-evolved into Loom.
+## Architecture
 
-Start with the [Loom VCS specification index](docs/loom/README.md). The current
-executable Loom packages prove the core algebra, merge/reapply, capability,
-Git-bridge, provenance, ratification, and CLI slices; they do not yet constitute
-a durable native VCS conformance claim.
+```text
+GitHub App ──signed webhook──> API ──job──> Redis/BullMQ ──> Worker ──> check + notification
+                                  │                              │
+                                  └──> PostgreSQL CCR/audit <─────┘
 
-## Release Scope
+Dashboard ──GitHub OAuth or trusted proxy──> signed API requests
+Android/iOS ──HTTPS──> /health, /ready, and dashboard OAuth handoff
+```
 
-The current release is the self-hosted **Merge Guard** governance service, `v1.1.0`
-(see [CHANGELOG.md](CHANGELOG.md) and [RELEASE_NOTES.md](RELEASE_NOTES.md)).
-The repository can be published publicly on GitHub, but the workspace packages
-intentionally remain `private: true` and are not published to npm.
+Production runs the API, worker, and optional dashboard as separate services
+behind TLS and an authenticating reverse proxy. Durable production mode uses
+managed PostgreSQL and Redis; in-memory runtime mode is for tests and local
+demos and does not survive a restart.
 
-Included:
-
-- GitHub App webhook ingestion, durable delivery records, queue-backed
-  evaluation, check publication, and platform-admin replay.
-- GitHub OAuth or trusted-proxy dashboard authentication. Username/password
-  login is intentionally out of scope.
-- Policy-as-code evaluation, evidence requirements, reviewer routing, Change
-  Control Records, audit events, and authorized exports.
-- Native Android and iOS operator consoles for read-only health/readiness
-  monitoring and GitHub OAuth handoff.
-- Production fail-closed configuration for signed webhooks, auth proxy trust,
-  local actor fallback, source-code storage, secret redaction, and session/OAuth
-  settings.
-
-Not included:
-
-- Hosted SaaS operation.
-- npm package publication.
-- Production object-storage export adapters.
-- AI-based blocking decisions. Optional AI features are advisory only and
-  disabled by default.
-
-## Repository Layout
+## Repository layout
 
 ```text
 apps/
-  api/       Fastify API, webhook receiver, dashboard APIs, queue admin
+  api/       Fastify API and GitHub webhook receiver
   web/       Next.js dashboard and Playwright smoke coverage
-  worker/    BullMQ worker for PR evaluation jobs
-  android/   Android operator console (read-only health/readiness + GitHub OAuth handoff), built and tested in the mobile CI workflow
-  ios/       iOS operator console (read-only health/readiness + GitHub OAuth handoff), built and tested in the mobile CI workflow
+  worker/    BullMQ evaluation worker and check publisher
+  android/   Kotlin/Jetpack Compose operator console
+  ios/       SwiftUI operator console and AgentForgeCore package
 packages/
-  config/    Environment loading and production safety validation
-  core/      Shared domain types and queue constants
-  db/        Prisma schema, migrations, generated client boundary, seed data
-  detectors/ Deterministic PR fact extraction
-  evidence/  Evidence derivation and PR-body evidence helpers
-  github/    Webhook verification, normalization, GitHub clients, check output
-  loom-core/ Native Loom object/change prototype, merge/reapply, and Grants
-  loom-cli/  Repository-local Loom ratify/verify demonstration
-  loom-git-bridge/ Git interoperability prototype
-  loom-provenance/ DSSE/in-toto provenance prototype
-  loom-ratify/ Loom-to-governance evaluation adapter
-  policy/    YAML policy schema, parser, built-in policy packs, evaluator
-  records/   Change Control Records, audit events, exports, compliance packages
-  reviewers/ Reviewer routing and CODEOWNERS parsing
-  security/  Redaction, advisory prompt sanitization, storage policy helpers
-  testing/   Shared fixture helpers
-  ui/        Shared dashboard UI primitives
-fixtures/
-  diffs/     Patch fixtures used by detectors and policy tests
-  policies/  Example policy packs
-  repos/     Pull request fixture scenarios
-  webhooks/  GitHub webhook payload fixtures
-docs/        Product, setup, policy, security, testing, deployment, runbook docs
-scripts/     Local validation, policy, fixture, GitHub, and E2E helpers
+  config/          Environment loading and production safety checks
+  core/            Shared domain types and queue constants
+  db/              Prisma schema, migrations, client boundary, and seed data
+  detectors/       Deterministic pull-request fact extraction
+  evidence/        Evidence derivation and PR-body helpers
+  github/          Webhook verification, normalization, and GitHub clients
+  notifications/   Governance webhooks and tamper-evident audit streaming
+  policy/          YAML schema, parser, built-in packs, and evaluator
+  records/         CCRs, audit events, exports, and compliance packages
+  reviewers/       Reviewer routing and CODEOWNERS parsing
+  security/        Redaction, prompt sanitization, and storage policy helpers
+  ui/              Shared dashboard UI primitives
+  loom-agent/      Native Loom end-user/agent SDK
+  loom-cli/        Loom ratify, verify, repository, and pilot CLI
+  loom-core/       Loom objects, state, transforms, merge, storage, and ledger
+  loom-git-bridge/ Git interoperability and fidelity tooling
+  loom-provenance/ DSSE/in-toto attestations and signing
+  loom-ratify/     Loom-to-governance evaluation adapter
+fixtures/          Policy, repository, diff, and webhook scenarios
+docs/              Product, security, deployment, testing, and Loom references
+scripts/            Setup, health, benchmark, release, fixture, and E2E helpers
+deploy/             Docker, Cloudflare, Helm, and AWS Terraform packaging
 ```
 
-## Prerequisites
+## Requirements
 
 - Node.js `22.13` or newer.
-- `pnpm 11.1.1`, preferably through Corepack.
-- Docker Desktop or another Docker-compatible runtime for local Postgres, Redis, and MinIO.
-- GitHub App credentials only when testing real GitHub webhook or check-run flows.
-- Only for the mobile operator consoles: a JDK with the Android SDK (Android) and Xcode with the iOS 26 SDK plus `xcodegen` (iOS).
+- pnpm `11.1.1` (the version is pinned in `package.json`).
+- Docker Desktop or a compatible Docker runtime for local PostgreSQL, Redis,
+  and optional MinIO.
+- A GitHub App only for real webhook/check-run integration. Fixture and unit
+  tests do not require GitHub credentials.
+- For mobile builds: JDK + Android SDK, and Xcode with the iOS 26 SDK plus
+  `xcodegen`.
 
-The repository uses:
+The TypeScript workspace uses ESM, pnpm workspaces, Turbo, Vitest, Playwright,
+Prisma 7, Fastify 5, Next.js 16, React 19, BullMQ, Redis, and zod.
 
-- TypeScript ESM.
-- pnpm workspaces.
-- Turbo for build/typecheck orchestration.
-- Vitest for unit and API integration tests.
-- Playwright for dashboard E2E smoke tests.
-- Prisma `7.8.0` with PostgreSQL (via the `@prisma/adapter-pg` driver adapter).
-- Fastify `5`, Next.js `16`, React `19`, BullMQ, Redis, and zod.
+## Quick start
 
-## Quick Start
-
-Clone the repository and install dependencies:
+Clone and install:
 
 ```bash
-git clone <repo-url> AgentForge
+git clone https://github.com/leonardwongly/AgentForge.git
 cd AgentForge
 
-if command -v corepack >/dev/null 2>&1; then
-  corepack enable
-  corepack prepare pnpm@11.1.1 --activate
-else
-  npm install -g pnpm@11.1.1
-fi
-
+corepack enable
+corepack prepare pnpm@11.1.1 --activate
 pnpm install
-```
-
-Create local configuration:
-
-```bash
 cp .env.example .env
 ```
 
-For the local dashboard walkthrough, enable the explicit development-only actor
-fallbacks in `.env`:
+For a seeded local stack, run the non-destructive setup helper:
+
+```bash
+pnpm setup
+```
+
+`pnpm setup` checks Node, pnpm, and Docker; creates `.env` only when it is
+missing; starts loopback-bound Postgres, Redis, and MinIO; waits for Postgres
+and Redis; validates Prisma; migrates; and seeds. It never overwrites an
+existing `.env`.
+
+To use the onboarding sample preview locally, set these explicit development
+flags in `.env`:
 
 ```env
 AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR=true
@@ -167,499 +168,307 @@ AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=true
 AGENTFORGE_ENABLE_SAMPLE_PREVIEW=true
 ```
 
-These flags are only for local development. Keep them `false` in deployed
-environments and use trusted proxy auth or built-in GitHub OAuth instead.
+Keep these flags `false` in every deployed environment. Do not use local actor
+fallbacks as production authentication; use GitHub OAuth or a trusted proxy.
 
-Start the local backing services:
-
-```bash
-docker compose up -d postgres redis minio
-```
-
-Prepare the database:
-
-```bash
-pnpm prisma:validate
-pnpm db:migrate
-pnpm db:seed
-```
-
-Start the full local stack:
+Start the applications:
 
 ```bash
 pnpm dev
 ```
 
-Then open `http://localhost:3000/onboarding`, run the sample preview, and save
-setup progress to create the first local repository and Change Control Record.
+Open `http://localhost:3000/onboarding`, run the sample preview, and save the
+setup progress. The default local endpoints are:
 
-Default local endpoints:
+| Surface             | URL                                               |
+| ------------------- | ------------------------------------------------- |
+| Dashboard           | `http://localhost:3000`                           |
+| API                 | `http://localhost:4000`                           |
+| Health              | `http://localhost:4000/health`                    |
+| Readiness           | `http://localhost:4000/ready`                     |
+| GitHub webhook      | `http://localhost:4000/webhooks/github`           |
+| PostgreSQL          | `localhost:15432`                                 |
+| Redis               | `localhost:6379`                                  |
+| MinIO API / console | `http://localhost:9000` / `http://localhost:9001` |
 
-- Dashboard: `http://localhost:3000`
-- API: `http://localhost:4000`
-- API health: `http://localhost:4000/health`
-- API readiness: `http://localhost:4000/ready`
-- GitHub webhook receiver: `http://localhost:4000/webhooks/github`
-- Postgres: `localhost:15432`
-- Redis: `localhost:6379`
-- MinIO: `http://localhost:9000`
-- MinIO console: `http://localhost:9001`
+Compose binds all local service ports to `127.0.0.1`. MinIO is optional for
+future object-storage adapter experiments; current Merge Guard exports are
+authorized API export jobs.
 
-The local Postgres port is `15432` to avoid conflicts with a workstation Postgres on `5432`.
-Redis is required for queue-backed API and worker flows. MinIO is optional for
-future object-storage adapter experiments; V1 exports are delivered through
-authorized API export jobs. Compose binds Postgres, Redis, and MinIO to
-`127.0.0.1` only; do not expose these local credentials on a shared network.
-
-## Common Commands
+## Commands
 
 ```bash
-# Run services
+# Local services and diagnostics
 pnpm dev:preflight
 pnpm dev
 pnpm dev:api
 pnpm dev:web
 pnpm dev:worker
-
-# Stack health + guided setup
 pnpm doctor
 pnpm setup
 
-# Performance baseline
-pnpm benchmark
-
-# Build and static checks
+# Production-like build and start commands
 pnpm build
-pnpm typecheck
-pnpm lint
-pnpm format:check
-pnpm format
+pnpm railway:build
+pnpm start:api
+pnpm start:worker
+pnpm start:web
 
 # Database
 pnpm prisma:validate
 pnpm db:generate
-pnpm db:migrate
-pnpm db:deploy
+pnpm db:migrate                 # local development
+pnpm db:deploy                  # deployed environments
 pnpm db:seed
 
-# Tests
+# Tests and quality gates
 pnpm test
 pnpm test:unit
 pnpm test:integration
 pnpm test:e2e:preflight
 pnpm test:e2e
 pnpm smoke:e2e-readiness
+pnpm --filter './packages/loom-*' typecheck
+pnpm --filter './packages/loom-*' test
+pnpm typecheck
+pnpm lint
+pnpm format:check
 
-# Fixtures and policy tools
+# Fixtures, policies, and evidence reports
 pnpm fixtures:run
 pnpm policy:validate fixtures/policies/fintech.yaml
 pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.json
+pnpm design-partner:report --input records.json --output report.md
 pnpm messaging:validate
-pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-id <installation-id>
+pnpm benchmark --iterations 100
+
+# Release and live GitHub smoke checks
+pnpm release:check
+pnpm github:smoke --owner <owner> --repo <repo> --pull <number> --installation-id <id>
 ```
 
-`pnpm test` is expected to be safe from a clean shell. DB-backed integration and E2E checks require the Compose services and seeded database. The Playwright E2E runner uses isolated default ports, `127.0.0.1:3100` for web and `127.0.0.1:4100` for API, so it does not need the normal dev servers to already be running.
+The benchmark iteration count is bounded. The E2E runner builds the dashboard,
+uses isolated `127.0.0.1:3100` and `127.0.0.1:4100` ports, and takes an advisory
+lock to prevent overlapping runs. Integration and E2E tests require the local
+Compose services and a seeded database.
 
-## Configuration
+### Loom CLI
 
-Copy [.env.example](.env.example) to `.env` for local development. Defaults are intentionally local-safe, but production must set secrets and trusted identity settings explicitly.
-
-Important variables:
-
-| Variable                                          | Purpose                                                                                                                                                                                                                  |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `DATABASE_URL`                                    | PostgreSQL connection string. Local default is `postgresql://agentforge:agentforge@localhost:15432/agentforge`.                                                                                                          |
-| `REDIS_URL`                                       | Redis connection string used by BullMQ. Local default is `redis://localhost:6379`.                                                                                                                                       |
-| `NODE_ENV`                                        | `development`, `test`, or `production`. Production enables fail-closed config checks.                                                                                                                                    |
-| `GITHUB_APP_ID`                                   | Numeric GitHub App ID.                                                                                                                                                                                                   |
-| `GITHUB_APP_PRIVATE_KEY`                          | GitHub App private key. Use escaped newlines in hosted environment variables when required.                                                                                                                              |
-| `GITHUB_INSTALLATION_ID`                          | Optional installation id for smoke tests. Runtime jobs use webhook payload installation ids.                                                                                                                             |
-| `GITHUB_WEBHOOK_SECRET`                           | Shared secret used to verify GitHub webhook signatures. Required in production.                                                                                                                                          |
-| `GITHUB_APP_SLUG`                                 | GitHub App slug used by Settings and Onboarding to open the install flow. Required in production.                                                                                                                        |
-| `ALLOW_UNSIGNED_GITHUB_WEBHOOKS`                  | Local fixture escape hatch. Keep `false` outside explicit local replay tests.                                                                                                                                            |
-| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`       | GitHub App OAuth values for installation flows.                                                                                                                                                                          |
-| `APP_BASE_URL`                                    | Public dashboard URL. Local default is `http://localhost:3000`.                                                                                                                                                          |
-| `API_BASE_URL`                                    | Public API URL. Local default is `http://localhost:4000`.                                                                                                                                                                |
-| `DEFAULT_POLICY_MODE`                             | `observe`, `warn`, `enforce`, or `optimize`.                                                                                                                                                                             |
-| `SOURCE_CODE_STORAGE`                             | Must remain `false` for the V1 production posture.                                                                                                                                                                       |
-| `FULL_DIFF_RETENTION`                             | `disabled`, `7d`, `30d`, or `custom`.                                                                                                                                                                                    |
-| `REDACT_SECRETS`                                  | Redacts secrets in logs, snippets, check output, dashboard display, exports, and prompts.                                                                                                                                |
-| `LLM_FEATURES`                                    | Optional advisory AI features. Blocking decisions never depend on this.                                                                                                                                                  |
-| `AUDIT_RECORD_RETENTION_DAYS`                     | Retention period for audit and change-control records.                                                                                                                                                                   |
-| `EXPORT_STORAGE_BUCKET` / `EXPORT_STORAGE_REGION` | Reserved for a future object-storage export adapter. V1 export delivery is API job download.                                                                                                                             |
-| `NOTIFICATION_WEBHOOK_URL`                        | Optional outbound webhook for governance notifications (e.g. blocked PRs). Leave empty to disable.                                                                                                                       |
-| `AUDIT_STREAM_WEBHOOK_URL`                        | Optional SIEM-style webhook for streaming tamper-evident audit events via `POST /api/admin/audit-stream`. Leave empty to disable.                                                                                        |
-| `SESSION_SECRET`                                  | Session signing secret. Required before production deployment.                                                                                                                                                           |
-| `AGENTFORGE_GITHUB_ADMIN_LOGINS`                  | Comma-separated GitHub logins that receive `platform_admin` when built-in GitHub OAuth is used.                                                                                                                          |
-| `AGENTFORGE_GITHUB_ALLOWED_LOGINS`                | Comma-separated GitHub logins that receive `developer` when built-in GitHub OAuth is used.                                                                                                                               |
-| `AGENTFORGE_API_TRUST_PROXY_HEADERS`              | Trust authenticated API actor headers only behind a verified stripping auth proxy.                                                                                                                                       |
-| `AGENTFORGE_API_PROXY_SECRET`                     | Shared HMAC secret the dashboard uses to sign forwarded identity headers; the API verifies the signature and a timestamp window. Required in production when `AGENTFORGE_API_TRUST_PROXY_HEADERS=true`.                  |
-| `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS`        | Local-only API fallback for raw actor headers. Keep `false` in deployed environments.                                                                                                                                    |
-| `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS`        | Trust authenticated dashboard actor headers only behind a verified auth proxy.                                                                                                                                           |
-| `AGENTFORGE_DASHBOARD_PROXY_SECRET`               | Shared HMAC secret the ingress/auth proxy uses to sign inbound identity headers; the dashboard verifies the signature before trusting them. Required in production when `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS=true`. |
-| `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR`          | Local-only dashboard fallback. Keep `false` in deployed environments.                                                                                                                                                    |
-| `AGENTFORGE_ENABLE_SAMPLE_PREVIEW`                | Explicitly exposes the local sample-preview onboarding action in production-like E2E runs. Keep `false` when deployed.                                                                                                   |
-| `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS`            | Production acknowledgement that ingress strips spoofable identity headers before injecting trusted headers.                                                                                                              |
-
-When `NODE_ENV=production`, startup fails closed if webhook signing, redaction, source-code storage, trusted proxy identity, local actor fallback, or header-stripping requirements are unsafe.
-
-## Running Locally
-
-For routine development, run all three application services:
+Run the private CLI from the workspace (or build it with the package's `build`
+script for a deployment-specific distribution):
 
 ```bash
-pnpm dev:preflight
-pnpm dev
+pnpm exec tsx packages/loom-cli/src/index.ts --help
+pnpm exec tsx packages/loom-cli/src/index.ts init --repo <loom-dir>
+pnpm exec tsx packages/loom-cli/src/index.ts status --repo <loom-dir>
+pnpm exec tsx packages/loom-cli/src/index.ts propose --repo <loom-dir> --title "Change"
+pnpm exec tsx packages/loom-cli/src/index.ts log --repo <loom-dir>
 ```
 
-`pnpm dev` runs the same local preflight before starting the stack. If Docker,
-Postgres, Redis, or `.env` are missing, the command fails before noisy API or
-worker connection errors and prints the exact setup command to run. MinIO is
-reported as a warning when it is unavailable because it is optional unless you
-are testing local export or object-storage behavior.
-
-To run services separately:
+The CLI also provides `ratify`, `verify`, and the Phase 4 pilot commands. Use
+the generated entry point (or install its private `loom` bin locally):
 
 ```bash
-pnpm dev:api
-pnpm dev:web
-pnpm dev:worker
+pnpm exec tsx packages/loom-cli/src/index.ts pilot mirror --repo <loom-dir> --git <git-mirror> --message "mirror <seq>"
+pnpm exec tsx packages/loom-cli/src/index.ts pilot verify --repo <loom-dir> --git <git-mirror>
+pnpm exec tsx packages/loom-cli/src/index.ts pilot restore --repo <loom-dir> --backup <backup-dir>
 ```
 
-The API listens on `PORT` or `4000`; the web app listens on `3000`; the worker consumes the `merge-guard-evaluations` BullMQ queue when `REDIS_URL` is configured.
+The pilot commands stop on divergence and record an equivalence digest; they do
+not constitute evidence that the 30-day pilot has been completed.
 
-Check local service health:
+## Configuration and authentication
 
-```bash
-curl -fsS http://localhost:4000/health
-curl -fsS http://localhost:4000/ready
-```
+Copy [.env.example](.env.example) and review every value before deployment.
+Important groups are:
 
-`/health` verifies the API process is alive. `/ready` verifies dependencies such as the queue backend are reachable and should be used before cutting over webhook traffic.
-In production, `/ready` and `/metrics` require signed proxy actor headers from an operator role. Local development keeps these endpoints open for smoke checks.
+| Group                   | Variables                                                                                                                                                         |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime                 | `NODE_ENV`, `DATABASE_URL`, `REDIS_URL`, `APP_BASE_URL`, `API_BASE_URL`                                                                                           |
+| GitHub App              | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_SLUG`, `GITHUB_WEBHOOK_SECRET`, `ALLOW_UNSIGNED_GITHUB_WEBHOOKS`                                           |
+| OAuth                   | `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `AGENTFORGE_GITHUB_ADMIN_LOGINS`, `AGENTFORGE_GITHUB_ALLOWED_LOGINS`, `SESSION_SECRET`                                |
+| Policy and data         | `DEFAULT_POLICY_MODE`, `SOURCE_CODE_STORAGE`, `FULL_DIFF_RETENTION`, `REDACT_SECRETS`, `AUDIT_RECORD_RETENTION_DAYS`                                              |
+| Trusted API proxy       | `AGENTFORGE_API_TRUST_PROXY_HEADERS`, `AGENTFORGE_API_PROXY_SECRET`, `AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS`                                                   |
+| Trusted dashboard proxy | `AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS`, `AGENTFORGE_DASHBOARD_PROXY_SECRET`, `AGENTFORGE_DASHBOARD_ALLOW_LOCAL_ACTOR`, `AGENTFORGE_AUTH_PROXY_STRIPS_HEADERS` |
+| Optional integrations   | `NOTIFICATION_WEBHOOK_URL`, `AUDIT_STREAM_WEBHOOK_URL`, `EXPORT_STORAGE_BUCKET`, `EXPORT_STORAGE_REGION`, `LLM_FEATURES`                                          |
 
-## GitHub App Setup
+In production, startup fails closed unless webhook signing is enabled,
+`ALLOW_UNSIGNED_GITHUB_WEBHOOKS=false`, `SOURCE_CODE_STORAGE=false`,
+`REDACT_SECRETS=true`, trusted proxy identity and header stripping are enabled,
+and local actor fallbacks are disabled. Session, webhook, and proxy secrets must
+be strong (at least 32 characters and not common placeholders). Do not use
+local actor fallbacks in deployed environments.
 
-Create a GitHub App with these webhook events:
+The dashboard supports built-in **GitHub OAuth** or a **trusted proxy**. OAuth
+requires explicit login allowlists and `SESSION_SECRET`; trusted proxy mode
+requires the proxy to strip spoofable `x-agentforge-*` headers and sign the
+forwarded identity with `AGENTFORGE_API_PROXY_SECRET` and
+`AGENTFORGE_DASHBOARD_PROXY_SECRET`. There is no username/password login.
 
-- `pull_request`
-- `pull_request_review`
-- `check_suite`
-- `check_run`
-- `push`
-- `repository`
-- `installation`
-- `installation_repositories`
+Durable production mode requires PostgreSQL and Redis. The application should
+connect through a non-superuser, non-`BYPASSRLS` PostgreSQL role so tenant RLS
+is an active backstop, not merely a migration artifact. Read
+[the authentication guide](docs/auth.md), [tenant isolation guide](docs/tenant-isolation-rls.md),
+and [hardened self-hosting reference](docs/self-hosting.md) before exposing a
+service publicly.
 
-Minimum permissions:
+## GitHub App setup
 
-- Pull requests: read/write
-- Checks: read/write
-- Contents: read
-- Metadata: read
-- Issues: read/write if PR-visible comments are enabled
-- Members: read when policies require GitHub-verified team reviewer approvals
+Configure a GitHub App with these webhook events:
 
-Set the webhook URL to:
+`pull_request`, `pull_request_review`, `check_suite`, `check_run`, `push`,
+`repository`, `installation`, and `installation_repositories`.
+
+Minimum permissions are Pull requests read/write, Checks read/write, Contents
+read, Metadata read, and Issues read/write when PR-visible comments are used.
+Add Members read when a policy requires GitHub-verified team reviewer approval.
+Point the webhook to:
 
 ```text
 https://<api-host>/webhooks/github
 ```
 
-For local webhook testing, expose `http://localhost:4000/webhooks/github` through a tunnel and set `GITHUB_WEBHOOK_SECRET` to the same value configured in GitHub. Unsigned webhook delivery is disabled by default; use `ALLOW_UNSIGNED_GITHUB_WEBHOOKS=true` only for explicit local fixture replay.
+Installations remain pending until a `platform_admin` approves them. For the
+complete install, OAuth, webhook, and smoke-test flow, see
+[docs/github-app-setup.md](docs/github-app-setup.md) and
+[docs/auth.md](docs/auth.md).
 
-More detail is in [docs/github-app-setup.md](docs/github-app-setup.md) and [docs/auth.md](docs/auth.md).
+## Policies and governance records
 
-## Policy Files
-
-Policies are YAML files validated with zod. A policy pack can define applicability, mode, sensitive paths, tests, dependencies, database migrations, required reviewers, evidence requirements, override rules, and data-retention defaults.
-
-Minimal example:
+Policies are YAML documents validated with zod. They can select repositories,
+branches, labels, or all pull requests and can require sensitive-path reviews,
+tests, dependency checks, migrations, evidence, and overrides.
 
 ```yaml
 version: 1
 agentforge:
-  mode: warn
+  mode: enforce
   apply_to:
     - all_pull_requests
 sensitive_paths:
   billing:
-    paths:
-      - "src/billing/**"
-    required_reviewers:
-      - "billing-owner"
-    required_evidence:
-      - "rollback_plan"
+    paths: ["src/billing/**"]
+    required_reviewers: ["billing-owner"]
+    required_evidence: ["rollback_plan"]
 ```
 
-Validate and preview policies locally:
+Policy modes are:
+
+- `observe` — record findings and requirements without blocking.
+- `warn` — show what would block without enforcing it.
+- `enforce` — block when configured findings, evidence, or reviews are unmet.
+- `optimize` — keep enforcement active while surfacing governance improvements.
+
+Each evaluated pull request receives a Change Control Record containing the
+repository, PR and head identity, policy hash/version, verified findings,
+evidence and reviewer requirements, check state, overrides, final decision, and
+lifecycle transitions. Exports are bounded, authorized JSON/CSV or compliance
+packages; full source and diffs are excluded by default and redacted before
+output. See [the CCR guide](docs/change-control-records.md) and
+[security/data handling](docs/security-and-data-handling.md).
+
+## Deployment
+
+AgentForge is self-hosted; there is no hosted SaaS service. The repository
+contains reference packaging for several topologies:
+
+- **Railway** — separate API, worker, and optional web services with managed
+  PostgreSQL and Redis; see [docs/railway-deployment.md](docs/railway-deployment.md).
+- **Cloudflare** — outbound Tunnel for API/webhook/dashboard exposure, with an
+  optional Pages dashboard; see [docs/cloudflare-deployment.md](docs/cloudflare-deployment.md).
+- **Kubernetes** — multi-stage images and a hardened Helm chart under
+  `deploy/helm/agentforge`.
+- **AWS** — ECS, RDS, and ElastiCache Terraform under `deploy/terraform/aws`.
+- **Docker** — build an `api`, `worker`, or `web` target from the root
+  [Dockerfile](Dockerfile); pass a pinned base-image digest at build time.
+
+For a production migration, run `pnpm db:deploy` once, then start the API,
+worker, and optional dashboard with `pnpm start:api`, `pnpm start:worker`, and
+`pnpm start:web`. Never run `prisma migrate dev` against a hosted production
+database. Terminate TLS at the ingress, keep Postgres/Redis private, configure
+backups, and complete the [runbook](docs/runbook.md) before webhook cutover.
+
+## Mobile operator consoles
+
+The Android and iOS apps are read-only operational clients. They call the public
+`/health` and `/ready` endpoints, persist API/dashboard URL settings locally,
+interpret queue/database/runtime readiness, and hand GitHub sign-in to the
+dashboard OAuth route. Deployed URLs must use HTTPS; plain HTTP is accepted
+only for local development hosts.
 
 ```bash
-pnpm policy:validate fixtures/policies/fintech.yaml
-pnpm policy:preview fixtures/policies/fintech.yaml fixtures/repos/billing-agent.json
-```
-
-`agentforge.apply_to` supports `all_pull_requests`, `repo:<glob>`, `base:<glob>`, `head:<glob>`, `branch:<glob>`, and `label:<glob>`.
-
-See [docs/policy-as-code.md](docs/policy-as-code.md) and [docs/policy-packs.md](docs/policy-packs.md).
-
-## Policy Modes
-
-- `observe`: records findings and open requirements, publishes a passing check, and never blocks.
-- `warn`: records what would block and publishes a non-blocking warning.
-- `enforce`: blocks when required evidence, required reviews, or blocking policy conditions are unmet.
-- `optimize`: keeps enforce controls active and surfaces governance improvement opportunities for mature teams.
-
-Mode can be set at organization, repository, and rule level. The evaluator resolves the safest explicit mode and never uses advisory AI output as a blocking condition.
-
-## API Examples
-
-Validate a policy:
-
-```bash
-curl -fsS http://localhost:4000/api/policies/validate \
-  -H "content-type: application/json" \
-  --data '{"contentYaml":"version: 1\nagentforge:\n  mode: warn\n  apply_to:\n    - all_pull_requests\n"}'
-```
-
-Inspect dashboard records:
-
-```bash
-curl -fsS "http://localhost:4000/api/dashboard/records?limit=25&offset=0" \
-  -H "x-agentforge-actor: local-admin" \
-  -H "x-agentforge-role: platform_admin" \
-  -H "x-agentforge-organization: org_local"
-```
-
-Read queue status with a local operator actor:
-
-```bash
-AGENTFORGE_API_ALLOW_LOCAL_ACTOR_HEADERS=true pnpm dev:api
-
-curl -fsS http://localhost:4000/api/admin/queue \
-  -H "x-agentforge-actor: local-admin" \
-  -H "x-agentforge-role: platform_admin" \
-  -H "x-agentforge-organization: org_local"
-```
-
-In production, state-changing and admin routes must use trusted `x-agentforge-authenticated-*` headers injected by an auth proxy that strips spoofable client identity headers.
-
-## Change Control Records And Exports
-
-Each evaluated PR receives a Change Control Record containing repository, PR number, head SHA, policy version, policy pack, mode, verified findings, evidence requirements, reviewer requirements, check status, overrides, final decision, timestamps, and lifecycle transitions.
-
-The runtime also normalizes evaluations into queryable tables for audit views and exports. JSON/CSV Change Control Record exports and JSON compliance evidence packages intentionally exclude full source code by default and apply redaction before output.
-
-See [docs/change-control-records.md](docs/change-control-records.md) and [docs/security-and-data-handling.md](docs/security-and-data-handling.md).
-
-## Mobile Operator Consoles
-
-`apps/android` (Kotlin and Jetpack Compose) and `apps/ios` (SwiftUI) are native,
-read-only operator consoles for a deployed AgentForge instance. They call the
-public `/health` and `/ready` endpoints, interpret full-stack readiness, persist
-the configured API and dashboard URLs across launches, and hand GitHub sign-in
-to the deployed dashboard's OAuth route.
-
-They never connect directly to Postgres, Redis, MinIO, GitHub private keys,
-webhook secrets, OAuth secrets, or installation tokens; all authenticated and
-infrastructure access stays behind the deployed dashboard and API. Deployed URLs
-must use HTTPS, and plain HTTP is accepted only for local development hosts.
-
-Both apps are built and tested in the `mobile` CI workflow. To build and test
-them locally:
-
-```bash
-# Android (JDK + Android SDK)
 (cd apps/android && ./gradlew testDebugUnitTest assembleDebug)
-
-# iOS (Xcode with the iOS 26 SDK, plus xcodegen)
 (cd apps/ios/AgentForge && xcodegen generate && swift test --package-path Packages/AgentForgeCore)
 ```
 
-See [apps/android/README.md](apps/android/README.md) and
-[apps/ios/AgentForge/README.md](apps/ios/AgentForge/README.md).
+Both builds run in `.github/workflows/mobile.yml`. Android instrumentation
+tests require an attached emulator/device and are separate from unit tests.
 
-## Testing
+## Validation
 
-Recommended validation before handing off changes:
+The normal local quality ladder is:
 
 ```bash
+pnpm db:generate
+pnpm prisma:validate
 pnpm format:check
 pnpm lint
 pnpm typecheck
 pnpm test
 pnpm fixtures:run
+pnpm build
+pnpm audit --audit-level moderate
+pnpm release:check
+git diff --check
 ```
 
-When the local Compose stack is running and seeded:
+With the Compose stack running and seeded, add:
 
 ```bash
-docker compose up -d postgres redis minio
-pnpm db:migrate
-pnpm db:seed
 pnpm test:integration
 pnpm test:e2e:preflight
 pnpm test:e2e
 ```
 
-The fixture scenarios in `fixtures/repos` cover README-only changes, sensitive paths, CI workflow changes, deleted tests, skipped tests, assertion weakening, dependency changes, database migrations, secret-like diffs, overrides, and policy updates after PR open.
+The release CI additionally runs security, CodeQL, dependency review, E2E,
+mobile, Socket, and Merge Guard workflows. A green local suite or CI run proves
+the tested repository revision only; it is not proof of a deployed service,
+signing, device availability, or App Store publication.
 
-See [docs/testing.md](docs/testing.md).
+## Boundaries and known limitations
 
-## Deployment
+- Merge Guard is self-hosted and GitHub-first; workspace packages remain
+  `private: true` and are not published to npm.
+- Durable production state and duplicate-delivery protection require PostgreSQL
+  and Redis. In-memory mode is intentionally limited to tests and demos.
+- Exports use authorized API jobs. A production object-storage export adapter is
+  reserved for later work; MinIO in Compose is an experiment surface.
+- There is no username/password authentication. Use GitHub OAuth or a trusted
+  identity proxy.
+- AI/LLM output is optional, disabled by default, advisory only, and never a
+  blocking input. Governance-health and detector-precision metrics are useful
+  heuristics, not correctness or recall guarantees.
+- Mobile clients are monitoring and OAuth-handoff consoles, not administrative
+  clients and not infrastructure clients.
+- Loom is pre-1.0. Its prototype packages have broad tested coverage, but the
+  Phase 4 30-day pilot remains outstanding and no full native conformance claim
+  is made.
 
-The documented deployment target is one Railway project with separate services:
+## Further documentation
 
-- `agentforge-api` for the Fastify API and GitHub webhook receiver.
-- `agentforge-worker` for BullMQ processing and check publication.
-- `agentforge-web` for the optional Next.js dashboard, or host the dashboard elsewhere and point `APP_BASE_URL` at it.
-- Managed Postgres and Redis services.
-
-Build and start commands are defined in [docs/railway-deployment.md](docs/railway-deployment.md). For a Cloudflare-hosted deployment (Tunnel + optional Pages), see [docs/cloudflare-deployment.md](docs/cloudflare-deployment.md) and `deploy/cloudflare/`. For Kubernetes or AWS, see `deploy/helm/agentforge` and `deploy/terraform/aws`. Production migration deploys should use:
-
-```bash
-pnpm db:deploy
-```
-
-Do not run `prisma migrate dev` in hosted production environments.
-
-Operational launch and rollback guidance is in [docs/runbook.md](docs/runbook.md). Launch-readiness evidence is tracked in [docs/launch-readiness-evidence.md](docs/launch-readiness-evidence.md).
-
-## Troubleshooting
-
-### `pnpm install` uses the wrong package manager
-
-Use Corepack to activate the pinned package manager:
-
-```bash
-corepack enable
-corepack prepare pnpm@11.1.1 --activate
-pnpm --version
-```
-
-### Prisma cannot connect to Postgres
-
-Start Compose and verify the non-default local port:
-
-```bash
-docker compose up -d postgres
-docker compose ps
-pnpm prisma:validate
-```
-
-The local database URL should be:
-
-```text
-postgresql://agentforge:agentforge@localhost:15432/agentforge
-```
-
-### `/ready` is not ready but `/health` works
-
-`/health` only proves the API process is alive. `/ready` also checks runtime dependencies such as Redis/BullMQ and is operator-authenticated in production. Start Redis and the worker:
-
-```bash
-docker compose up -d redis
-pnpm dev:worker
-curl -fsS http://localhost:4000/ready
-```
-
-### MinIO is unavailable in local development
-
-MinIO backs future object-storage adapter experiments. V1 exports do not require
-MinIO:
-
-```bash
-docker compose up -d minio
-curl -fsS http://localhost:9000/minio/health/live
-```
-
-The local console is `http://localhost:9001` with username `agentforge` and
-password `agentforge-local`.
-
-### GitHub webhooks are rejected locally
-
-Confirm the tunnel URL points to `/webhooks/github`, the GitHub App webhook secret matches `GITHUB_WEBHOOK_SECRET`, and the payload includes the `x-hub-signature-256` header. Use unsigned webhooks only for explicit local fixture replay:
-
-```bash
-ALLOW_UNSIGNED_GITHUB_WEBHOOKS=true pnpm dev:api
-```
-
-Never enable unsigned webhooks in production.
-
-### Dashboard settings saves fail in local development
-
-Local dashboard server actions need an actor fallback or trusted proxy identity. For local-only setup, `.env.example` provides:
-
-```text
-AGENTFORGE_DASHBOARD_ACTOR=dashboard-local
-AGENTFORGE_DASHBOARD_ROLE=platform_admin
-AGENTFORGE_DASHBOARD_ORGANIZATION=org_local
-```
-
-For deployed environments, configure trusted proxy headers instead of local actor fallbacks.
-
-### E2E tests report occupied ports or build locks
-
-Run the preflight to identify the blocking resource:
-
-```bash
-pnpm test:e2e:preflight
-```
-
-The E2E runner uses `127.0.0.1:3100` and `127.0.0.1:4100` by default and takes an advisory lock to avoid overlapping Playwright runs.
-
-## Security Notes
-
-- External input is validated at API boundaries with zod schemas where practical.
-- GitHub webhook signatures are verified by default.
-- Production config fails closed when unsafe security flags are enabled.
-- Raw actor headers are local-only and disabled by default for deployed environments.
-- Trusted proxy headers are accepted only when explicitly configured.
-- Source-code storage is disabled by default.
-- Secret redaction is applied to logs, snippets, check summaries, exports, dashboard output, and advisory prompts.
-- LLM features are disabled by default and cannot determine blocking status.
-- Exports are bounded and exclude full source code by default.
-
-See [docs/security-and-data-handling.md](docs/security-and-data-handling.md) for the current data-handling model.
-
-## Contributing
-
-1. Create a focused branch for the change.
-2. Inspect nearby code and follow existing package patterns.
-3. Keep changes small, typed, and covered by tests.
-4. Update docs or fixtures when behavior changes.
-5. Run the narrowest relevant checks while iterating, then run the broader validation ladder before handoff.
-6. Do not commit secrets, local `.env` files, generated junk, or unrelated workspace changes.
-
-Suggested pre-commit validation:
-
-```bash
-pnpm format:check
-pnpm lint
-pnpm typecheck
-pnpm test
-pnpm fixtures:run
-```
-
-For API, worker, database, or dashboard changes, also run the relevant integration or E2E checks described in [docs/testing.md](docs/testing.md).
-
-## More Documentation
-
-- [docs/loom/README.md](docs/loom/README.md) - authoritative Loom VCS specification index, implementation mapping, and change process.
-- [docs/product-overview.md](docs/product-overview.md) - product scope, buyer hypothesis, and non-goals.
-- [docs/github-app-setup.md](docs/github-app-setup.md) - GitHub App setup details.
-- [docs/policy-as-code.md](docs/policy-as-code.md) - policy schema and examples.
-- [docs/policy-packs.md](docs/policy-packs.md) - built-in policy packs.
-- [docs/change-control-records.md](docs/change-control-records.md) - CCR lifecycle and export model.
-- [docs/security-and-data-handling.md](docs/security-and-data-handling.md) - security and privacy posture.
-- [docs/self-hosting.md](docs/self-hosting.md) - hardened self-hosting reference, production security contract, and go-live checklist.
-- [docs/tenant-isolation-rls.md](docs/tenant-isolation-rls.md) - application-layer and Postgres RLS tenant isolation model.
-- [docs/self-governance.md](docs/self-governance.md) - how AgentForge governs its own repository with the Merge Guard check.
-- [docs/testing.md](docs/testing.md) - validation strategy and E2E details.
-- [docs/runtime-boundaries.md](docs/runtime-boundaries.md) - in-memory versus Postgres/Redis capability contract.
-- [docs/railway-deployment.md](docs/railway-deployment.md) - Railway topology, variables, deploy, validation, and rollback.
-- [docs/runbook.md](docs/runbook.md) - operational launch and rollback steps.
-- [docs/roadmap.md](docs/roadmap.md) - backlog and intentionally excluded V1 capabilities.
-- [docs/roadmap-v2.md](docs/roadmap-v2.md) - retained legacy Merge Guard V2 planning; the native Loom roadmap is authoritative for future VCS work.
-- [docs/release-checklist.md](docs/release-checklist.md) - public OSS release checklist for repository metadata, secret hygiene, and auth readiness.
-- [docs/launch-readiness-evidence.md](docs/launch-readiness-evidence.md) - V1 launch-readiness evidence and re-check commands.
+- [Changelog](CHANGELOG.md) and [v1.2.0 release notes](RELEASE_NOTES.md)
+- [Product overview](docs/product-overview.md)
+- [Policy-as-code](docs/policy-as-code.md) and [policy packs](docs/policy-packs.md)
+- [Authentication](docs/auth.md) and [GitHub App setup](docs/github-app-setup.md)
+- [CCR and export model](docs/change-control-records.md)
+- [Security and data handling](docs/security-and-data-handling.md)
+- [Self-hosting](docs/self-hosting.md) and [runtime boundaries](docs/runtime-boundaries.md)
+- [Tenant isolation/RLS](docs/tenant-isolation-rls.md)
+- [Testing strategy](docs/testing.md)
+- [Railway](docs/railway-deployment.md), [Cloudflare](docs/cloudflare-deployment.md),
+  [Helm](deploy/helm/agentforge), and [AWS Terraform](deploy/terraform/aws)
+- [Loom specification index](docs/loom/README.md), [detailed design](docs/loom/loom-detailed-design.md),
+  [merge/reapply engine](docs/loom/reapply-merge-engine.md), [wire protocol](docs/loom/wire-protocol.md),
+  [validation plan](docs/loom/validation-plan.md), and [pilot runbook](docs/loom/pilot-runbook.md)
+- [Contribution guide](CONTRIBUTING.md), [security policy](SECURITY.md), and
+  [release checklist](docs/release-checklist.md)

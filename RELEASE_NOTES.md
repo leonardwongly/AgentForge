@@ -1,119 +1,111 @@
-# AgentForge Merge Guard v1.1.0
+# AgentForge Merge Guard v1.2.0
 
-AgentForge Merge Guard v1.1.0 builds on the v1.0.0 self-hosted GitHub pull request governance release with security hardening, completed Android and iOS operator consoles, and a production build fix.
+AgentForge Merge Guard v1.2.0 expands the self-hosted GitHub governance
+runtime with operational tooling, governance evidence, tamper-evident audit
+streaming, deployment packaging, and a substantially hardened Loom prototype.
 
-Deterministic checks decide. AI explains and assists. Humans approve risk.
-
-## v1.1.0
-
-Released 2026-07-05. Highlights below; see [CHANGELOG.md](CHANGELOG.md) for the full list.
-
-### Highlights
-
-- Mandatory signature nonce enforcement for trusted-proxy identity on both the API and dashboard, closing a replay window that the optional-nonce legacy payload shape left open.
-- Header-stripping attestation is now enforced at request time, not just at config load: the API rejects requests carrying raw actor headers alongside or instead of the signed header set when proxy trust is enabled.
-- Weak production secrets (`SESSION_SECRET`, `GITHUB_WEBHOOK_SECRET`, `AGENTFORGE_API_PROXY_SECRET`, `AGENTFORGE_DASHBOARD_PROXY_SECRET`) are now rejected below a 32-character minimum or against a common-placeholder denylist.
-- Postgres Row-Level Security tenant binding now sets the `agentforge.current_org` session GUC inside the same interactive transaction as the scoped query, closing a pooled-connection gap. See [docs/tenant-isolation-rls.md](docs/tenant-isolation-rls.md).
-- Retention-sweep deletes and their audit-event write are now atomic, so a crash mid-sweep can no longer leave an undocumented deletion.
-- Detector precision fixes for `coverage_threshold_reduced` and `test_skipped` to reduce false-positive blocking findings.
-- Completed the Android and iOS operator consoles: persisted URL configuration, orchestration-layer unit tests, an on-launch readiness check, and a mobile CI workflow that builds and tests both apps.
-- Fixed the web production build breaking when a development `NODE_ENV` leaked into `next build`, migrated the Next.js middleware to the `proxy` convention, and upgraded Next to `16.2.10`.
-
-### Security Posture
-
-- Trusted-proxy identity replay protection now requires a nonce on every signed request on both the dashboard and API paths; the pre-nonce legacy signing scheme is no longer accepted.
-- Header-stripping is verified per-request, not only attested at startup.
-- Production secret strength is enforced with a minimum length and placeholder denylist.
-- Tenant isolation via Postgres RLS is bound within the same transaction as the query it scopes.
-
-See [docs/self-hosting.md](docs/self-hosting.md) for the current production security contract.
-
-### Validation
-
-- `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`, `pnpm fixtures:run`, and `pnpm release:check` pass.
-- DB-backed integration tests pass against Postgres, including the RLS/tenant-isolation suite; the Playwright dashboard E2E suite passes.
-- Android (`gradlew testDebugUnitTest assembleDebug`) and iOS (`swift test`, `xcodebuild`) build and test green, and the mobile CI workflow passes on GitHub runners.
-- GitHub CI, Security, CodeQL, E2E, and Merge Guard workflows are green on `main`.
+> Deterministic checks decide. AI explains and assists. Humans approve risk.
 
 ## Highlights
 
-- GitHub App webhook ingestion with signed webhook verification, durable delivery records, queue handoff, replay controls, and GitHub check publication.
-- Policy-as-code evaluation with built-in policy packs, YAML validation, policy previews, required evidence, reviewer routing, CODEOWNERS support, and repository-level policy settings.
-- Change Control Records with lifecycle state, decision trails, evidence and reviewer requirements, overrides, audit events, exports, and compliance evidence packages.
-- Next.js dashboard for first-user onboarding, repositories, settings, records, policy insights, policy violations, evidence completion, overrides, and GitHub installation approval.
-- GitHub App installation linking that keeps installations pending until a `platform_admin` approves them.
-- GitHub OAuth dashboard sessions and trusted-proxy identity support. Password login is intentionally not part of v1.0.
-- Production fail-closed configuration for webhook signing, proxy identity, local actor fallbacks, source-code storage, secret redaction, and session/OAuth settings.
-- Redis-backed worker queue with bounded retries, safe failure summaries, readiness checks, and platform-admin replay controls.
+### Merge Guard runtime
 
-## Deployment Scope
+- Added `pnpm doctor` for toolchain, Docker, Postgres, Redis, and MinIO
+  readiness, plus non-destructive `pnpm setup` for fresh local clones.
+- Added per-detector precision proxies, a composite governance-health score, and
+  `pnpm design-partner:report` for CCR-based validation evidence. Tuning
+  proposals remain human-gated and are never auto-applied.
+- Added tamper-evident audit-chain construction and verification, optional
+  `AUDIT_STREAM_WEBHOOK_URL` delivery, and blocked-PR notifications through
+  `NOTIFICATION_WEBHOOK_URL`.
+- Added an explicitly gated sample-preview onboarding path for deployed
+  environments and a bounded deterministic evaluation benchmark.
+- Added multi-stage Docker targets, a hardened Helm chart, AWS ECS/RDS/
+  ElastiCache Terraform packaging, and Cloudflare Tunnel/Pages references.
 
-This release is intended for self-hosted deployments. A production deployment needs:
+### Security and reliability
 
-- Node.js 22.13 or newer.
-- pnpm 11.1.1.
-- Postgres.
-- Redis.
-- GitHub App credentials.
-- `GITHUB_WEBHOOK_SECRET`.
-- GitHub OAuth credentials or a trusted authenticated proxy.
-- `AGENTFORGE_API_PROXY_SECRET` when forwarding dashboard identity to the API.
-- `SESSION_SECRET` when built-in GitHub OAuth is enabled.
+- Hardened trusted-proxy identity with mandatory nonces, request-time
+  header-stripping enforcement, replay-cache bounds, and stronger production
+  secret validation.
+- Bound Postgres tenant isolation to the same transaction as the scoped query,
+  added relevant foreign-key/restrict constraints, and documented the required
+  non-superuser RLS role.
+- Made retention deletion and its audit event atomic, made repeatable worker
+  schedules idempotent, and prevented stale synchronized-PR evaluations from
+  overwriting newer GitHub check results.
+- Honored GitHub retry/rate-limit hints and corrected detector false positives
+  for coverage-threshold and skipped-test findings.
+- Pinned service images and third-party actions in CI, kept dependency review
+  and moderate-level audit gates blocking, and closed the adversarial sweep's
+  malformed-input, resource-boundary, race, state-corruption, and confused-user
+  regressions.
 
-See:
+### Loom research program
 
-- [README.md](README.md)
-- [docs/auth.md](docs/auth.md)
-- [docs/github-app-setup.md](docs/github-app-setup.md)
-- [docs/runbook.md](docs/runbook.md)
-- [docs/railway-deployment.md](docs/railway-deployment.md)
+- Added and tested native Loom slices for canonical DAG-CBOR/CID addressing,
+  binary-safe content, durable content-addressed storage and journals, working
+  copies, merge/reapply, Grants and key lifecycle, proposals/admission, ledger,
+  replication, garbage collection, backup/restore, Git fidelity, agent
+  sessions/work graphs, Wire v1, provenance, witnessed trust, and the native
+  `@agentforge/loom-agent` SDK.
+- Extended the private `loom` CLI with `init`, `status`, `propose`, `log`, and
+  the `pilot mirror|verify|restore` commands.
+- Loom remains pre-1.0. The Phase 4 dual-safety pilot tooling is available, but
+  the required operational 30-day pilot has not run; this release makes no
+  `LOOM-CORE` conformance claim.
 
 ## Validation
 
-The release candidate commit passed:
+The release branch was validated with:
 
-- `pnpm format:check`
-- `pnpm lint`
-- `pnpm test`
-- `pnpm test:integration`
-- `pnpm test:e2e`
-- `pnpm typecheck`
-- `pnpm build`
-- `pnpm release:check`
-- `git diff --check`
-- GitHub CI
-- GitHub Security workflow
-- GitHub CodeQL workflow
+- `CI=true pnpm test` — 126 files, 1,372 passed, 8 skipped; coverage was
+  80.03% statements, 70.95% branches, 83.84% functions, and 80.12% lines.
+- `pnpm test:integration` — 16 files, 148 passed, 8 skipped.
+- `pnpm test:e2e` — 16 Chromium tests passed.
+- `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm fixtures:run`,
+  `pnpm prisma:validate`, and `pnpm release:check` — passed.
+- `pnpm audit --audit-level moderate` and `pnpm audit --json` — no known
+  vulnerabilities (0 informational/low/moderate/high/critical findings).
+- Android unit tests and debug assembly, plus iOS Swift package tests and
+  simulator build — passed. Android instrumentation was not run because no
+  emulator or device was attached.
+- Post-merge `main` workflows on the release predecessor (`004c694`) were green
+  for CI, E2E, CodeQL, Security, Mobile, Merge Guard, Socket, dependency
+  review, and Dependabot Updates.
 
-## Security Posture
+Docker build checks requiring a running Docker daemon and Helm/Terraform CLI
+validation were not available in the local environment. No production
+deployment, signing, device, App Store, or hosted-service claim is implied by
+the local results above.
 
-- GitHub webhooks fail closed in production unless signed with the configured secret.
-- Raw local actor headers are local-development only and are rejected in production.
-- Trusted proxy mode requires ingress to strip spoofable identity headers before injecting trusted identity.
-- Dashboard-to-API trusted identity forwarding is signed with `AGENTFORGE_API_PROXY_SECRET`.
-- GitHub OAuth sessions are signed and use secure cookies in production.
-- Source-code storage is disabled by default.
-- Secret redaction is enabled by default.
-- Queue inspection and replay are platform-admin-only because queue state is platform-wide.
+## Deployment scope and security contract
 
-Security reports should follow [SECURITY.md](SECURITY.md).
+This is a self-hosted release. A production deployment needs Node.js 22.13 or
+newer, pnpm 11.1.1, PostgreSQL, Redis, a GitHub App, signed webhooks, and either
+GitHub OAuth with configured allowlists or a trusted authentication proxy.
+Production startup fails closed when source-code storage, unsigned webhooks,
+secret redaction, proxy signing, header stripping, or local actor fallbacks are
+unsafe. Use a non-superuser, non-`BYPASSRLS` database role for the RLS backstop.
 
-## Known Limitations
+Exports are authorized API jobs and exclude full source by default. MinIO and
+object-storage variables remain an experiment/future-adapter surface. AI/LLM
+features are disabled by default and advisory only.
 
-- This release does not include username/password authentication.
-- This release is not an npm package publication; workspace packages remain private to npm while the repository can be public on GitHub.
-- Object-storage exports are not productionized in v1.0; exports are delivered through authorized API jobs.
-- AI/LLM features are advisory only and disabled by default.
-- Live GitHub App smoke validation requires a disposable repository in an owned organization and valid GitHub App credentials.
+See [README.md](README.md), [docs/self-hosting.md](docs/self-hosting.md),
+[docs/auth.md](docs/auth.md), [docs/github-app-setup.md](docs/github-app-setup.md),
+[docs/railway-deployment.md](docs/railway-deployment.md), and
+[docs/cloudflare-deployment.md](docs/cloudflare-deployment.md).
 
-## Upgrade And Rollback
+## Upgrade and rollback
 
-This is the first public release, so there is no public upgrade path from an earlier tagged version.
+Upgrade from v1.1.0 by deploying the v1.2.0 application revision, applying
+database migrations once with `pnpm db:deploy`, and restarting the API, worker,
+and optional dashboard services. Review the production configuration contract
+and tenant-isolation role requirements before accepting public traffic.
 
-Rollback options:
-
-- Revert the deployment to the previous application image or commit.
-- Restore the database from backup if migrations were applied and rollback is not schema-compatible.
-- Remove or replace the `v1.0.0` GitHub Release if publication metadata is incorrect.
-
-Do not rewrite public git history after making the repository public unless a secret exposure requires coordinated credential rotation and history remediation.
+If a migration or deployment is not backward-compatible, restore the database
+from a verified backup before reverting application code. If webhook delivery
+fails, point the GitHub App back to the previous known-good endpoint while
+keeping unsigned webhooks disabled. Do not rewrite public git history after
+tagging this release.
