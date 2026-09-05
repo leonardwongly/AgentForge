@@ -14,7 +14,7 @@
   "dependencies": {
     "@agentforge/core": "workspace:*",
     "@agentforge/security": "workspace:*",
-    "minimatch": "10.2.5",
+    "minimatch": "10.2.6",
     "semver": "7.8.5"
   }
 }
