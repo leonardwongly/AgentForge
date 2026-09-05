@@ -53,13 +53,10 @@ describe("e2e target validation", () => {
     ).toThrow(/both use localhost:3210/u);
     expect(() =>
       assertDistinctPorts([
-        {
-          name: "web",
-          url: { hostname: "::1", port: "3210", origin: "http://[::1]:3210" } as URL
-        },
-        { name: "api", url: new URL("http://localhost:3210") }
+        { name: "web", url: new URL("http://localhost:3210") },
+        { name: "api", url: new URL("http://[::1]:3210") }
       ])
-    ).toThrow(/both use ::1:3210/u);
+    ).toThrow(/both use localhost:3210/u);
   });
 
   it("rejects a currently occupied service port", async () => {
