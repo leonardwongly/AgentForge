@@ -6,6 +6,8 @@ import type {
 } from "@agentforge/core";
 import { apiActorHeaders } from "./settings/api-actor-headers";
 import { resolveDashboardActor } from "./settings/actor";
+import { readBoundedJson } from "./security/http";
+import { encodeOpaqueSegment } from "./security/navigation";
 
 export type DashboardRecord = {
   record: ChangeControlRecord;
@@ -274,6 +276,17 @@ export type GithubInstallationAdminData = {
 
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://localhost:4000";
 const API_FETCH_TIMEOUT_MS = 5_000;
+const DASHBOARD_DEFAULT_PAGE_SIZE = 50;
+const DASHBOARD_MAX_PAGE_SIZE = 100;
+const DASHBOARD_MAX_OFFSET = Number.MAX_SAFE_INTEGER - DASHBOARD_MAX_PAGE_SIZE;
+const RECORD_SORTS = new Set([
+  "updated_desc",
+  "updated_asc",
+  "created_desc",
+  "created_asc",
+  "pr_asc",
+  "pr_desc"
+]);
 
 export async function loadDashboardData(
   request: DashboardDataRequest = {}
@@ -303,19 +316,22 @@ export async function loadDashboardData(
     return {
       records: [],
       source: "unavailable",
-      message:
-        error instanceof Error
-          ? `Dashboard API unavailable: ${error.message}. Start the API with pnpm dev:api.`
-          : "Dashboard API unavailable. Start the API with pnpm dev:api."
+      message: unavailableMessage(
+        "Dashboard API unavailable",
+        error,
+        "Start the API with pnpm dev:api"
+      )
     };
   }
 }
 
 function dashboardQueryString(request: DashboardDataRequest): string {
   const params = new URLSearchParams({
-    limit: String(request.limit ?? 50),
-    offset: String(request.offset ?? 0),
-    sort: request.sort ?? "updated_desc"
+    limit: String(
+      boundedPageNumber(request.limit, DASHBOARD_DEFAULT_PAGE_SIZE, 1, DASHBOARD_MAX_PAGE_SIZE)
+    ),
+    offset: String(boundedPageNumber(request.offset, 0, 0, DASHBOARD_MAX_OFFSET)),
+    sort: RECORD_SORTS.has(request.sort ?? "") ? (request.sort as string) : "updated_desc"
   });
   for (const [key, value] of Object.entries({
     repositoryId: request.repositoryId,
@@ -325,11 +341,23 @@ function dashboardQueryString(request: DashboardDataRequest): string {
     policyVersion: request.policyVersion,
     queue: request.queue
   })) {
-    if (value) {
-      params.set(key, value);
+    if (typeof value === "string" && value.trim().length > 0 && value.length <= 240) {
+      params.set(key, value.trim());
     }
   }
   return `?${params.toString()}`;
+}
+
+function boundedPageNumber(
+  value: number | undefined,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  if (value === undefined || !Number.isSafeInteger(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, value));
 }
 
 function isApiNotFound(error: unknown): boolean {
@@ -340,8 +368,13 @@ export async function loadRecord(
   id: string
 ): Promise<DashboardData & { item: DashboardRecord | undefined }> {
   try {
+    // Next may provide a route parameter with one layer of percent encoding
+    // still present (browser navigation preserves encoded slashes). Decode
+    // exactly once before re-encoding so opaque IDs are not double-escaped into
+    // a different API resource, while malformed encodings remain inert.
+    const decodedId = decodeOpaqueSegment(id);
     const payload = await fetchApiJson<{ record: ChangeControlRecord }>(
-      `/api/pull-requests/${encodeURIComponent(id)}/change-control-record`
+      `/api/pull-requests/${encodeOpaqueSegment(decodedId)}/change-control-record`
     );
     const item = decorateRecords([payload.record])[0];
     return {
@@ -364,12 +397,21 @@ export async function loadRecord(
     return {
       records: [],
       source: "unavailable",
-      message:
-        error instanceof Error
-          ? `Dashboard API unavailable: ${error.message}. Start the API with pnpm dev:api.`
-          : "Dashboard API unavailable. Start the API with pnpm dev:api.",
+      message: unavailableMessage(
+        "Dashboard API unavailable",
+        error,
+        "Start the API with pnpm dev:api"
+      ),
       item: undefined
     };
+  }
+}
+
+function decodeOpaqueSegment(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
   }
 }
 
@@ -404,10 +446,7 @@ export async function loadPolicyTuningInsights(): Promise<PolicyTuningData> {
       detectorMetrics: [],
       insights: [],
       source: "unavailable",
-      message:
-        error instanceof Error
-          ? `Policy insights API unavailable: ${error.message}.`
-          : "Policy insights API unavailable."
+      message: unavailableMessage("Policy insights API unavailable", error)
     };
   }
 }
@@ -430,7 +469,7 @@ export async function loadPolicyYaml(repositoryId: string): Promise<{
       version?: string | undefined;
       policyPackId?: string | undefined;
       policyPackVersion?: string | undefined;
-    }>(`/api/repositories/${encodeURIComponent(repositoryId)}/policy`);
+    }>(`/api/repositories/${encodeOpaqueSegment(repositoryId)}/policy`);
     return {
       repositoryId: payload.repositoryId,
       policy: payload.policy ?? "",
@@ -446,10 +485,7 @@ export async function loadPolicyYaml(repositoryId: string): Promise<{
       repositoryId,
       policy: "",
       source: "unavailable",
-      message:
-        error instanceof Error
-          ? `Policy API unavailable or no active policy is configured: ${error.message}.`
-          : "Policy API unavailable or no active policy is configured."
+      message: unavailableMessage("Policy API unavailable or no active policy is configured", error)
     };
   }
 }
@@ -473,7 +509,7 @@ export async function loadPolicyVersionHistory(repositoryId: string): Promise<{
     const payload = await fetchApiJson<{
       repositoryId: string;
       versions?: PolicyVersionHistoryEntry[] | undefined;
-    }>(`/api/repositories/${encodeURIComponent(repositoryId)}/policy/versions`);
+    }>(`/api/repositories/${encodeOpaqueSegment(repositoryId)}/policy/versions`);
     return {
       repositoryId: payload.repositoryId,
       versions: payload.versions ?? [],
@@ -485,10 +521,7 @@ export async function loadPolicyVersionHistory(repositoryId: string): Promise<{
       repositoryId,
       versions: [],
       source: "unavailable",
-      message:
-        error instanceof Error
-          ? `Policy version history API unavailable: ${error.message}.`
-          : "Policy version history API unavailable."
+      message: unavailableMessage("Policy version history API unavailable", error)
     };
   }
 }
@@ -509,10 +542,7 @@ export async function loadRepositories(): Promise<{
     return {
       repositories: [],
       source: "unavailable",
-      message:
-        error instanceof Error
-          ? `Repository API unavailable: ${error.message}.`
-          : "Repository API unavailable."
+      message: unavailableMessage("Repository API unavailable", error)
     };
   }
 }
@@ -533,10 +563,7 @@ export async function loadPolicyPacks(): Promise<{
     return {
       policyPacks: [],
       source: "unavailable",
-      message:
-        error instanceof Error
-          ? `Policy pack API unavailable: ${error.message}.`
-          : "Policy pack API unavailable."
+      message: unavailableMessage("Policy pack API unavailable", error)
     };
   }
 }
@@ -562,10 +589,7 @@ export async function loadOnboardingStatus(): Promise<{
     return {
       steps: [],
       source: "unavailable",
-      message:
-        error instanceof Error
-          ? `Onboarding API unavailable: ${error.message}.`
-          : "Onboarding API unavailable."
+      message: unavailableMessage("Onboarding API unavailable", error)
     };
   }
 }
@@ -586,10 +610,7 @@ export async function loadSettings(): Promise<{
     return {
       settings: undefined,
       source: "unavailable",
-      message:
-        error instanceof Error
-          ? `Settings API unavailable: ${error.message}.`
-          : "Settings API unavailable."
+      message: unavailableMessage("Settings API unavailable", error)
     };
   }
 }
@@ -610,10 +631,7 @@ export async function loadGithubInstallations(): Promise<{
     return {
       data: undefined,
       source: "unavailable",
-      message:
-        error instanceof Error
-          ? `GitHub installation API unavailable: ${error.message}.`
-          : "GitHub installation API unavailable."
+      message: unavailableMessage("GitHub installation API unavailable", error)
     };
   }
 }
@@ -845,12 +863,27 @@ export function humanize(value: string): string {
 }
 
 export function formatDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "unknown";
+  }
   return new Intl.DateTimeFormat("en", {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit"
-  }).format(new Date(value));
+  }).format(date);
+}
+
+function unavailableMessage(label: string, error: unknown, followUp?: string): string {
+  const detail =
+    error instanceof Error
+      ? /^([1-5]\d{2})(?:\s+([A-Za-z][A-Za-z0-9 _-]{0,80}))?$/u.exec(
+          error.message.trim().replace(/[.!?]+$/u, "")
+        )
+      : undefined;
+  const message = detail ? `${label}: ${detail[1]}${detail[2] ? ` ${detail[2]}` : ""}` : label;
+  return `${message}.${followUp ? ` ${followUp}.` : ""}`;
 }
 
 async function fetchApiJson<T>(path: string): Promise<T> {
@@ -866,7 +899,7 @@ async function fetchApiJson<T>(path: string): Promise<T> {
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
   }
-  return (await response.json()) as T;
+  return await readBoundedJson<T>(response);
 }
 
 function decorateRecords(records: ChangeControlRecord[]): DashboardRecord[] {

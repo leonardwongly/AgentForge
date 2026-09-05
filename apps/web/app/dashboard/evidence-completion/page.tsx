@@ -10,6 +10,7 @@ import {
   missingEvidence
 } from "../../data";
 import { approveEvidence, rejectEvidence } from "../../records/actions";
+import { recordHref } from "../../security/navigation";
 
 type EvidenceCompletionPageProps = {
   searchParams?: Promise<{
@@ -144,7 +145,7 @@ export default async function EvidenceCompletionPage({
                 .map((item) => (
                   <li key={item.record.id}>
                     <div className="list-row">
-                      <Link href={`/records/${item.record.id}`}>
+                      <Link href={recordHref(item.record.id)}>
                         {item.record.repositoryFullName} #{item.record.pullRequestNumber}
                       </Link>
                       <StatusBadge status={item.record.checkStatus} />
@@ -192,7 +193,7 @@ export default async function EvidenceCompletionPage({
                   <tr key={`${item.record.id}:${evidence.id}`}>
                     <td>{item.record.repositoryFullName}</td>
                     <td>
-                      <Link href={`/records/${item.record.id}`}>
+                      <Link href={recordHref(item.record.id)}>
                         #{item.record.pullRequestNumber}
                       </Link>
                     </td>
@@ -253,7 +254,7 @@ export default async function EvidenceCompletionPage({
                       ) : evidence.status === "approved" ? (
                         <StatusBadge status="approved" label="complete" />
                       ) : (
-                        <Link className="button" href={`/records/${item.record.id}`}>
+                        <Link className="button" href={recordHref(item.record.id)}>
                           Submit evidence
                         </Link>
                       )}

@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { SignatureReplayGuard } from "@agentforge/core/cache";
 import { readDashboardSessionFromCookieHeader } from "../auth/session";
+import { dashboardRoleForGitHubLogin } from "../auth/github/access";
 
 export type DashboardActorContext = {
   login: string;
@@ -32,13 +33,18 @@ const organizationPattern = /^[A-Za-z0-9_.-]{1,128}$/u;
 const localOrganizationId = "org_local";
 
 const SIGNATURE_WINDOW_SECONDS = 5 * 60;
+const MAX_TRUSTED_HEADER_LENGTH = 128;
 // Cross-instance-safe replay cache backed by Redis (SET NX EX), falling back
 // to a bounded in-process claim set when REDIS_URL is unset/unreachable. See
 // apps/api/src/auth.ts's identical pattern; a distinct key namespace
 // ("agentforge:replay:dashboard:") keeps API and dashboard replay claims from
 // ever colliding even though both share the same Redis instance in most
 // deployments.
-const dashboardSignatureReplayGuard = new SignatureReplayGuard(process.env.REDIS_URL);
+const dashboardSignatureReplayGuard = new SignatureReplayGuard(
+  process.env.REDIS_URL,
+  undefined,
+  process.env.NODE_ENV === "production"
+);
 
 async function registerDashboardSignatureUse(signature: string, nowMs: number): Promise<boolean> {
   return dashboardSignatureReplayGuard.claim(
@@ -64,7 +70,7 @@ export async function resolveDashboardActorContext(
   }
 
   const fromSession = input.headers
-    ? dashboardActorFromSession(input.headers, env.SESSION_SECRET)
+    ? dashboardActorFromSession(input.headers, env.SESSION_SECRET, env, nodeEnv)
     : undefined;
   if (fromSession) {
     return fromSession;
@@ -97,13 +103,12 @@ async function dashboardActorFromTrustedHeaders(
   if (!secret) {
     return undefined;
   }
-  const login = headers.get("x-agentforge-authenticated-actor")?.trim() || undefined;
-  const role = headers.get("x-agentforge-authenticated-role")?.trim() || undefined;
-  const organizationId =
-    headers.get("x-agentforge-authenticated-organization")?.trim() || undefined;
-  const timestampStr = headers.get("x-agentforge-signature-timestamp")?.trim() || undefined;
-  const signatureStr = headers.get("x-agentforge-signature")?.trim() || undefined;
-  const nonceStr = headers.get("x-agentforge-signature-nonce")?.trim() || undefined;
+  const login = boundedHeaderValue(headers, "x-agentforge-authenticated-actor");
+  const role = boundedHeaderValue(headers, "x-agentforge-authenticated-role");
+  const organizationId = boundedHeaderValue(headers, "x-agentforge-authenticated-organization");
+  const timestampStr = boundedHeaderValue(headers, "x-agentforge-signature-timestamp");
+  const signatureStr = boundedHeaderValue(headers, "x-agentforge-signature");
+  const nonceStr = boundedHeaderValue(headers, "x-agentforge-signature-nonce");
   // The nonce is mandatory, not optional: a nonce-less signed request has no
   // per-request binding, so registerDashboardSignatureUse is never consulted
   // for it and it could otherwise be replayed indefinitely within the
@@ -112,14 +117,20 @@ async function dashboardActorFromTrustedHeaders(
   if (!login || !role || !organizationId || !timestampStr || !signatureStr || !nonceStr) {
     return undefined;
   }
-  const timestamp = Number.parseInt(timestampStr, 10);
+  if (!/^\d{1,12}$/u.test(timestampStr)) {
+    return undefined;
+  }
+  if (!/^[a-fA-F0-9]{64}$/u.test(signatureStr)) {
+    return undefined;
+  }
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(nonceStr)) {
+    return undefined;
+  }
+  const timestamp = Number(timestampStr);
   if (
     Number.isNaN(timestamp) ||
     Math.abs(Math.floor(now / 1000) - timestamp) > SIGNATURE_WINDOW_SECONDS
   ) {
-    return undefined;
-  }
-  if (!/^[a-fA-F0-9]+$/u.test(signatureStr)) {
     return undefined;
   }
   const payload = [timestampStr, nonceStr, login, role, organizationId].join(":");
@@ -147,11 +158,49 @@ async function dashboardActorFromTrustedHeaders(
     : undefined;
 }
 
+function boundedHeaderValue(headers: HeaderReader, name: string): string | undefined {
+  const value = headers.get(name);
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= MAX_TRUSTED_HEADER_LENGTH ? trimmed : undefined;
+}
+
 function dashboardActorFromSession(
   headers: HeaderReader,
-  secret: string | undefined
+  secret: string | undefined,
+  env: Record<string, string | undefined>,
+  nodeEnv: string | undefined
 ): DashboardActorContext | undefined {
   const session = readDashboardSessionFromCookieHeader(headers.get("cookie"), secret);
+  // Session claims are a snapshot of the access decision made during OAuth.
+  // Re-evaluate that decision on every request when an access policy is
+  // configured, so removing a login from the administrator/allow list (or
+  // changing its role) takes effect without waiting for the bearer cookie to
+  // expire. Production rejects sessions when the policy is absent as well;
+  // OAuth callback would not have issued such a session in the first place.
+  if (session?.provider !== "github") {
+    return undefined;
+  }
+  const configuredOrganization = env.AGENTFORGE_DASHBOARD_ORGANIZATION?.trim();
+  const expectedOrganization =
+    configuredOrganization || (nodeEnv === "production" ? "org_local" : undefined);
+  if (expectedOrganization && session.organizationId !== expectedOrganization) {
+    return undefined;
+  }
+  const hasAccessPolicy =
+    env.AGENTFORGE_GITHUB_ADMIN_LOGINS !== undefined ||
+    env.AGENTFORGE_GITHUB_ALLOWED_LOGINS !== undefined;
+  if (hasAccessPolicy || nodeEnv === "production") {
+    const currentRole = dashboardRoleForGitHubLogin(session.login, {
+      AGENTFORGE_GITHUB_ADMIN_LOGINS: env.AGENTFORGE_GITHUB_ADMIN_LOGINS,
+      AGENTFORGE_GITHUB_ALLOWED_LOGINS: env.AGENTFORGE_GITHUB_ALLOWED_LOGINS
+    });
+    if (!currentRole || currentRole !== session.role) {
+      return undefined;
+    }
+  }
   const login = safeActorValue(session?.login);
   const role = safeRoleValue(session?.role);
   const organizationId = safeOrganizationValue(session?.organizationId);

@@ -2,6 +2,9 @@ export function dashboardRoleForGitHubLogin(
   login: string,
   env: Record<string, string | undefined> = process.env
 ): string | undefined {
+  if (typeof login !== "string") {
+    return undefined;
+  }
   const normalized = login.trim().toLowerCase();
   if (!normalized) {
     return undefined;

@@ -3,6 +3,7 @@ import { Lightbulb, ShieldCheck } from "lucide-react";
 import { MetricCard, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../data-source-notice";
 import { formatDate, humanize, loadPolicyTuningInsights } from "../../data";
+import { recordHref } from "../../security/navigation";
 
 export default async function PolicyInsightsPage() {
   const data = await loadPolicyTuningInsights();
@@ -140,7 +141,7 @@ export default async function PolicyInsightsPage() {
                     {insight.citations.map((citation) => (
                       <tr key={citation.recordId}>
                         <td>
-                          <Link href={`/records/${citation.recordId}`}>
+                          <Link href={recordHref(citation.recordId)}>
                             {citation.repositoryFullName} #{citation.pullRequestNumber}
                           </Link>
                         </td>

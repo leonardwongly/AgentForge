@@ -2,6 +2,7 @@ import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import {
   DASHBOARD_SESSION_COOKIE,
+  DASHBOARD_SESSION_MAX_AGE_SECONDS,
   GITHUB_OAUTH_STATE_COOKIE,
   createDashboardSessionCookie,
   readOauthStateCookie
@@ -86,7 +87,7 @@ export async function GET(request: Request): Promise<never> {
         sameSite: "lax",
         secure: secureCookies,
         path: "/",
-        maxAge: 60 * 60 * 8
+        maxAge: DASHBOARD_SESSION_MAX_AGE_SECONDS
       }
     );
   } catch {

@@ -4,6 +4,7 @@ import { StatusBadge } from "@agentforge/ui";
 import { loadPolicyPacks, loadPolicyVersionHistory, loadPolicyYaml } from "../../../data";
 import { saveRepositoryPolicy } from "./actions";
 import { RevertPolicyForm } from "./revert-policy-form";
+import { repositoryHref } from "../../../security/navigation";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -90,7 +91,7 @@ export default async function PolicyEditorPage({ params }: PageProps) {
                 <h2>Active repository policy</h2>
                 <p>Edits create a new immutable policy version for future evaluations.</p>
               </div>
-              <Link className="button" href={`/repositories/${id}/policy-preview`}>
+              <Link className="button" href={repositoryHref(id, "policy-preview")}>
                 <WandSparkles size={16} aria-hidden="true" /> Preview
               </Link>
             </div>

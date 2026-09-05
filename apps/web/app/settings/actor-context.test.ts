@@ -251,7 +251,11 @@ describe("dashboard actor context", () => {
 
     expect(
       await resolveDashboardActorContext({
-        env: { SESSION_SECRET: "test-session-secret" },
+        env: {
+          SESSION_SECRET: "test-session-secret",
+          AGENTFORGE_GITHUB_ADMIN_LOGINS: "octocat",
+          AGENTFORGE_DASHBOARD_ORGANIZATION: "org-a"
+        },
         headers: headers({
           cookie: `${DASHBOARD_SESSION_COOKIE}=${session}`
         }),
@@ -263,6 +267,78 @@ describe("dashboard actor context", () => {
       organizationId: "org-a",
       source: "session"
     });
+  });
+
+  it("revokes a signed session when the GitHub access policy removes the login", async () => {
+    const session = createDashboardSessionCookie(
+      {
+        login: "octocat",
+        role: "platform_admin",
+        organizationId: "org-a",
+        provider: "github"
+      },
+      "test-session-secret"
+    );
+
+    await expect(
+      resolveDashboardActorContext({
+        env: {
+          SESSION_SECRET: "test-session-secret",
+          AGENTFORGE_GITHUB_ADMIN_LOGINS: "other-admin",
+          AGENTFORGE_DASHBOARD_ORGANIZATION: "org-a"
+        },
+        headers: headers({ cookie: `${DASHBOARD_SESSION_COOKIE}=${session}` }),
+        nodeEnv: "production"
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("revokes a signed administrator session when its role changes", async () => {
+    const session = createDashboardSessionCookie(
+      {
+        login: "octocat",
+        role: "platform_admin",
+        organizationId: "org-a",
+        provider: "github"
+      },
+      "test-session-secret"
+    );
+
+    await expect(
+      resolveDashboardActorContext({
+        env: {
+          SESSION_SECRET: "test-session-secret",
+          AGENTFORGE_GITHUB_ALLOWED_LOGINS: "octocat",
+          AGENTFORGE_DASHBOARD_ORGANIZATION: "org-a"
+        },
+        headers: headers({ cookie: `${DASHBOARD_SESSION_COOKIE}=${session}` }),
+        nodeEnv: "production"
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it("revokes a signed session when the configured dashboard organization changes", async () => {
+    const session = createDashboardSessionCookie(
+      {
+        login: "octocat",
+        role: "platform_admin",
+        organizationId: "org-a",
+        provider: "github"
+      },
+      "test-session-secret"
+    );
+
+    await expect(
+      resolveDashboardActorContext({
+        env: {
+          SESSION_SECRET: "test-session-secret",
+          AGENTFORCE_GITHUB_ADMIN_LOGINS: "octocat",
+          AGENTFORGE_DASHBOARD_ORGANIZATION: "org-b"
+        },
+        headers: headers({ cookie: `${DASHBOARD_SESSION_COOKIE}=${session}` }),
+        nodeEnv: "production"
+      })
+    ).resolves.toBeUndefined();
   });
 
   it("rejects tampered GitHub OAuth session cookies", async () => {
@@ -377,6 +453,27 @@ describe("dashboard actor context", () => {
         nodeEnv: "development"
       })
     ).toBeUndefined();
+  });
+
+  it("rejects trusted header identities containing non-ASCII homoglyph substitutions", async () => {
+    const env = {
+      AGENTFORGE_DASHBOARD_TRUST_PROXY_HEADERS: "true",
+      AGENTFORGE_DASHBOARD_PROXY_SECRET: DASHBOARD_PROXY_SECRET
+    };
+    const homoglyphIdentities = [
+      { login: "аlex", role: "platform_admin", organizationId: "org-a" },
+      { login: "alex", role: "platform_admin", organizationId: "οrg-a" }
+    ];
+
+    for (const identity of homoglyphIdentities) {
+      expect(
+        await resolveDashboardActorContext({
+          env,
+          headers: headers(signedTrustedHeaders(identity)),
+          nodeEnv: "production"
+        })
+      ).toBeUndefined();
+    }
   });
 
   it("provides an actionable missing-auth message", () => {

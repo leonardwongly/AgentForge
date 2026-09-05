@@ -21,10 +21,8 @@ export async function saveRepositoryPolicy(formData: FormData): Promise<void> {
       body: JSON.stringify({ contentYaml })
     });
   } catch (error) {
-    redirectWithError(
-      returnTo,
-      error instanceof Error ? error.message : "Repository policy could not be saved."
-    );
+    void error;
+    redirectWithError(returnTo, "Repository policy could not be saved.");
   }
 
   revalidatePath(returnTo);
@@ -53,10 +51,8 @@ export async function revertRepositoryPolicy(formData: FormData): Promise<void> 
       }
     );
   } catch (error) {
-    redirectWithError(
-      returnTo,
-      error instanceof Error ? error.message : "Repository policy could not be reverted."
-    );
+    void error;
+    redirectWithError(returnTo, "Repository policy could not be reverted.");
   }
 
   revalidatePath(returnTo);
