@@ -26,6 +26,10 @@ class MainScreenViewModel(
   val uiState: StateFlow<MainScreenUiState> = _uiState.asStateFlow()
 
   private var initialCheckStarted = false
+  // Each new check supersedes the previous one. Network completions can arrive
+  // out of order when an operator edits the endpoint or taps a check again.
+  private var healthRequestSequence = 0L
+  private var readinessRequestSequence = 0L
 
   init {
     _uiState.update {
@@ -44,6 +48,8 @@ class MainScreenViewModel(
   }
 
   fun updateApiBaseUrl(value: String) {
+    healthRequestSequence += 1
+    readinessRequestSequence += 1
     _uiState.update { it.copy(apiBaseUrl = value, apiUrlError = null) }
   }
 
@@ -52,6 +58,8 @@ class MainScreenViewModel(
   }
 
   fun resetDefaults() {
+    healthRequestSequence += 1
+    readinessRequestSequence += 1
     _uiState.value =
       MainScreenUiState(
         apiBaseUrl = DEFAULT_API_BASE_URL,
@@ -67,10 +75,13 @@ class MainScreenViewModel(
   }
 
   fun checkHealth() {
+    val requestId = ++healthRequestSequence
     val apiBaseUrl = normalizeApiBaseUrl() ?: return
     _uiState.update { it.copy(isCheckingHealth = true, healthError = null) }
     viewModelScope.launch {
-      when (val result = apiClient.fetchHealth(apiBaseUrl)) {
+      val result = apiClient.fetchHealth(apiBaseUrl)
+      if (requestId != healthRequestSequence) return@launch
+      when (result) {
         is ProbeResult.Success ->
           _uiState.update {
             it.copy(
@@ -91,10 +102,13 @@ class MainScreenViewModel(
   }
 
   fun checkReadiness() {
+    val requestId = ++readinessRequestSequence
     val apiBaseUrl = normalizeApiBaseUrl() ?: return
     _uiState.update { it.copy(isCheckingReadiness = true, readinessError = null) }
     viewModelScope.launch {
-      when (val result = apiClient.fetchReadiness(apiBaseUrl)) {
+      val result = apiClient.fetchReadiness(apiBaseUrl)
+      if (requestId != readinessRequestSequence) return@launch
+      when (result) {
         is ProbeResult.Success ->
           _uiState.update {
             it.copy(

@@ -100,14 +100,15 @@ export async function runDoctor(
   return computeReadinessScore(checks);
 }
 
-export function checkNodeVersion(): DoctorCheck {
-  const version = process.versions.node ?? "";
+export function checkNodeVersion(version = process.versions.node ?? ""): DoctorCheck {
   const ok = compareVersions(version, NODE_MINIMUM) >= 0;
   return {
     name: "Node.js",
     ok,
     required: true,
-    detail: ok ? `v${version} (>= ${NODE_MINIMUM})` : `v${version} is below the minimum ${NODE_MINIMUM}`,
+    detail: ok
+      ? `v${version} (>= ${NODE_MINIMUM})`
+      : `v${version} is below the minimum ${NODE_MINIMUM}`,
     remediation: ok ? undefined : "Install Node.js 22.13 or newer (e.g. via nvm or Homebrew)."
   };
 }
@@ -218,8 +219,15 @@ async function isPortOpen(host: string, port: number): Promise<boolean> {
 }
 
 function compareVersions(a: string, b: string): number {
-  const aParts = a.split(".").map((part) => Number.parseInt(part, 10) || 0);
-  const bParts = b.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const parseVersion = (value: string): number[] => {
+    if (!/^\d+(?:\.\d+)*$/u.test(value)) {
+      return [0];
+    }
+    const parts = value.split(".").map((part) => Number(part));
+    return parts.every((part) => Number.isSafeInteger(part)) ? parts : [0];
+  };
+  const aParts = parseVersion(a);
+  const bParts = parseVersion(b);
   const length = Math.max(aParts.length, bParts.length);
   for (let i = 0; i < length; i += 1) {
     const diff = (aParts[i] ?? 0) - (bParts[i] ?? 0);

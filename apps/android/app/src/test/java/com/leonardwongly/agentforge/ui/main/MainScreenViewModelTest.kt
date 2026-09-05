@@ -7,14 +7,17 @@ import com.leonardwongly.agentforge.data.OperatorSettingsStore
 import com.leonardwongly.agentforge.data.ProbeResult
 import com.leonardwongly.agentforge.data.ReadinessSnapshot
 import java.time.Instant
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
@@ -109,6 +112,55 @@ class MainScreenViewModelTest {
 
     assertEquals("https://dash.example.com/auth/github/login", viewModel.githubOAuthUrl())
   }
+
+  @Test
+  fun checkHealth_ignoresOlderCompletionAfterEndpointChanges() =
+    runTest(dispatcher) {
+      val client = DeferredApiClient()
+      val viewModel = MainScreenViewModel(apiClient = client, settings = InMemoryOperatorSettingsStore())
+
+      viewModel.updateApiBaseUrl("https://old.example.com")
+      viewModel.checkHealth()
+      advanceUntilIdle()
+      viewModel.updateApiBaseUrl("https://new.example.com")
+      viewModel.checkHealth()
+      advanceUntilIdle()
+
+      assertEquals(listOf("https://old.example.com", "https://new.example.com"), client.healthCalls.map { it.url })
+
+      val oldSnapshot = healthSnapshot("old")
+      val newSnapshot = healthSnapshot("new")
+      client.healthCalls[1].result.complete(ProbeResult.Success(newSnapshot))
+      advanceUntilIdle()
+      client.healthCalls[0].result.complete(ProbeResult.Success(oldSnapshot))
+      advanceUntilIdle()
+
+      assertEquals(newSnapshot, viewModel.uiState.value.health)
+      assertFalse(viewModel.uiState.value.isCheckingHealth)
+    }
+
+  @Test
+  fun checkReadiness_ignoresOlderCompletionAfterRepeatedCheck() =
+    runTest(dispatcher) {
+      val client = DeferredApiClient()
+      val viewModel = MainScreenViewModel(apiClient = client, settings = InMemoryOperatorSettingsStore())
+
+      viewModel.updateApiBaseUrl("https://api.example.com")
+      viewModel.checkReadiness()
+      advanceUntilIdle()
+      viewModel.checkReadiness()
+      advanceUntilIdle()
+
+      val oldSnapshot = readinessSnapshot("old")
+      val newSnapshot = readinessSnapshot("new")
+      client.readinessCalls[1].result.complete(ProbeResult.Success(newSnapshot))
+      advanceUntilIdle()
+      client.readinessCalls[0].result.complete(ProbeResult.Success(oldSnapshot))
+      advanceUntilIdle()
+
+      assertEquals(newSnapshot, viewModel.uiState.value.readiness)
+      assertFalse(viewModel.uiState.value.isCheckingReadiness)
+    }
 }
 
 
@@ -143,3 +195,55 @@ private class FakeApiClient : AgentForgeApiClient() {
       ),
     )
 }
+
+private class DeferredApiClient : AgentForgeApiClient() {
+  data class PendingHealth(
+    val url: String,
+    val result: CompletableDeferred<ProbeResult<HealthSnapshot>> = CompletableDeferred(),
+  )
+
+  data class PendingReadiness(
+    val url: String,
+    val result: CompletableDeferred<ProbeResult<ReadinessSnapshot>> = CompletableDeferred(),
+  )
+
+  val healthCalls = mutableListOf<PendingHealth>()
+  val readinessCalls = mutableListOf<PendingReadiness>()
+
+  override suspend fun fetchHealth(apiBaseUrl: String): ProbeResult<HealthSnapshot> {
+    val pending = PendingHealth(apiBaseUrl)
+    healthCalls += pending
+    return pending.result.await()
+  }
+
+  override suspend fun fetchReadiness(apiBaseUrl: String): ProbeResult<ReadinessSnapshot> {
+    val pending = PendingReadiness(apiBaseUrl)
+    readinessCalls += pending
+    return pending.result.await()
+  }
+}
+
+private fun healthSnapshot(version: String) =
+  HealthSnapshot(
+    httpStatus = 200,
+    status = "ok",
+    database = "configured",
+    workerQueue = "configured",
+    runtimeStore = "postgres",
+    unsignedWebhookMode = "disabled",
+    version = version,
+    checkedAt = Instant.EPOCH,
+  )
+
+private fun readinessSnapshot(version: String) =
+  ReadinessSnapshot(
+    httpStatus = 200,
+    status = "ready",
+    database = "configured",
+    workerQueue = "configured",
+    runtimeStore = "postgres",
+    queueStatus = "ready",
+    queueBackend = "redis",
+    version = version,
+    checkedAt = Instant.EPOCH,
+  )

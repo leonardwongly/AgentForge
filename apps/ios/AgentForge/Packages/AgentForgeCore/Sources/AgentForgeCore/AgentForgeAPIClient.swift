@@ -1,6 +1,7 @@
 import Foundation
 
 public struct AgentForgeAPIClient: Sendable {
+    private static let maxResponseBytes = 1_048_576
     private let session: URLSession
 
     public init(session: URLSession = .shared) {
@@ -23,9 +24,18 @@ public struct AgentForgeAPIClient: Sendable {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 10
 
-        let (data, response) = try await session.data(for: request)
+        let (bytes, response) = try await session.bytes(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw APIClientError.invalidResponse
+        }
+
+        var data = Data()
+        data.reserveCapacity(min(Self.maxResponseBytes, 64 * 1024))
+        for try await byte in bytes {
+            if data.count >= Self.maxResponseBytes {
+                throw APIClientError.responseTooLarge
+            }
+            data.append(byte)
         }
 
         do {
@@ -46,6 +56,7 @@ struct HTTPDecodedResponse<Value> {
 public enum APIClientError: LocalizedError {
     case invalidResponse
     case invalidJSON
+    case responseTooLarge
 
     public var errorDescription: String? {
         switch self {
@@ -53,16 +64,22 @@ public enum APIClientError: LocalizedError {
             "AgentForge returned an invalid response."
         case .invalidJSON:
             "AgentForge returned invalid JSON."
+        case .responseTooLarge:
+            "AgentForge returned an unexpectedly large response."
         }
     }
 }
 
 struct HealthResponse: Decodable {
     let status: String
-    let database: String
-    let workerQueue: String
-    let runtimeStore: String
-    let unsignedWebhookMode: String
+    // `/health` is intentionally a minimal public load-balancer contract.
+    // Deployment details are only present on older/private responses, so do
+    // not make those optional fields a reason to reject an otherwise healthy
+    // process response.
+    let database: String?
+    let workerQueue: String?
+    let runtimeStore: String?
+    let unsignedWebhookMode: String?
     let version: String
 }
 
@@ -73,6 +90,47 @@ struct ReadinessResponse: Decodable {
     let runtimeStore: String
     let queue: QueueResponse?
     let version: String
+    /// Distinguishes the legacy response (where `queue` was omitted) from an
+    /// explicitly null queue. The latter must not be treated as ready.
+    let hasQueueField: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case status
+        case database
+        case workerQueue
+        case runtimeStore
+        case queue
+        case version
+    }
+
+    init(
+        status: String,
+        database: String,
+        workerQueue: String,
+        runtimeStore: String,
+        queue: QueueResponse?,
+        version: String,
+        hasQueueField: Bool? = nil
+    ) {
+        self.status = status
+        self.database = database
+        self.workerQueue = workerQueue
+        self.runtimeStore = runtimeStore
+        self.queue = queue
+        self.version = version
+        self.hasQueueField = hasQueueField ?? (queue != nil)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = try container.decode(String.self, forKey: .status)
+        database = try container.decode(String.self, forKey: .database)
+        workerQueue = try container.decode(String.self, forKey: .workerQueue)
+        runtimeStore = try container.decode(String.self, forKey: .runtimeStore)
+        queue = try container.decodeIfPresent(QueueResponse.self, forKey: .queue)
+        version = try container.decode(String.self, forKey: .version)
+        hasQueueField = container.contains(.queue)
+    }
 }
 
 struct QueueResponse: Decodable {
@@ -118,10 +176,10 @@ public struct HealthSnapshot: Equatable {
         self.init(
             httpStatus: httpStatus,
             status: response.status,
-            database: response.database,
-            workerQueue: response.workerQueue,
-            runtimeStore: response.runtimeStore,
-            unsignedWebhookMode: response.unsignedWebhookMode,
+            database: response.database ?? "",
+            workerQueue: response.workerQueue ?? "",
+            runtimeStore: response.runtimeStore ?? "",
+            unsignedWebhookMode: response.unsignedWebhookMode ?? "",
             version: response.version,
             checkedAt: checkedAt
         )
@@ -138,6 +196,9 @@ public struct ReadinessSnapshot: Equatable {
     public let queueBackend: String
     public let version: String
     public let checkedAt: Date
+    // Internal compatibility marker: old deployments omitted `queue`, while
+    // a present-but-null/malformed queue is not evidence of readiness.
+    let hasExplicitQueue: Bool
 
     public var isReady: Bool {
         (200..<300).contains(httpStatus) && status == "ready"
@@ -148,7 +209,8 @@ public struct ReadinessSnapshot: Equatable {
     }
 
     public var hasQueueBackedEvaluations: Bool {
-        workerQueue == "configured" && queueStatus == "ready"
+        workerQueue == "configured" && queueStatus == "ready" &&
+            (queueBackend == "redis" || (!hasExplicitQueue && queueBackend == "configured"))
     }
 
     public var isProductionReady: Bool {
@@ -175,19 +237,19 @@ public struct ReadinessSnapshot: Equatable {
         self.queueBackend = queueBackend
         self.version = version
         self.checkedAt = checkedAt
+        self.hasExplicitQueue = false
     }
 
     init(response: ReadinessResponse, httpStatus: Int, checkedAt: Date) {
-        self.init(
-            httpStatus: httpStatus,
-            status: response.status,
-            database: response.database,
-            workerQueue: response.workerQueue,
-            runtimeStore: response.runtimeStore,
-            queueStatus: response.queue?.status ?? (response.workerQueue == "configured" && response.status == "ready" ? "ready" : ""),
-            queueBackend: response.queue?.backend ?? response.workerQueue,
-            version: response.version,
-            checkedAt: checkedAt
-        )
+        self.httpStatus = httpStatus
+        self.status = response.status
+        self.database = response.database
+        self.workerQueue = response.workerQueue
+        self.runtimeStore = response.runtimeStore
+        self.queueStatus = response.queue?.status ?? (response.hasQueueField ? "" : (response.workerQueue == "configured" && response.status == "ready" ? "ready" : ""))
+        self.queueBackend = response.queue?.backend ?? (response.hasQueueField ? "" : response.workerQueue)
+        self.version = response.version
+        self.checkedAt = checkedAt
+        self.hasExplicitQueue = response.hasQueueField
     }
 }

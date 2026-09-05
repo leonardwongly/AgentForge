@@ -18,7 +18,16 @@ import {
   parsePolicyYaml
 } from "../packages/policy/src/index.ts";
 
+export const DEFAULT_ITERATIONS = 3;
+// Keep the CLI bounded so a typo cannot turn a local benchmark into an
+// unbounded CPU/memory workload. The limit is intentionally generous for a
+// useful local run while still making accidental resource exhaustion finite.
+export const MAX_ITERATIONS = 10_000;
+
 export function percentile(sorted: number[], p: number): number {
+  if (!Number.isFinite(p)) {
+    throw new RangeError("Percentile must be a finite number.");
+  }
   if (sorted.length === 0) return 0;
   const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
   return sorted[index] ?? 0;
@@ -32,17 +41,67 @@ export function summarizeLatencies(latenciesMs: number[]): {
   mean: number;
   throughputPerSec: number;
 } {
+  for (const latency of latenciesMs) {
+    if (!Number.isFinite(latency) || latency < 0) {
+      throw new RangeError("Latency samples must be finite and non-negative.");
+    }
+  }
   const sorted = [...latenciesMs].sort((a, b) => a - b);
   const totalMs = latenciesMs.reduce((sum, value) => sum + value, 0);
-  const mean = totalMs / latenciesMs.length;
+  if (!Number.isFinite(totalMs)) {
+    throw new RangeError("Latency total must be finite.");
+  }
+  const mean = latenciesMs.length === 0 ? 0 : totalMs / latenciesMs.length;
   return {
     count: latenciesMs.length,
     p50: percentile(sorted, 50),
     p95: percentile(sorted, 95),
     p99: percentile(sorted, 99),
     mean,
-    throughputPerSec: (latenciesMs.length / totalMs) * 1000
+    // A zero-duration sample can occur with a mocked or coarse timer. Do not
+    // report Infinity, which would make the benchmark output misleading.
+    throughputPerSec: totalMs > 0 ? (latenciesMs.length / totalMs) * 1000 : 0
   };
+}
+
+/**
+ * Parse the benchmark iteration option without silently accepting malformed
+ * values (Number.parseInt("2x") and Number.parseInt("1.5") are both unsafe
+ * for a resource-consuming CLI).
+ */
+export function parseIterations(argv: readonly string[]): number {
+  let value: string | undefined;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "--iterations") {
+      if (value !== undefined) {
+        throw new Error("--iterations may be specified only once.");
+      }
+      const next = argv[index + 1];
+      if (!next || next.startsWith("--")) {
+        throw new Error("--iterations requires a positive integer value.");
+      }
+      value = next;
+      index += 1;
+    } else if (argument?.startsWith("--iterations=")) {
+      if (value !== undefined) {
+        throw new Error("--iterations may be specified only once.");
+      }
+      value = argument.slice("--iterations=".length);
+    }
+  }
+
+  if (value === undefined) {
+    return DEFAULT_ITERATIONS;
+  }
+  if (!/^[1-9]\d*$/u.test(value)) {
+    throw new Error(`--iterations must be a positive integer no greater than ${MAX_ITERATIONS}.`);
+  }
+  const iterations = Number(value);
+  if (!Number.isSafeInteger(iterations) || iterations > MAX_ITERATIONS) {
+    throw new Error(`--iterations must be a positive integer no greater than ${MAX_ITERATIONS}.`);
+  }
+  return iterations;
 }
 
 export function formatBenchmarkReport(
@@ -64,8 +123,7 @@ export function formatBenchmarkReport(
 }
 
 async function main(): Promise<void> {
-  const iterationsArg = process.argv.findIndex((arg) => arg === "--iterations");
-  const iterations = iterationsArg >= 0 ? Number.parseInt(process.argv[iterationsArg + 1] ?? "3", 10) : 3;
+  const iterations = parseIterations(process.argv.slice(2));
 
   const policyPack = "fintech";
   const policyYaml = getPolicyPack(policyPack)?.contentYaml ?? "";
@@ -79,8 +137,9 @@ async function main(): Promise<void> {
   const fixtureDir = path.resolve(process.cwd(), "fixtures", "repos");
   const files = (await readdir(fixtureDir)).filter((file) => file.endsWith(".json")).sort();
   const prs = await Promise.all(
-    files.map(async (file) =>
-      JSON.parse(await readFile(path.join(fixtureDir, file), "utf8")) as PullRequestInput
+    files.map(
+      async (file) =>
+        JSON.parse(await readFile(path.join(fixtureDir, file), "utf8")) as PullRequestInput
     )
   );
   if (prs.length === 0) {

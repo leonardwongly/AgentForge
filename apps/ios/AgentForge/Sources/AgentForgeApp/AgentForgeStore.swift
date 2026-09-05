@@ -18,6 +18,11 @@ final class AgentForgeStore {
 
     private let client: AgentForgeAPIClient
     private let settings: OperatorSettingsStore
+    // Requests are intentionally allowed to overlap, but only the newest
+    // request for each panel may publish its result. This prevents a slow
+    // response for an old endpoint from replacing a newer check's state.
+    private var healthRequestGeneration = 0
+    private var readinessRequestGeneration = 0
 
     init(
         client: AgentForgeAPIClient = AgentForgeAPIClient(),
@@ -44,6 +49,8 @@ final class AgentForgeStore {
     }
 
     func updateAPIBaseURL(_ value: String) {
+        healthRequestGeneration += 1
+        readinessRequestGeneration += 1
         apiBaseURLText = value
         apiURLError = nil
     }
@@ -54,6 +61,8 @@ final class AgentForgeStore {
     }
 
     func resetDefaults() {
+        healthRequestGeneration += 1
+        readinessRequestGeneration += 1
         apiBaseURLText = defaultAPIBaseURL
         dashboardBaseURLText = defaultDashboardBaseURL
         apiURLError = nil
@@ -68,37 +77,55 @@ final class AgentForgeStore {
     }
 
     func checkHealth() async {
+        healthRequestGeneration += 1
+        let requestGeneration = healthRequestGeneration
         guard let apiBaseURL = normalizeAPIBaseURL() else {
             return
         }
 
         isCheckingHealth = true
         healthError = nil
-        defer { isCheckingHealth = false }
+        defer {
+            if requestGeneration == healthRequestGeneration {
+                isCheckingHealth = false
+            }
+        }
 
         do {
-            health = try await client.fetchHealth(from: apiBaseURL.appending(path: "health"))
+            let snapshot = try await client.fetchHealth(from: apiBaseURL.appending(path: "health"))
+            guard requestGeneration == healthRequestGeneration else { return }
+            health = snapshot
         } catch is CancellationError {
             return
         } catch {
+            guard requestGeneration == healthRequestGeneration else { return }
             healthError = error.localizedDescription
         }
     }
 
     func checkReadiness() async {
+        readinessRequestGeneration += 1
+        let requestGeneration = readinessRequestGeneration
         guard let apiBaseURL = normalizeAPIBaseURL() else {
             return
         }
 
         isCheckingReadiness = true
         readinessError = nil
-        defer { isCheckingReadiness = false }
+        defer {
+            if requestGeneration == readinessRequestGeneration {
+                isCheckingReadiness = false
+            }
+        }
 
         do {
-            readiness = try await client.fetchReadiness(from: apiBaseURL.appending(path: "ready"))
+            let snapshot = try await client.fetchReadiness(from: apiBaseURL.appending(path: "ready"))
+            guard requestGeneration == readinessRequestGeneration else { return }
+            readiness = snapshot
         } catch is CancellationError {
             return
         } catch {
+            guard requestGeneration == readinessRequestGeneration else { return }
             readinessError = error.localizedDescription
         }
     }

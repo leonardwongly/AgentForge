@@ -8,6 +8,12 @@ export default defineConfig({
     globals: false,
     coverage: {
       reporter: ["text", "html"],
+      // This Next server component is loaded by its dedicated regression
+      // test through tsx/esm so the test can render it without a Next
+      // runtime. V8's remapper cannot parse the raw TSX coverage artifact
+      // emitted by that loader (and logs a false PARSE_ERROR); the page is
+      // still exercised by the test and by browser E2E coverage.
+      exclude: ["apps/web/app/github/installations/callback/page.tsx"],
       // Floor set just below the measured baseline (statements 75.25%,
       // branches 63.03%, functions 77.96%, lines 75.41% as of the
       // security-hardening branch) so normal variance doesn't flake CI, but a

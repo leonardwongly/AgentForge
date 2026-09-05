@@ -25,4 +25,23 @@ class EndpointValidatorTest {
 
     assertTrue(result.isFailure)
   }
+
+  @Test
+  fun normalizeBaseUrl_allowsIpv6LoopbackForLocalDevelopment() {
+    val result = EndpointValidator.normalizeBaseUrl("http://[::1]:4000/")
+
+    assertEquals("http://[::1]:4000", result.getOrThrow())
+  }
+
+  @Test
+  fun normalizeBaseUrl_rejectsCredentialsAndRoutingDecorations() {
+    for (input in
+      listOf(
+        "https://operator:secret@agentforge.example.com",
+        "https://agentforge.example.com?redirect=https://evil.example",
+        "https://agentforge.example.com/#oauth",
+      )) {
+      assertTrue("Expected base URL to be rejected: $input", EndpointValidator.normalizeBaseUrl(input).isFailure)
+    }
+  }
 }

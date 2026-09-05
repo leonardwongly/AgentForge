@@ -55,8 +55,20 @@ describe("doctor readiness scoring", () => {
 });
 
 describe("doctor version checks", () => {
-  it("accepts Node versions at or above the minimum", () => {
-    expect(checkNodeVersion().required).toBe(true);
+  it.each([
+    ["22.13", true],
+    ["22.13.0", true],
+    ["23.0.0", true],
+    ["22.12.99", false],
+    ["22.13-not-a-version", false],
+    ["999999999999999999999.0", false]
+  ])("evaluates Node version boundary %s", (version, ok) => {
+    expect(checkNodeVersion(version).ok).toBe(ok);
+    expect(checkNodeVersion(version).required).toBe(true);
+  });
+
+  it("uses the running Node version by default", () => {
+    expect(checkNodeVersion().detail).toContain(`v${process.versions.node}`);
     expect(NODE_MINIMUM).toBe("22.13");
   });
 

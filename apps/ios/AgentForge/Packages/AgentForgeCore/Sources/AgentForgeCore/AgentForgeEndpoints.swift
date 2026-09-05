@@ -44,8 +44,10 @@ public enum EndpointValidationError: LocalizedError, Equatable {
 
 public enum EndpointValidator {
     public static func normalizedBaseURL(from input: String) throws -> URL {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        while trimmed.hasSuffix("/") {
+            trimmed.removeLast()
+        }
 
         guard !trimmed.isEmpty else {
             throw EndpointValidationError.missing
@@ -54,8 +56,20 @@ public enum EndpointValidator {
         let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
         guard let components = URLComponents(string: candidate),
               let scheme = components.scheme?.lowercased(),
-              let host = components.host?.lowercased(),
+              let rawHost = components.host?.lowercased(),
               ["https", "http"].contains(scheme)
+        else {
+            throw EndpointValidationError.malformed
+        }
+        let host = rawHost.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+
+        // A base URL is later extended with fixed health/readiness/OAuth
+        // paths. Credentials, query strings, and fragments would either leak
+        // sensitive data or change the meaning of those fixed paths.
+        guard components.user == nil,
+              components.password == nil,
+              components.percentEncodedQuery == nil,
+              components.percentEncodedFragment == nil
         else {
             throw EndpointValidationError.malformed
         }
