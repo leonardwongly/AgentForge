@@ -27,7 +27,7 @@ resource "aws_ecs_task_definition" "api" {
       environment = [
         { name = "NODE_ENV", value = "production" },
         { name = "APP_BASE_URL", value = var.app_base_url },
-        { name = "API_BASE_URL", value = "http://${aws_lb.this.dns_name}" },
+        { name = "API_BASE_URL", value = var.api_base_url },
         { name = "DEFAULT_POLICY_MODE", value = var.default_policy_mode },
         { name = "SOURCE_CODE_STORAGE", value = "false" },
         { name = "REDACT_SECRETS", value = "true" }

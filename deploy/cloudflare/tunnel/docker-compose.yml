@@ -5,34 +5,42 @@
 # Usage:
 #   cloudflared tunnel login
 #   cloudflared tunnel create agentforge
+#   export CLOUDFLARED_CREDENTIALS_FILE="$HOME/.cloudflared/<tunnel-id>.json"
 #   docker compose -f deploy/cloudflare/tunnel/docker-compose.yml up -d
 services:
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    # Require an immutable digest supplied by the operator; never deploy :latest.
+    image: ${CLOUDFLARED_IMAGE:?Set CLOUDFLARED_IMAGE to a pinned cloudflared image digest}
     restart: unless-stopped
     command: tunnel --config /etc/cloudflared/config.yml run
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     volumes:
       - ./config.yml:/etc/cloudflared/config.yml:ro
-      # Mount your cloudflared credentials directory (contains <tunnel-id>.json)
-      - ~/.cloudflared:/etc/cloudflared:ro
-    network_mode: host
+      # Mount only the credential JSON for this tunnel; do not expose the
+      # operator's entire ~/.cloudflared directory to the container.
+      - ${CLOUDFLARED_CREDENTIALS_FILE:?Set CLOUDFLARED_CREDENTIALS_FILE to the tunnel JSON path}:/etc/cloudflared/tunnel-credentials.json:ro
     depends_on:
       - agentforge-api
       - agentforge-web
 
   # Reference services the tunnel routes to. In a real deployment these are
-  # your existing API/web services; the tunnel only needs to reach them on the
-  # host network.
+  # your existing API/web services on this isolated Compose network.
   agentforge-api:
-    image: agentforge:1.1.0
+    image: ${AGENTFORGE_IMAGE:?Set AGENTFORGE_IMAGE to a pinned AgentForge image digest}
     command: ["start:api"]
     environment:
       NODE_ENV: production
-    network_mode: host
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
 
   agentforge-web:
-    image: agentforge:1.1.0
+    image: ${AGENTFORGE_IMAGE:?Set AGENTFORGE_IMAGE to a pinned AgentForge image digest}
     command: ["start:web"]
     environment:
       NODE_ENV: production
-    network_mode: host
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]

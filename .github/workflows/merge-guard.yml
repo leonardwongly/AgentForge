@@ -7,7 +7,10 @@ name: Merge Guard
 # requirements); in `warn` mode it reports findings without blocking.
 
 on:
-  pull_request:
+  # This workflow intentionally runs as pull_request_target. It checks out the
+  # trusted base revision and fetches the PR head only as git data, so the
+  # privileged comment/review API token is never exposed to PR code.
+  pull_request_target:
   push:
     branches:
       - main
@@ -28,13 +31,23 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-          persist-credentials: false
+          # pull_request_target checks out the base repository revision by
+          # default. Do not replace this with the untrusted PR head.
+          ref: ${{ github.event.repository.default_branch }}
+          # This is a trusted-base checkout; credentials are needed only for
+          # fetching the PR ref and are never made available to PR code.
+          persist-credentials: true
+      - name: Fetch pull request head as data
+        if: github.event_name == 'pull_request_target'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: git fetch --no-tags origin "pull/${PR_NUMBER}/head:refs/remotes/origin/pr/${PR_NUMBER}"
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "24"
       - run: corepack enable
       - run: corepack prepare pnpm@11.1.1 --activate
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Evaluate pull request with AgentForge
         env:
           GITHUB_TOKEN: ${{ github.token }}

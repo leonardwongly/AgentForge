@@ -27,7 +27,7 @@ jobs:
           node-version: "24"
       - run: corepack enable
       - run: corepack prepare pnpm@11.1.1 --activate
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm audit --audit-level moderate
       - run: pnpm release:check
       - name: Repository hygiene scan
@@ -46,10 +46,10 @@ jobs:
       - name: Gitleaks secret scan
         env:
           GITLEAKS_VERSION: 8.28.0
-          # Optional hard pin: set to the known-good sha256 of the linux_x64
-          # tarball for full supply-chain assurance. When set it is enforced in
-          # addition to the published checksums file.
-          GITLEAKS_PINNED_SHA256: ""
+          # Configure this immutable artifact digest as an Actions repository
+          # variable. The job fails closed if the variable is absent or does
+          # not match the release checksum.
+          GITLEAKS_PINNED_SHA256: ${{ vars.GITLEAKS_PINNED_SHA256 }}
         run: |
           set -euo pipefail
           base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
@@ -61,10 +61,13 @@ jobs:
           if [ -z "${expected}" ]; then
             echo "::error::No checksum entry found for ${asset}"; exit 1
           fi
-          if [ -n "${GITLEAKS_PINNED_SHA256}" ] && [ "${GITLEAKS_PINNED_SHA256}" != "${expected}" ]; then
+          if ! printf '%s' "${GITLEAKS_PINNED_SHA256}" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+            echo "::error::GITLEAKS_PINNED_SHA256 repository variable must be a 64-character SHA-256 digest"; exit 1
+          fi
+          if [ "${GITLEAKS_PINNED_SHA256}" != "${expected}" ]; then
             echo "::error::Published checksum does not match pinned digest"; exit 1
           fi
-          echo "${expected}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          echo "${GITLEAKS_PINNED_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -
           # Extract and run as the unprivileged runner user (no sudo / no root install).
           mkdir -p "${RUNNER_TEMP}/bin"
           tar -xzf /tmp/gitleaks.tar.gz -C "${RUNNER_TEMP}/bin" gitleaks

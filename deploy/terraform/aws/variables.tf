@@ -48,6 +48,16 @@ variable "redis_node_type" {
   default = "cache.t3.micro"
 }
 
+variable "redis_auth_token" {
+  description = "AUTH token for the managed Redis cluster. Must match the password in REDIS_URL."
+  type        = string
+  sensitive   = true
+  validation {
+    condition     = length(var.redis_auth_token) >= 32
+    error_message = "redis_auth_token must be at least 32 characters."
+  }
+}
+
 variable "api_image" {
   type = string
 }
@@ -77,6 +87,19 @@ variable "web_replicas" {
 
 variable "app_base_url" {
   type = string
+  validation {
+    condition     = startswith(var.app_base_url, "https://")
+    error_message = "app_base_url must use HTTPS."
+  }
+}
+
+variable "api_base_url" {
+  description = "Canonical HTTPS URL used by API callbacks and dashboard clients."
+  type        = string
+  validation {
+    condition     = startswith(var.api_base_url, "https://")
+    error_message = "api_base_url must use HTTPS."
+  }
 }
 
 variable "default_policy_mode" {
@@ -112,4 +135,32 @@ variable "github_webhook_secret_arn" {
 
 variable "session_secret_arn" {
   type = string
+}
+
+variable "rds_deletion_protection" {
+  type    = bool
+  default = true
+}
+
+variable "alb_access_logs_bucket" {
+  description = "Existing S3 bucket for ALB access logs. Leave empty only for development."
+  type        = string
+  default     = ""
+}
+
+variable "alb_access_logs_prefix" {
+  type    = string
+  default = "agentforge"
+}
+
+variable "vpc_flow_logs_destination_arn" {
+  description = "Existing S3 or CloudWatch destination ARN for VPC flow logs."
+  type        = string
+  default     = ""
+}
+
+variable "vpc_flow_logs_iam_role_arn" {
+  description = "IAM role ARN required when the VPC flow-log destination is CloudWatch Logs."
+  type        = string
+  default     = ""
 }

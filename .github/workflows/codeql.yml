@@ -34,7 +34,7 @@ jobs:
           node-version: "24"
       - run: corepack enable
       - run: corepack prepare pnpm@11.1.1 --activate
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm db:generate
       - run: pnpm build
       - uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e

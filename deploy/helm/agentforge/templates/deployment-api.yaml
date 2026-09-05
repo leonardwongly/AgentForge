@@ -17,9 +17,14 @@ spec:
         {{- include "agentforge.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: api
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}@{{ required \"image.digest is required; pin an immutable image\" .Values.image.digest }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["start:api"]
           ports:
@@ -28,8 +33,27 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "agentforge.fullname" . }}-config
-            - secretRef:
-                name: {{ include "agentforge.fullname" . }}-secrets
+          env:
+            - name: GITHUB_APP_ID
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: GITHUB_APP_ID } }
+            - name: GITHUB_APP_SLUG
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: GITHUB_APP_SLUG } }
+            - name: GITHUB_CLIENT_ID
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: GITHUB_CLIENT_ID } }
+            - name: GITHUB_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: GITHUB_CLIENT_SECRET } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: DATABASE_URL } }
+            - name: REDIS_URL
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: REDIS_URL } }
+            - name: GITHUB_APP_PRIVATE_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: GITHUB_APP_PRIVATE_KEY } }
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: GITHUB_WEBHOOK_SECRET } }
+            - name: SESSION_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: SESSION_SECRET } }
+            - name: AGENTFORGE_API_PROXY_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: AGENTFORGE_API_PROXY_SECRET } }
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
           readinessProbe:

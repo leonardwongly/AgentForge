@@ -50,7 +50,7 @@ jobs:
           node-version: "24"
       - run: corepack enable
       - run: corepack prepare pnpm@11.1.1 --activate
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm db:generate
       - run: pnpm db:migrate
       - run: pnpm db:seed
@@ -58,11 +58,14 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
+        # Do not publish browser traces generated from untrusted PR code. They
+        # can contain request headers, cookies, screenshots, or webhook data.
+        # Retain diagnostics for trusted main/manual runs only.
+        if: failure() && github.event_name != 'pull_request'
         with:
           name: playwright-artifacts
           path: |
             playwright-report/
             test-results/
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 3

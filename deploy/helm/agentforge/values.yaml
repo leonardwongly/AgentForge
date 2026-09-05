@@ -5,22 +5,47 @@
 image:
   repository: agentforge
   tag: "1.1.0"
+  # Pin production images by digest; install fails if digest is omitted.
+  digest: ""
   pullPolicy: IfNotPresent
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
 
 # Bring your own Postgres/Redis, or let the chart provision them.
 postgresql:
   enabled: true
+  imageDigest: ""
   auth:
     database: agentforge
     username: agentforge
     password: "" # set via --set postgresql.auth.password or a secret
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
   service:
     port: 5432
 
 redis:
   enabled: true
+  imageDigest: ""
   auth:
     password: "" # set via --set redis.auth.password or a secret
+  persistence:
+    enabled: true
+    size: 8Gi
+    storageClass: ""
   service:
     port: 6379
 
@@ -49,21 +74,24 @@ ingress:
   className: ""
   host: ""
   tls:
-    enabled: false
+    enabled: true
     secretName: ""
 
 # Application configuration. Secrets are mounted from the `agentforge-secrets`
 # secret; non-secret values come from the `agentforge-config` ConfigMap.
 config:
   nodeEnv: production
-  appBaseUrl: http://localhost
-  apiBaseUrl: http://localhost:4000
+  appBaseUrl: ""
+  apiBaseUrl: ""
   defaultPolicyMode: observe
   sourceCodeStorage: "false"
   fullDiffRetention: disabled
   redactSecrets: "true"
   llmFeatures: "false"
   auditRecordRetentionDays: "90"
+  apiTrustProxyHeaders: "true"
+  dashboardTrustProxyHeaders: "true"
+  authProxyStripsHeaders: "true"
 
 # Set these via --set or a values file; never commit real secrets.
 secrets:
@@ -76,3 +104,8 @@ secrets:
   githubClientId: ""
   githubClientSecret: ""
   sessionSecret: ""
+  apiProxySecret: ""
+  dashboardProxySecret: ""
+
+networkPolicy:
+  enabled: true
