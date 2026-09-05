@@ -121,10 +121,8 @@ export async function saveRepositorySettings(formData: FormData): Promise<void> 
       body: JSON.stringify(patch)
     });
   } catch (error) {
-    redirectWithError(
-      returnTo,
-      error instanceof Error ? error.message : "Repository settings could not be saved."
-    );
+    void error;
+    redirectWithError(returnTo, "Repository settings could not be saved.");
   }
 
   revalidatePath("/settings");
@@ -149,10 +147,8 @@ export async function recordGithubInstallation(formData: FormData): Promise<void
       body: JSON.stringify({ githubInstallationId, accountLogin, accountType })
     });
   } catch (error) {
-    redirectWithError(
-      returnTo,
-      error instanceof Error ? error.message : "GitHub installation could not be recorded."
-    );
+    void error;
+    redirectWithError(returnTo, "GitHub installation could not be recorded.");
   }
 
   revalidatePath("/settings");
@@ -189,10 +185,8 @@ async function decideGithubInstallation(
       }
     );
   } catch (error) {
-    redirectWithError(
-      returnTo,
-      error instanceof Error ? error.message : "GitHub installation decision could not be saved."
-    );
+    void error;
+    redirectWithError(returnTo, "GitHub installation decision could not be saved.");
   }
 
   revalidatePath("/settings");
@@ -238,7 +232,7 @@ function readOwnerMappings(
   if (!rawCount) {
     return undefined;
   }
-  const rowCount = Number.parseInt(rawCount, 10);
+  const rowCount = Number(rawCount);
   if (!Number.isInteger(rowCount) || rowCount < 0 || rowCount > 20) {
     redirectWithError(returnTo, "Owner mapping rows are invalid.");
   }
@@ -366,7 +360,7 @@ function readPositiveInteger(
   if (!value) {
     return undefined;
   }
-  const parsed = Number.parseInt(value, 10);
+  const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 3650) {
     redirectWithError(returnTo, `${label} must be a whole number from 1 to 3650.`);
   }

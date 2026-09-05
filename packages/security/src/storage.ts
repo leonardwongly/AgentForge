@@ -57,7 +57,8 @@ export function shouldRetainFullDiff(policy: MetadataStoragePolicy): boolean {
 function sanitizeValue(
   value: unknown,
   policy: Required<MetadataStoragePolicy>,
-  key?: string
+  key?: string,
+  ancestors: WeakSet<object> = new WeakSet<object>()
 ): unknown | typeof omitted {
   if (key && shouldOmitKey(key, policy)) {
     return omitted;
@@ -66,17 +67,43 @@ function sanitizeValue(
     return policy.redactSecrets ? redactString(value) : value;
   }
   if (Array.isArray(value)) {
-    return value
-      .map((item) => sanitizeValue(item, policy))
+    if (ancestors.has(value)) {
+      return omitted;
+    }
+    ancestors.add(value);
+    const sanitized = value
+      .map((item) => sanitizeValue(item, policy, undefined, ancestors))
       .filter((item): item is unknown => item !== omitted);
+    ancestors.delete(value);
+    return sanitized;
   }
   if (value && typeof value === "object") {
+    // Metadata is eventually serialized as JSON. Drop cyclic references at
+    // this boundary instead of recursing forever or returning an object that
+    // JSON.stringify cannot encode. The active-path set preserves repeated,
+    // non-cyclic references in separate fields.
+    if (ancestors.has(value)) {
+      return omitted;
+    }
+    if (value instanceof Date) {
+      return value;
+    }
+    ancestors.add(value);
     const entries: Array<[string, unknown]> = [];
-    for (const [nestedKey, nestedValue] of Object.entries(value)) {
-      const sanitized = sanitizeValue(nestedValue, policy, nestedKey);
-      if (sanitized !== omitted) {
-        entries.push([nestedKey, sanitized]);
+    try {
+      for (const [nestedKey, nestedValue] of Object.entries(value)) {
+        const sanitized = sanitizeValue(nestedValue, policy, nestedKey, ancestors);
+        if (sanitized !== omitted) {
+          entries.push([nestedKey, sanitized]);
+        }
       }
+    } catch {
+      // A proxy/getter can throw while exposing metadata. Treat that branch as
+      // untrusted and omit it; sanitization must never turn a logging path into
+      // a process-level failure.
+      return omitted;
+    } finally {
+      ancestors.delete(value);
     }
     return Object.fromEntries(entries);
   }

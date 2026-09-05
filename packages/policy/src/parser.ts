@@ -8,19 +8,49 @@ export type ParsedPolicy = {
   errors: string[];
 };
 
+/** Keep YAML parsing bounded even when policy content comes from a persisted pack. */
+export const MAX_POLICY_YAML_BYTES = 256 * 1024;
+
+function failClosedPolicy(contentYaml: string, errors: string[]): ParsedPolicy {
+  return {
+    // Fail closed: an unparseable policy defaults to the strictest mode rather
+    // than "observe" (which never blocks). Callers must still inspect `errors`
+    // and reject the policy, but if a future caller uses `config` without
+    // checking, this fails in the safe (enforcing) direction.
+    config: policyConfigSchema.parse({ version: 1, agentforge: { mode: "enforce" } }),
+    contentHash: hashPolicy(contentYaml),
+    errors
+  };
+}
+
 export function parsePolicyYaml(contentYaml: string): ParsedPolicy {
-  const parsed = YAML.parse(contentYaml);
+  // Although callers are typed, persisted/user-controlled values can still
+  // cross the boundary at runtime. Keep malformed values fail-closed instead
+  // of allowing Buffer.byteLength/YAML.parse to throw and bypass validation.
+  if (typeof contentYaml !== "string") {
+    return failClosedPolicy(String(contentYaml ?? ""), ["policy YAML must be a string"]);
+  }
+  if (Buffer.byteLength(contentYaml, "utf8") > MAX_POLICY_YAML_BYTES) {
+    return failClosedPolicy(contentYaml, [
+      `policy YAML exceeds the ${MAX_POLICY_YAML_BYTES}-byte limit`
+    ]);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = YAML.parse(contentYaml);
+  } catch (error) {
+    return failClosedPolicy(contentYaml, [
+      `invalid YAML: ${error instanceof Error ? error.message : "parse failed"}`
+    ]);
+  }
+
   const result = policyConfigSchema.safeParse(parsed);
   if (!result.success) {
-    return {
-      // Fail closed: an unparseable policy defaults to the strictest mode rather
-      // than "observe" (which never blocks). Callers must still inspect `errors`
-      // and reject the policy, but if a future caller uses `config` without
-      // checking, this fails in the safe (enforcing) direction (AF-SEC fix).
-      config: policyConfigSchema.parse({ version: 1, agentforge: { mode: "enforce" } }),
-      contentHash: hashPolicy(contentYaml),
-      errors: result.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`)
-    };
+    return failClosedPolicy(
+      contentYaml,
+      result.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+    );
   }
 
   return {

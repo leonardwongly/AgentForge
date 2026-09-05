@@ -51,7 +51,10 @@ function serializedBytes(value: unknown): number {
 }
 
 /** Validate a recipe's declared resource usage against the budget. */
-export function validateRecipeBudget(recipe: Recipe, limits: SandboxLimits = DEFAULT_SANDBOX_LIMITS): string | undefined {
+export function validateRecipeBudget(
+  recipe: Recipe,
+  limits: SandboxLimits = DEFAULT_SANDBOX_LIMITS
+): string | undefined {
   if (recipe.inputSelector.length > limits.maxInputs) {
     return `recipe inputSelector exceeds maxInputs (${recipe.inputSelector.length} > ${limits.maxInputs})`;
   }
@@ -86,12 +89,16 @@ export function runEngineBounded(
   let total = 0;
   for (const content of writes.values()) {
     if (content.length > limits.maxWriteBytes) {
-      throw new Error(`loom: engine write exceeded maxWriteBytes (${content.length} > ${limits.maxWriteBytes})`);
+      throw new Error(
+        `loom: engine write exceeded maxWriteBytes (${content.length} > ${limits.maxWriteBytes})`
+      );
     }
     total += content.length;
   }
   if (total > limits.maxTotalWriteBytes) {
-    throw new Error(`loom: engine run exceeded maxTotalWriteBytes (${total} > ${limits.maxTotalWriteBytes})`);
+    throw new Error(
+      `loom: engine run exceeded maxTotalWriteBytes (${total} > ${limits.maxTotalWriteBytes})`
+    );
   }
   return writes;
 }

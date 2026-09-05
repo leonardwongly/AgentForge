@@ -1,4 +1,7 @@
 {{- if .Values.redis.enabled }}
+{{- if not .Values.redis.persistence.enabled }}
+{{- fail "redis.persistence.enabled must be true for durable deployments" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,17 +21,34 @@ spec:
         {{- include "agentforge.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: redis
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: redis
-          image: redis:7-alpine
-          args:
-            - --appendonly
-            - "yes"
-            - --requirepass
-            - {{ .Values.redis.auth.password | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          image: redis:7-alpine@{{ required "redis.imageDigest is required; pin an immutable image" .Values.redis.imageDigest }}
+          command: ["sh", "-c"]
+          args: ["exec redis-server --appendonly yes --requirepass \"$REDIS_PASSWORD\""]
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentforge.fullname" . }}-secrets
+                  key: REDIS_PASSWORD
           ports:
             - name: redis
               containerPort: {{ .Values.redis.service.port }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "agentforge.fullname" . }}-redis
 ---
 apiVersion: v1
 kind: Service
@@ -46,4 +66,17 @@ spec:
     - name: redis
       port: {{ .Values.redis.service.port }}
       targetPort: redis
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agentforge.fullname" . }}-redis
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.redis.persistence.size }}
+  {{- with .Values.redis.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
 {{- end }}

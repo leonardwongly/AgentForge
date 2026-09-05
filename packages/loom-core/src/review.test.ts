@@ -10,8 +10,12 @@ describe("native review requirements", () => {
   });
 
   it("routes sensitive-path and secret effects to security review", () => {
-    expect(reviewRequirementForEffect("touches_sensitive_path")?.reviewers).toEqual(["security-team"]);
-    expect(reviewRequirementForEffect("adds_secret_like_value")?.evidence).toEqual(["security_note"]);
+    expect(reviewRequirementForEffect("touches_sensitive_path")?.reviewers).toEqual([
+      "security-team"
+    ]);
+    expect(reviewRequirementForEffect("adds_secret_like_value")?.evidence).toEqual([
+      "security_note"
+    ]);
   });
 
   it("returns undefined for effects with no review requirement", () => {

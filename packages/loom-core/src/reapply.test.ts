@@ -61,6 +61,42 @@ describe("reapply — headline recompute over a conflicting base edit (§5.2)", 
 });
 
 describe("reapply — engines", () => {
+  it("rejects regex recipes with catastrophic-backtracking constructs", () => {
+    const nid = mintNodeIdent(TX, 4, "a.ts");
+    const recipe: Recipe = {
+      ...CTX_CODEMOD,
+      rule: { find: "(a+)+$", replace: "x" },
+      inputSelector: [{ path: "a.ts" }],
+      writeScope: [{ path: "a.ts" }]
+    };
+    const outcome = reapply(
+      recipe,
+      stateOf([["a.ts", cellOf(nid, "x")]]),
+      stateOf([["a.ts", cellOf(nid, `${"a".repeat(10_000)}!`)]]),
+      TOOLCHAIN
+    );
+    expect(outcome.kind).toBe("HardFailure");
+    if (outcome.kind === "HardFailure") expect(outcome.reason).toBe("engine_error");
+  });
+
+  it("rejects regex inputs above the bounded execution size", () => {
+    const nid = mintNodeIdent(TX, 5, "a.ts");
+    const recipe: Recipe = {
+      ...CTX_CODEMOD,
+      rule: { find: "a+", replace: "b", flags: "g" },
+      inputSelector: [{ path: "a.ts" }],
+      writeScope: [{ path: "a.ts" }]
+    };
+    const outcome = reapply(
+      recipe,
+      stateOf([["a.ts", cellOf(nid, "")]]),
+      stateOf([["a.ts", cellOf(nid, `${"a".repeat(256 * 1024 + 1)}`)]]),
+      TOOLCHAIN
+    );
+    expect(outcome.kind).toBe("HardFailure");
+    if (outcome.kind === "HardFailure") expect(outcome.reason).toBe("engine_error");
+  });
+
   it("dep-bump rewrites only the pinned version in a manifest cell", () => {
     const nid = mintNodeIdent(TX, 1, "package.json");
     const manifest = '{\n  "dependencies": {\n    "left-pad": "1.0.0"\n  }\n}';

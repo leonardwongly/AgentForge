@@ -30,9 +30,10 @@ const defaultOptions: Required<DetectorOptions> = {
   maxFiles: 1_000
 };
 
-// Secret scanning runs regexes over attacker-controlled diff additions. Scanning
-// megabytes is low value and a CPU-DoS amplifier, so the slice fed to the secret
-// scanner is capped well below maxPatchBytes.
+// Secret findings retain only a bounded excerpt in fact metadata. The scanner
+// itself processes the already bounded patch in overlapping chunks, so a
+// credential cannot evade detection merely by appearing after the first
+// excerpt.
 const SECRET_SCAN_MAX_BYTES = 65_536;
 
 const defaultCiWorkflowPaths = [
@@ -185,7 +186,7 @@ export function extractVerifiedFacts(
   config: DetectorPolicyConfig = {},
   options: DetectorOptions = {}
 ): VerifiedFact[] {
-  const merged = { ...defaultOptions, ...options };
+  const merged = normalizeDetectorOptions(options);
   const context: DetectorContext = {
     pr,
     files: pr.changedFiles.slice(0, merged.maxFiles),
@@ -227,7 +228,11 @@ function detectTruncatedCoverage(
   }
 
   const truncatedPatchFiles = files
-    .filter((file) => (file.patch?.length ?? 0) > options.maxPatchBytes)
+    .filter(
+      (file) =>
+        typeof file.patch === "string" &&
+        Buffer.byteLength(file.patch, "utf8") > options.maxPatchBytes
+    )
     .map((file) => file.filename);
   if (truncatedPatchFiles.length > 0) {
     facts.push(
@@ -322,7 +327,7 @@ export function detectTestChanges(
   files: ChangedFile[],
   options: DetectorOptions = {}
 ): VerifiedFact[] {
-  const merged = { ...defaultOptions, ...options };
+  const merged = normalizeDetectorOptions(options);
   const facts: VerifiedFact[] = [];
   for (const file of files) {
     const isTest = matchesAnyPath(file.filename, testFilePatterns);
@@ -503,21 +508,18 @@ export function detectSecretLikeValues(
   files: ChangedFile[],
   options: DetectorOptions = {}
 ): VerifiedFact[] {
-  const merged = { ...defaultOptions, ...options };
+  const merged = normalizeDetectorOptions(options);
   const facts: VerifiedFact[] = [];
   for (const file of files) {
     const allAdditions = addedLines(boundedPatch(file.patch, merged.maxPatchBytes));
-    const additions =
-      allAdditions.length > SECRET_SCAN_MAX_BYTES
-        ? allAdditions.slice(0, SECRET_SCAN_MAX_BYTES)
-        : allAdditions;
-    if (allAdditions.length > SECRET_SCAN_MAX_BYTES) {
+    const metadataAdditions = boundedUtf8(allAdditions, SECRET_SCAN_MAX_BYTES);
+    if (Buffer.byteLength(allAdditions, "utf8") > SECRET_SCAN_MAX_BYTES) {
       facts.push(
         makeFact({
           type: "detection_coverage_truncated",
           source: "policy_config",
           path: file.filename,
-          evidence: `Added-line content in ${file.filename} exceeded ${SECRET_SCAN_MAX_BYTES} bytes; only the first ${SECRET_SCAN_MAX_BYTES} bytes were scanned for secret-like values.`,
+          evidence: `Added-line content in ${file.filename} exceeded ${SECRET_SCAN_MAX_BYTES} bytes; secret-like values were scanned in bounded chunks and metadata was excerpted to the first ${SECRET_SCAN_MAX_BYTES} bytes.`,
           confidence: "verified",
           metadata: {
             limitType: "secret_scan_size",
@@ -527,7 +529,10 @@ export function detectSecretLikeValues(
         })
       );
     }
-    const found = detectSecrets(additions);
+    // `detectSecrets` scans the complete bounded patch using overlapping
+    // chunks. Keep only the excerpt in each fact's metadata so a large diff
+    // cannot multiply storage pressure across every finding.
+    const found = detectSecrets(allAdditions);
     for (const match of found) {
       const classification = classifySecretFinding(match, file.filename);
       facts.push(
@@ -544,7 +549,7 @@ export function detectSecretLikeValues(
             secretRisk: classification.risk,
             classificationReason: classification.reason,
             policyTreatment: classification.risk === "high" ? "blocking" : "advisory",
-            patch: redactSecrets(additions)
+            patch: redactSecrets(metadataAdditions)
           }
         })
       );
@@ -725,16 +730,26 @@ function detectRequirementsChanges(file: ChangedFile): VerifiedFact[] {
 
 function parsePackageJsonDeps(content: string): Record<string, string> {
   try {
-    const json = JSON.parse(content) as {
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-      optionalDependencies?: Record<string, string>;
-    };
-    return {
-      ...(json.dependencies ?? {}),
-      ...(json.devDependencies ?? {}),
-      ...(json.optionalDependencies ?? {})
-    };
+    if (typeof content !== "string") {
+      return {};
+    }
+    const json = JSON.parse(content) as Record<string, unknown>;
+    const dependencies: Record<string, string> = {};
+    for (const section of ["dependencies", "devDependencies", "optionalDependencies"]) {
+      const values = json[section];
+      if (!values || typeof values !== "object" || Array.isArray(values)) {
+        continue;
+      }
+      for (const [name, version] of Object.entries(values)) {
+        // Malformed package manifests can contain numbers, objects, or arrays
+        // in dependency sections. Ignore those entries rather than calling
+        // string methods on them or manufacturing facts for character indices.
+        if (typeof version === "string" && name.length > 0) {
+          dependencies[name] = version;
+        }
+      }
+    }
+    return dependencies;
   } catch {
     return {};
   }
@@ -845,10 +860,30 @@ function lineHasCodePattern(line: string, pattern: string): boolean {
 }
 
 function boundedPatch(patch: string | undefined, maxPatchBytes: number): string {
-  if (!patch) {
+  if (typeof patch !== "string" || patch.length === 0) {
     return "";
   }
-  return patch.length > maxPatchBytes ? patch.slice(0, maxPatchBytes) : patch;
+  return boundedUtf8(patch, maxPatchBytes);
+}
+
+/** Bound attacker-controlled text by encoded size without returning invalid UTF-8. */
+function boundedUtf8(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) {
+    return "";
+  }
+  const encoded = Buffer.from(value, "utf8");
+  return encoded.byteLength > maxBytes ? encoded.subarray(0, maxBytes).toString("utf8") : value;
+}
+
+function normalizeDetectorOptions(options: DetectorOptions): Required<DetectorOptions> {
+  return {
+    maxPatchBytes: normalizeDetectorLimit(options.maxPatchBytes, defaultOptions.maxPatchBytes),
+    maxFiles: normalizeDetectorLimit(options.maxFiles, defaultOptions.maxFiles)
+  };
+}
+
+function normalizeDetectorLimit(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
 function matchesAnyPath(path: string, patterns: string[]): boolean {
@@ -944,7 +979,7 @@ function agentSignal(signal: string, evidence: string): VerifiedFact {
 }
 
 function coerceVersion(version: string): semver.SemVer | null {
-  return semver.coerce(version.replace(/^[~^]/, ""));
+  return typeof version === "string" ? semver.coerce(version.replace(/^[~^]/, "")) : null;
 }
 
 function makeFact(input: {

@@ -26,15 +26,18 @@ const DEFAULT_MAX_MEMORY_CACHE_ENTRIES = 10_000;
 export class MemoryCacheBackend implements CacheBackend {
   private store = new Map<string, { value: string; expiresAt: number }>();
   private lastSweepMs = 0;
+  private readonly maxEntries: number;
 
-  constructor(private readonly maxEntries: number = DEFAULT_MAX_MEMORY_CACHE_ENTRIES) {}
+  constructor(maxEntries: number = DEFAULT_MAX_MEMORY_CACHE_ENTRIES) {
+    this.maxEntries = normalizePositiveLimit(maxEntries, DEFAULT_MAX_MEMORY_CACHE_ENTRIES);
+  }
 
   async get(key: string): Promise<string | null> {
     const entry = this.store.get(key);
     if (!entry) {
       return null;
     }
-    if (Date.now() > entry.expiresAt) {
+    if (Date.now() >= entry.expiresAt) {
       this.store.delete(key);
       return null;
     }
@@ -42,7 +45,15 @@ export class MemoryCacheBackend implements CacheBackend {
   }
 
   async set(key: string, value: string, ttlSeconds: number): Promise<void> {
-    this.sweepExpired(Date.now());
+    const nowMs = Date.now();
+    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+      // Redis rejects non-positive/non-finite EX values. Do not let the
+      // in-memory fallback turn those malformed requests into immortal cache
+      // entries (NaN previously made expiration comparisons always false).
+      this.store.delete(key);
+      return;
+    }
+    this.sweepExpired(nowMs);
     // Hard memory bound: evict oldest entries (Map preserves insertion order)
     // in amortized O(1) per insert (mirrors auth.ts's seenSignatures eviction).
     while (this.store.size >= this.maxEntries && !this.store.has(key)) {
@@ -54,7 +65,9 @@ export class MemoryCacheBackend implements CacheBackend {
     }
     this.store.set(key, {
       value,
-      expiresAt: Date.now() + ttlSeconds * 1000
+      // Avoid overflowing to Infinity for a hostile but finite TTL. The
+      // entry remains bounded by maxEntries and can still be evicted.
+      expiresAt: nowMs + Math.min(ttlSeconds * 1000, Number.MAX_SAFE_INTEGER)
     });
   }
 
@@ -126,6 +139,7 @@ export class RedisCacheManager implements CacheBackend {
     try {
       return await this.redis.get(key);
     } catch (err) {
+      this.hasConnectionError = true;
       console.warn(`Redis Cache get failed for ${key}, falling back to memory:`, err);
       return this.memoryFallback.get(key);
     }
@@ -139,6 +153,7 @@ export class RedisCacheManager implements CacheBackend {
     try {
       await this.redis.set(key, value, "EX", ttlSeconds);
     } catch (err) {
+      this.hasConnectionError = true;
       console.warn(`Redis Cache set failed for ${key}, falling back to memory:`, err);
       await this.memoryFallback.set(key, value, ttlSeconds);
     }
@@ -153,6 +168,7 @@ export class RedisCacheManager implements CacheBackend {
     try {
       await this.redis.del(key);
     } catch (err) {
+      this.hasConnectionError = true;
       console.warn(`Redis Cache del failed for ${key}:`, err);
     }
   }
@@ -179,8 +195,8 @@ export class RedisCacheManager implements CacheBackend {
 // was sanitized with a lossy `/`->`_` replacement, allowing `a/package.json`
 // and `a_package.json` to collide; and components were joined with ":" without
 // escaping, so a value containing ":" could forge another key (AF-SEC fix).
-function encodeKeyPart(value: string): string {
-  return encodeURIComponent(value.toLowerCase());
+function encodeKeyPart(value: string, caseInsensitive = true): string {
+  return encodeURIComponent(caseInsensitive ? value.toLowerCase() : value);
 }
 
 export function getMembershipCacheKey(org: string, teamSlug: string, username: string): string {
@@ -198,8 +214,12 @@ export function getFileContentCacheKey(
   // Hash the raw (case-sensitive) path: collision-resistant and fixed length,
   // so no two distinct paths share a key and the path cannot inject delimiters.
   const pathHash = createHash("sha256").update(path).digest("hex");
+  // GitHub owner/repository names are case-insensitive, but git refs are
+  // case-sensitive. Lower-casing a ref lets "Feature" and "feature" share a
+  // cache entry and return content from the wrong revision.
   return `agentforge:cache:file-content:${encodeKeyPart(owner)}:${encodeKeyPart(repo)}:${encodeKeyPart(
-    ref
+    ref,
+    false
   )}:${pathHash}`;
 }
 
@@ -212,11 +232,17 @@ const MEMORY_REPLAY_SWEEP_INTERVAL_MS = 60_000;
 class MemorySignatureReplayBackend {
   private seen = new Map<string, number>();
   private lastSweepMs = 0;
+  private readonly maxEntries: number;
 
-  constructor(private readonly maxEntries: number = DEFAULT_MAX_MEMORY_REPLAY_ENTRIES) {}
+  constructor(maxEntries: number = DEFAULT_MAX_MEMORY_REPLAY_ENTRIES) {
+    this.maxEntries = normalizePositiveLimit(maxEntries, DEFAULT_MAX_MEMORY_REPLAY_ENTRIES);
+  }
 
   /** Returns true if this is the first time `key` has been claimed within `ttlSeconds`. */
   claim(key: string, ttlSeconds: number, nowMs: number): boolean {
+    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0 || !Number.isFinite(nowMs)) {
+      return false;
+    }
     this.sweepExpired(nowMs);
     const existing = this.seen.get(key);
     if (existing !== undefined && existing > nowMs) {
@@ -229,7 +255,7 @@ class MemorySignatureReplayBackend {
       }
       this.seen.delete(oldest);
     }
-    this.seen.set(key, nowMs + ttlSeconds * 1000);
+    this.seen.set(key, nowMs + Math.min(ttlSeconds * 1000, Number.MAX_SAFE_INTEGER));
     return true;
   }
 
@@ -255,10 +281,10 @@ class MemorySignatureReplayBackend {
  * Map cannot (AF-SEC: signature replay caches must be cluster-wide when the
  * API/dashboard run behind a load balancer with more than one instance).
  *
- * Falls back to a bounded, swept in-memory claim set (same semantics, single
- * process only) when no REDIS_URL is configured or Redis is unreachable, so
- * local development and single-instance deployments keep working exactly as
- * before this change, just without the cross-instance guarantee.
+ * Falls back to a bounded, swept in-memory claim set for explicitly
+ * non-production callers. Production callers fail closed when the shared
+ * replay store is unavailable; accepting a signed request per process would
+ * otherwise reopen the multi-instance replay gap during a Redis outage.
  */
 export class SignatureReplayGuard {
   private redis: Redis | null = null;
@@ -271,7 +297,11 @@ export class SignatureReplayGuard {
    * deterministically with a small cap, instead of needing tens of
    * thousands of claims to exhaust the real default.
    */
-  constructor(redisUrl?: string, memoryFallbackMaxEntries?: number) {
+  constructor(
+    redisUrl?: string,
+    memoryFallbackMaxEntries?: number,
+    private readonly failClosed = false
+  ) {
     this.memoryFallback = new MemorySignatureReplayBackend(memoryFallbackMaxEntries);
     if (redisUrl) {
       try {
@@ -307,19 +337,26 @@ export class SignatureReplayGuard {
   /**
    * Attempts to claim `key` (a namespaced signature) for `ttlSeconds`.
    * Returns true the first time a given key is claimed within that window,
-   * false on every subsequent attempt (i.e. a replay). Fails open to the
-   * in-memory fallback (not open to "always allow") if Redis errors, so a
-   * transient Redis outage degrades to single-instance replay protection
-   * rather than removing replay protection entirely.
+   * false on every subsequent attempt (i.e. a replay). In strict mode, Redis
+   * errors return false so callers reject requests until shared replay
+   * protection is restored. Non-production callers may opt into the bounded
+   * in-memory fallback for local usability.
    */
   async claim(key: string, ttlSeconds: number, nowMs: number = Date.now()): Promise<boolean> {
+    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0 || !Number.isFinite(nowMs)) {
+      return false;
+    }
     if (!this.redis || this.hasConnectionError) {
+      if (this.failClosed) {
+        return false;
+      }
       return this.memoryFallback.claim(key, ttlSeconds, nowMs);
     }
     try {
       const result = await this.redis.set(key, "1", "EX", ttlSeconds, "NX");
       return result === "OK";
     } catch (err) {
+      this.hasConnectionError = true;
       // Never log the raw key: it is namespaced as
       // "agentforge:replay:{api|dashboard}:{signature}" and the signature
       // itself is sensitive (the actual HMAC over the signed request). Log
@@ -330,7 +367,7 @@ export class SignatureReplayGuard {
         `Redis SignatureReplayGuard claim failed for key prefix ${keyPrefix}, falling back:`,
         err
       );
-      return this.memoryFallback.claim(key, ttlSeconds, nowMs);
+      return this.failClosed ? false : this.memoryFallback.claim(key, ttlSeconds, nowMs);
     }
   }
 
@@ -349,4 +386,8 @@ export class SignatureReplayGuard {
       }
     }
   }
+}
+
+function normalizePositiveLimit(value: number, fallback: number): number {
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }

@@ -17,15 +17,33 @@ spec:
         {{- include "agentforge.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: worker
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
         - name: worker
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}@{{ required \"image.digest is required; pin an immutable image\" .Values.image.digest }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args: ["start:worker"]
           envFrom:
             - configMapRef:
                 name: {{ include "agentforge.fullname" . }}-config
-            - secretRef:
-                name: {{ include "agentforge.fullname" . }}-secrets
+          env:
+            - name: GITHUB_APP_ID
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: GITHUB_APP_ID } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: DATABASE_URL } }
+            - name: REDIS_URL
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: REDIS_URL } }
+            - name: GITHUB_APP_PRIVATE_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: GITHUB_APP_PRIVATE_KEY } }
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: GITHUB_WEBHOOK_SECRET } }
+            - name: AGENTFORGE_API_PROXY_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: AGENTFORGE_API_PROXY_SECRET } }
+            - name: AGENTFORGE_DASHBOARD_PROXY_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "agentforge.fullname" . }}-secrets, key: AGENTFORGE_DASHBOARD_PROXY_SECRET } }
           resources:
             {{- toYaml .Values.worker.resources | nindent 12 }}

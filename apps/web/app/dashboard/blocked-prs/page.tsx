@@ -13,6 +13,7 @@ import {
   summarizeFindings,
   summarizeReviewerRequirements
 } from "../../data";
+import { recordHref } from "../../security/navigation";
 
 export default async function BlockedPrsPage() {
   const [allData, data] = await Promise.all([
@@ -82,7 +83,7 @@ export default async function BlockedPrsPage() {
                       <p className="muted">{item.team}</p>
                     </td>
                     <td>
-                      <Link href={`/records/${record.id}`}>#{record.pullRequestNumber}</Link>
+                      <Link href={recordHref(record.id)}>#{record.pullRequestNumber}</Link>
                       <p className="muted">{item.title}</p>
                     </td>
                     <td>
@@ -116,7 +117,7 @@ export default async function BlockedPrsPage() {
                     </td>
                     <td>
                       <div className="control-row">
-                        <Link className="button" href={`/records/${record.id}`}>
+                        <Link className="button" href={recordHref(record.id)}>
                           <ExternalLink size={15} aria-hidden="true" /> Record
                         </Link>
                         <a className="button" href={item.githubUrl} rel="noreferrer">

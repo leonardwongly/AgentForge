@@ -34,6 +34,8 @@ describe("GitHub OAuth runtime config", () => {
   it("uses secure cookies in production and a local organization fallback", () => {
     const runtime = githubOAuthRuntime({
       NODE_ENV: "production",
+      DATABASE_URL: "postgresql://agentforge:test@db.example.com:5432/agentforge",
+      REDIS_URL: "redis://redis.example.com:6379",
       GITHUB_WEBHOOK_SECRET: "production-secret-32-characters-long",
       GITHUB_APP_ID: "123456",
       GITHUB_APP_PRIVATE_KEY: testPrivateKey,

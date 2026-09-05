@@ -3,6 +3,7 @@ import { ShieldCheck, SlidersHorizontal } from "lucide-react";
 import { MetricCard, ProgressBar, StatusBadge } from "@agentforge/ui";
 import { DataSourceNotice } from "../../data-source-notice";
 import { formatDate, getDashboardSummary, loadDashboardData } from "../../data";
+import { recordHref, repositoryHref } from "../../security/navigation";
 
 export default async function OverridesPage() {
   const [allData, overrideData] = await Promise.all([
@@ -13,7 +14,7 @@ export default async function OverridesPage() {
   const overrides = overrideData.records.filter((item) => item.record.lifecycle === "overridden");
   const topReason = overrides[0]?.override?.reason ?? "No override reason recorded in this window.";
   const reviewPolicyHref = allData.records[0]
-    ? `/repositories/${allData.records[0].record.repositoryId}/policy`
+    ? repositoryHref(allData.records[0].record.repositoryId, "policy")
     : "/settings";
   const reasonCaptureRate =
     overrides.length === 0
@@ -209,9 +210,7 @@ export default async function OverridesPage() {
                 <tr key={item.record.id}>
                   <td>{item.record.repositoryFullName}</td>
                   <td>
-                    <Link href={`/records/${item.record.id}`}>
-                      #{item.record.pullRequestNumber}
-                    </Link>
+                    <Link href={recordHref(item.record.id)}>#{item.record.pullRequestNumber}</Link>
                   </td>
                   <td>{item.override?.actor}</td>
                   <td>{item.override?.actorRole}</td>

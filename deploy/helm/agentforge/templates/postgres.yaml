@@ -1,4 +1,7 @@
 {{- if .Values.postgresql.enabled }}
+{{- if not .Values.postgresql.persistence.enabled }}
+{{- fail "postgresql.persistence.enabled must be true for durable deployments" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,16 +21,29 @@ spec:
         {{- include "agentforge.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: postgres
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: { type: RuntimeDefault }
       containers:
         - name: postgres
-          image: postgres:16-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          image: postgres:16-alpine@{{ required "postgresql.imageDigest is required; pin an immutable image" .Values.postgresql.imageDigest }}
           env:
             - name: POSTGRES_DB
               value: {{ .Values.postgresql.auth.database | quote }}
             - name: POSTGRES_USER
               value: {{ .Values.postgresql.auth.username | quote }}
             - name: POSTGRES_PASSWORD
-              value: {{ .Values.postgresql.auth.password | quote }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentforge.fullname" . }}-secrets
+                  key: POSTGRES_PASSWORD
           ports:
             - name: postgres
               containerPort: {{ .Values.postgresql.service.port }}
@@ -36,7 +52,21 @@ spec:
               mountPath: /var/lib/postgresql/data
       volumes:
         - name: data
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: {{ include "agentforge.fullname" . }}-postgres
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "agentforge.fullname" . }}-postgres
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: {{ .Values.postgresql.persistence.size }}
+  {{- with .Values.postgresql.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
 ---
 apiVersion: v1
 kind: Service

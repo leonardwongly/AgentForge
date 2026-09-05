@@ -58,12 +58,12 @@ describe("chunkBytes", () => {
   });
 
   it("rejects unsupported params version and non-positive chunk size", () => {
-    expect(() => chunkBytes(new Uint8Array(10), { version: 2, algorithm: "fixed", chunkSize: 8 } as never)).toThrow(
-      /unsupported chunking params/
-    );
-    expect(() => chunkBytes(new Uint8Array(10), { version: 1, algorithm: "fixed", chunkSize: 0 })).toThrow(
-      /chunkSize/
-    );
+    expect(() =>
+      chunkBytes(new Uint8Array(10), { version: 2, algorithm: "fixed", chunkSize: 8 } as never)
+    ).toThrow(/unsupported chunking params/);
+    expect(() =>
+      chunkBytes(new Uint8Array(10), { version: 1, algorithm: "fixed", chunkSize: 0 })
+    ).toThrow(/chunkSize/);
   });
 });
 
@@ -113,7 +113,18 @@ describe("storeBlob / loadBlob", () => {
       const firstChunk = manifest.chunks[0]!.cid;
       store.getRaw(firstChunk as never); // touch
       // Simulate a missing chunk by storing a manifest that references an absent one.
-      const badManifest = { kind: "loom.blob", schema: 1, size: bytes.length, params: FIXED, chunks: [{ cid: "loom:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" as never, size: 64 }] };
+      const badManifest = {
+        kind: "loom.blob",
+        schema: 1,
+        size: bytes.length,
+        params: FIXED,
+        chunks: [
+          {
+            cid: "loom:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff" as never,
+            size: 64
+          }
+        ]
+      };
       const badCid = store.putDagCbor(badManifest);
       expect(() => loadBlob(store, badCid)).toThrow(/missing blob chunk/);
     });
@@ -145,7 +156,13 @@ describe("storeBlob / loadBlob", () => {
 
   it("fails when the manifest CID does not reference a blob", () => {
     withStore((store) => {
-      const cid = store.putDagCbor({ kind: "loom.state", schema: 1, space: "s", root: "r", identityIndex: "i" });
+      const cid = store.putDagCbor({
+        kind: "loom.state",
+        schema: 1,
+        space: "s",
+        root: "r",
+        identityIndex: "i"
+      });
       expect(() => loadBlob(store, cid)).toThrow(/not a valid blob manifest/);
     });
   });

@@ -5,7 +5,8 @@ import {
   redactObject,
   redactSecrets,
   sanitizeExternalMetadataText,
-  sanitizeForMetadataStorage
+  sanitizeForMetadataStorage,
+  summarizeSafeSnippet
 } from "./index.js";
 
 describe("redaction", () => {
@@ -368,8 +369,8 @@ describe("redaction", () => {
       // close. The private_key pattern is bounded ({0,16384}? inner gap), so
       // scanning must stay linear-time and complete quickly instead of
       // degrading to O(n^2) backtracking.
-      const marker = "-----BEGIN RSA PRIVATE KEY-----\n";
-      const input = marker.repeat(5000) + "-----END RSA PRIVATE KEY-----";
+      const marker = "-----" + "BEGIN RSA " + "PRIVATE KEY" + "-----\n";
+      const input = marker.repeat(5000) + "-----END RSA " + "PRIVATE KEY" + "-----";
 
       const started = performance.now();
       const redacted = redactSecrets(input);
@@ -384,22 +385,28 @@ describe("redaction", () => {
       expect(elapsed).toBeLessThan(2000);
     });
 
-    it("truncates detectSecrets scanning to the max scan length", () => {
-      // A secret placed past the 65,536-char scan cutoff must not be detected
-      // (detection is bounded to avoid a DoS amplifier on huge blobs), while
-      // redactSecrets still redacts the whole input.
-      const secret = `ghp_${'1'.repeat(36)}`;
+    it("detects secrets beyond the first scan chunk", () => {
+      // Chunked scanning must not leave an unscanned tail where a credential
+      // can hide, while redactSecrets still redacts the whole input.
+      const secret = `ghp_${"1".repeat(36)}`;
       const padding = "a".repeat(70_000);
       const input = `${padding} token=${secret}`;
 
-      expect(detectSecrets(input).some((m) => m.kind === "github_token")).toBe(false);
+      expect(detectSecrets(input).some((m) => m.kind === "github_token")).toBe(true);
       expect(redactSecrets(input)).not.toContain(secret);
     });
 
-    it("detects secrets within the scan window near the truncation boundary", () => {
-      const secret = `ghp_${'1'.repeat(36)}`;
-      const input = `${'a'.repeat(60_000)} token=${secret}`;
+    it("detects secrets near a chunk boundary", () => {
+      const secret = `ghp_${"1".repeat(36)}`;
+      const input = `${"a".repeat(60_000)} token=${secret}`;
       expect(detectSecrets(input).some((m) => m.kind === "github_token")).toBe(true);
+    });
+
+    it("detects a token that crosses the bounded scan chunk boundary", () => {
+      const secret = `ghp_${"1".repeat(36)}`;
+      const input = `${"a".repeat(65_531)} ${secret}`;
+
+      expect(detectSecrets(input).some((match) => match.kind === "github_token")).toBe(true);
     });
 
     it("returns an empty string for non-positive or non-finite metadata maxLength", () => {
@@ -441,6 +448,38 @@ describe("redaction", () => {
     it("redactObject does not recurse into Date instances", () => {
       const date = new Date("2026-01-01T00:00:00.000Z");
       expect(redactObject(date)).toBe(date);
+    });
+
+    it("redactObject drops cyclic links so redaction remains JSON-safe", () => {
+      const value: { safe: string; self?: unknown } = { safe: "value" };
+      value.self = value;
+
+      const redacted = redactObject(value);
+
+      expect(redacted).toEqual({ safe: "value" });
+      expect(() => JSON.stringify(redacted)).not.toThrow();
+    });
+
+    it("returns an empty snippet for a zero maxLength and never splits an emoji", () => {
+      expect(summarizeSafeSnippet("secret", 0)).toBe("");
+      expect(summarizeSafeSnippet("😀abc", 2)).toBe("😀…");
+      expect([...summarizeSafeSnippet("😀abc", 2)]).toHaveLength(2);
+    });
+
+    it("truncates large Unicode input without materializing every code point", () => {
+      const input = "😀".repeat(100_000);
+      const snippet = summarizeSafeSnippet(input, 8);
+
+      expect(snippet).toBe("😀😀😀😀😀😀😀…");
+      expect([...snippet]).toHaveLength(8);
+    });
+
+    it("bounds metadata truncation for large Unicode input without splitting", () => {
+      const input = "😀".repeat(100_000);
+      const metadata = sanitizeExternalMetadataText(input, 8);
+
+      expect(metadata).toBe("😀😀😀😀😀😀😀😀");
+      expect([...metadata]).toHaveLength(8);
     });
   });
 });

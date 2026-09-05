@@ -43,8 +43,12 @@ export function buildEvidenceReport(records: ChangeControlRecord[]): string {
   lines.push("");
   lines.push(`- Generated: ${report.generatedAt}`);
   lines.push(`- Records analyzed: ${report.recordCount}`);
-  lines.push(`- Window: ${report.window.oldestRecordAt ?? "n/a"} → ${report.window.newestRecordAt ?? "n/a"}`);
-  lines.push(`- Governance health: ${report.governanceHealth.score}/100 (grade ${report.governanceHealth.grade})`);
+  lines.push(
+    `- Window: ${report.window.oldestRecordAt ?? "n/a"} → ${report.window.newestRecordAt ?? "n/a"}`
+  );
+  lines.push(
+    `- Governance health: ${report.governanceHealth.score}/100 (grade ${report.governanceHealth.grade})`
+  );
   lines.push("");
   lines.push("## Validation metrics");
   lines.push("");
@@ -54,8 +58,12 @@ export function buildEvidenceReport(records: ChangeControlRecord[]): string {
   lines.push(`| Rejected evidence rate | ${report.metrics.rejectedEvidenceRate}% |`);
   lines.push(`| Open evidence rate | ${report.metrics.openEvidenceRate}% |`);
   lines.push(`| Pending reviewer rate | ${report.metrics.pendingReviewerRate}% |`);
-  lines.push(`| Median reviewer approval hours | ${report.metrics.medianReviewerApprovalHours ?? "n/a"} |`);
-  lines.push(`| Observe/warn open requirements | ${report.metrics.observeOrWarnOpenRequirementCount} |`);
+  lines.push(
+    `| Median reviewer approval hours | ${report.metrics.medianReviewerApprovalHours ?? "n/a"} |`
+  );
+  lines.push(
+    `| Observe/warn open requirements | ${report.metrics.observeOrWarnOpenRequirementCount} |`
+  );
   lines.push("");
   lines.push("## Per-detector precision");
   lines.push("");
@@ -83,7 +91,9 @@ export function buildEvidenceReport(records: ChangeControlRecord[]): string {
   lines.push("");
   lines.push("## Human-gated proposals");
   lines.push("");
-  lines.push(`- ${proposals.length} proposal(s) require explicit platform-admin approval. None are auto-applied.`);
+  lines.push(
+    `- ${proposals.length} proposal(s) require explicit platform-admin approval. None are auto-applied.`
+  );
   return lines.join("\n");
 }
 
@@ -102,7 +112,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       }
       console.log(markdown);
     } catch (error) {
-      console.error(`Failed to build evidence report: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(
+        `Failed to build evidence report: ${error instanceof Error ? error.message : String(error)}`
+      );
       process.exitCode = 1;
     }
   }

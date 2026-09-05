@@ -33,7 +33,10 @@ export interface GitReader {
    */
   readFile(ref: string, path: string): Promise<string>;
   /** Detect renames between two refs; optional (falls back to delete+add). */
-  detectRenames?(baseRef: string, headRef: string): Promise<ReadonlyArray<{ readonly from: string; readonly to: string }>>;
+  detectRenames?(
+    baseRef: string,
+    headRef: string
+  ): Promise<ReadonlyArray<{ readonly from: string; readonly to: string }>>;
 }
 
 export interface TransformStates {

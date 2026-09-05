@@ -9,8 +9,8 @@ allowBuilds:
   prisma: true
   sharp: true
 overrides:
-  postcss: 8.5.14
-  qs: 6.15.2
+  postcss: 8.5.23
+  qs: 6.16.0
   # Security: force esbuild >= 0.28.1 to remediate GHSA (Deno-module binary
   # integrity RCE, high) and the Windows dev-server arbitrary file read (low).
   # tsx/vitest pull esbuild transitively at 0.27.x; this override pins the fixed
@@ -19,13 +19,19 @@ overrides:
   # Security: force @hono/node-server >= 1.19.13 (GHSA-92pp-h63x-v22m, serveStatic
   # middleware bypass via repeated slashes). Pulled transitively by Prisma 7 via
   # prisma -> @prisma/dev (dev-only tooling); pinned to the patched 1.19.x.
-  "@hono/node-server": 1.19.14
+  "@hono/node-server": 1.19.15
   # Security: force form-data >= 4.0.6 (GHSA-hmw2-7cc7-3qxx, multipart CRLF
   # injection). Pulled transitively by supertest/superagent test tooling.
   form-data: 4.0.6
   # Security: force Vite >= 8.0.16 to remediate the Windows dev-server deny
   # bypass and launch-editor UNC path disclosure advisories pulled via Vitest.
   vite: 8.0.16
+  # Security: force patched transitive releases pulled by Prisma and its
+  # tooling. These packages are not used as application-facing APIs, but the
+  # lockfile must not retain known vulnerable versions.
+  valibot: 1.4.2
+  deepmerge-ts: 8.0.0
+  mysql2: 3.23.1
   # Dedupe ioredis: bullmq pins ioredis 5.10.1 exactly while the app declares
   # 5.11.1; force a single 5.11.1 across the workspace to avoid duplicate-version
   # Redis/Queue type clashes under exactOptionalPropertyTypes.

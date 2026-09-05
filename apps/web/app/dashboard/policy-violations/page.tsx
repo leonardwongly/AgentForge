@@ -9,6 +9,7 @@ import {
   loadDashboardData,
   loadPolicyPacks
 } from "../../data";
+import { recordHref } from "../../security/navigation";
 
 export default async function PolicyViolationsPage() {
   const [data, policyPacks] = await Promise.all([
@@ -119,7 +120,7 @@ export default async function PolicyViolationsPage() {
               {data.records.slice(0, 5).map((item) => (
                 <li key={item.record.id}>
                   <div className="list-row">
-                    <Link href={`/records/${item.record.id}`}>
+                    <Link href={recordHref(item.record.id)}>
                       {item.record.repositoryFullName} #{item.record.pullRequestNumber}
                     </Link>
                     <StatusBadge status={item.record.checkStatus} />

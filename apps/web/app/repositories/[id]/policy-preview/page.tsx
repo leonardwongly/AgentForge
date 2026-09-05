@@ -12,6 +12,7 @@ import {
   summarizeFindings,
   summarizeReviewerRequirements
 } from "../../../data";
+import { recordHref, repositoryHref } from "../../../security/navigation";
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -87,7 +88,7 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
               <h2>Recent PR preview</h2>
               <p>Results show what the current policy would require before merge.</p>
             </div>
-            <Link className="button" href={`/repositories/${id}/policy`}>
+            <Link className="button" href={repositoryHref(id, "policy")}>
               <ShieldCheck size={16} aria-hidden="true" /> Edit policy
             </Link>
           </div>
@@ -116,7 +117,7 @@ export default async function PolicyPreviewPage({ params }: PageProps) {
                 return (
                   <tr key={record.id}>
                     <td>
-                      <Link href={`/records/${record.id}`}>
+                      <Link href={recordHref(record.id)}>
                         {record.repositoryFullName} #{record.pullRequestNumber}
                       </Link>
                       <p className="muted">{item.title}</p>

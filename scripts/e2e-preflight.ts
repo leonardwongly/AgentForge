@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import net from "node:net";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -18,6 +19,7 @@ export type PreflightOptions = {
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const webDir = join(repoRoot, "apps", "web");
 const defaultLockPath = join(repoRoot, "node_modules", ".cache", "agentforge", "e2e.lock");
+const MAX_LOCK_BYTES = 8 * 1024;
 const nextLockCandidates = [
   join(webDir, ".next", "lock"),
   join(webDir, ".next", "build.lock"),
@@ -59,16 +61,25 @@ export async function runE2ePreflight(
 export function assertDistinctPorts(targets: E2eTarget[]): void {
   const seen = new Map<string, E2eTarget>();
   for (const target of targets) {
-    const key = `${target.url.hostname}:${urlPort(target.url)}`;
+    const key = `${targetHostKey(target.url.hostname)}:${urlPort(target.url)}`;
     const existing = seen.get(key);
     if (existing) {
       throw new Error(
-        `E2E ${existing.name} and ${target.name} targets both use ${key}. ` +
+        `E2E ${existing.name} and ${target.name} targets both use ` +
+          `${existing.url.hostname}:${urlPort(existing.url)}. ` +
           "Set APP_BASE_URL and API_BASE_URL to distinct localhost ports."
       );
     }
     seen.set(key, target);
   }
+}
+
+function targetHostKey(hostname: string): string {
+  const normalized = hostname
+    .toLowerCase()
+    .replace(/^\[(.*)\]$/u, "$1")
+    .replace(/\.$/u, "");
+  return ["localhost", "127.0.0.1", "::1"].includes(normalized) ? "loopback" : normalized;
 }
 
 export async function assertPortsAvailable(targets: E2eTarget[]): Promise<void> {
@@ -86,8 +97,8 @@ export async function assertPortsAvailable(targets: E2eTarget[]): Promise<void> 
   }
 }
 
-export async function assertNoNextBuildLock(): Promise<void> {
-  for (const lockPath of nextLockCandidates) {
+export async function assertNoNextBuildLock(lockPaths = nextLockCandidates): Promise<void> {
+  for (const lockPath of lockPaths) {
     if (await fileExists(lockPath)) {
       throw new Error(
         `Next build lock exists at ${lockPath}. ` +
@@ -97,9 +108,10 @@ export async function assertNoNextBuildLock(): Promise<void> {
   }
 }
 
-export async function assertProductionBuildExists(): Promise<void> {
-  const buildIdPath = join(webDir, ".next", "BUILD_ID");
-  if (!(await fileExists(buildIdPath))) {
+export async function assertProductionBuildExists(
+  buildIdPath = join(webDir, ".next", "BUILD_ID")
+): Promise<void> {
+  if (!(await regularFileExists(buildIdPath))) {
     throw new Error(
       "No production web build was found at apps/web/.next/BUILD_ID. " +
         "Run pnpm --filter @agentforge/web build or use pnpm test:e2e so the build is created under the E2E lock."
@@ -110,12 +122,14 @@ export async function assertProductionBuildExists(): Promise<void> {
 export async function acquireE2eLock(lockPath = defaultLockPath): Promise<() => Promise<void>> {
   await mkdir(dirname(lockPath), { recursive: true });
   await removeStaleE2eLock(lockPath);
+  const token = randomUUID();
   try {
     await writeFile(
       lockPath,
       JSON.stringify(
         {
           pid: process.pid,
+          token,
           command: "pnpm test:e2e",
           createdAt: new Date().toISOString()
         },
@@ -132,6 +146,13 @@ export async function acquireE2eLock(lockPath = defaultLockPath): Promise<() => 
     return acquireE2eLock(lockPath);
   }
   return async () => {
+    // A caller may invoke its cleanup more than once, or a long-lived caller
+    // may outlive a subsequent run that acquired the same path. Only remove
+    // the lock this invocation owns; never delete a newer owner's lock.
+    const lock = await readLock(lockPath);
+    if (lock?.token !== token) {
+      return;
+    }
     await rm(lockPath, { force: true });
   };
 }
@@ -157,11 +178,22 @@ async function removeStaleE2eLock(lockPath: string): Promise<void> {
   }
 }
 
-async function readLock(lockPath: string): Promise<{ pid?: number } | undefined> {
+async function readLock(lockPath: string): Promise<{ pid?: number; token?: string } | undefined> {
   try {
+    const metadata = await stat(lockPath);
+    if (!metadata.isFile() || metadata.size > MAX_LOCK_BYTES) {
+      return {};
+    }
     const raw = await readFile(lockPath, "utf8");
-    const parsed = JSON.parse(raw) as { pid?: unknown };
-    return typeof parsed.pid === "number" ? { pid: parsed.pid } : {};
+    const parsed = JSON.parse(raw) as { pid?: unknown; token?: unknown };
+    return {
+      ...(typeof parsed.pid === "number" && Number.isSafeInteger(parsed.pid) && parsed.pid > 0
+        ? { pid: parsed.pid }
+        : {}),
+      ...(typeof parsed.token === "string" && parsed.token.length > 0
+        ? { token: parsed.token }
+        : {})
+    };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return undefined;
@@ -183,6 +215,17 @@ async function fileExists(path: string): Promise<boolean> {
   try {
     await stat(path);
     return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function regularFileExists(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return false;

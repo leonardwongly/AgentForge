@@ -17,6 +17,8 @@ export type ProposalState = "draft" | "proposed" | "admitted" | "rejected";
 
 export interface Proposal {
   readonly id: string;
+  /** Author identity, when created through an authenticated client. */
+  readonly author?: string | undefined;
   state: ProposalState;
   readonly title: string;
   readonly updates: readonly ProposalUpdate[];
@@ -29,6 +31,7 @@ export interface Proposal {
 export interface CreateProposalInput {
   readonly title: string;
   readonly updates: readonly ProposalUpdate[];
+  readonly author?: string | undefined;
   readonly requiredReviewers?: readonly string[] | undefined;
   readonly requiredEvidence?: readonly string[] | undefined;
 }
@@ -48,19 +51,30 @@ const TRANSITIONS: Record<ProposalState, ReadonlySet<ProposalState>> = {
 export class ProposalStore {
   private readonly proposals = new Map<string, Proposal>();
 
-  constructor(private readonly root: string, private readonly journal: FileLineJournal) {}
+  constructor(
+    private readonly root: string,
+    private readonly journal: FileLineJournal
+  ) {}
 
   get(id: string): Proposal | undefined {
     return this.proposals.get(id);
   }
 
   create(input: CreateProposalInput): Proposal {
+    // A proposal without an explicit reviewer requirement must not become a
+    // self-approving admission primitive. Keep a conservative maintainer gate
+    // even when an untrusted caller supplies `undefined` or an empty list.
+    const requiredReviewers = [...(input.requiredReviewers ?? [])];
+    if (requiredReviewers.length === 0) {
+      requiredReviewers.push("maintainer");
+    }
     const proposal: Proposal = {
       id: randomUUID(),
+      ...(input.author !== undefined ? { author: input.author } : {}),
       state: "draft",
       title: input.title,
       updates: input.updates,
-      requiredReviewers: input.requiredReviewers ?? [],
+      requiredReviewers,
       requiredEvidence: input.requiredEvidence ?? [],
       approvals: [],
       providedEvidence: []
@@ -70,9 +84,15 @@ export class ProposalStore {
   }
 
   /** Approve as a reviewer (idempotent). */
-  approve(id: string, reviewer: string): Proposal | undefined {
+  approve(id: string, reviewer: string, actor?: string): Proposal | undefined {
     const proposal = this.proposals.get(id);
     if (!proposal || proposal.state !== "proposed") {
+      return proposal;
+    }
+    if (
+      !proposal.requiredReviewers.includes(reviewer) ||
+      (actor !== undefined && actor === proposal.author)
+    ) {
       return proposal;
     }
     if (!proposal.approvals.includes(reviewer)) {
@@ -85,6 +105,9 @@ export class ProposalStore {
   provideEvidence(id: string, kind: string): Proposal | undefined {
     const proposal = this.proposals.get(id);
     if (!proposal || proposal.state !== "proposed") {
+      return proposal;
+    }
+    if (!proposal.requiredEvidence.includes(kind)) {
       return proposal;
     }
     if (!proposal.providedEvidence.includes(kind)) {

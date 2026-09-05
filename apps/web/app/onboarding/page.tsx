@@ -16,6 +16,7 @@ import {
 import { runSamplePolicyPreview } from "./actions";
 import { saveRepositorySettings } from "../settings/actions";
 import { OwnerMappingFields, type OwnerMappingRow } from "../settings/owner-mapping-fields";
+import { repositoryHref } from "../security/navigation";
 
 type OnboardingPageProps = {
   searchParams?: Promise<{ updated?: string; error?: string }>;
@@ -525,7 +526,7 @@ export default async function OnboardingPage({ searchParams }: OnboardingPagePro
                 {selectedRepository ? (
                   <Link
                     className="button button--primary"
-                    href={`/repositories/${selectedRepository.id}/policy-preview`}
+                    href={repositoryHref(selectedRepository.id, "policy-preview")}
                   >
                     <Play size={16} aria-hidden="true" /> Run preview
                   </Link>

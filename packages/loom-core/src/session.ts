@@ -34,44 +34,62 @@ export interface CreateSessionInput {
 }
 
 export class SessionStore {
-  private readonly sessions = new Map<string, AgentSession>();
+  private readonly sessions = new Map<string, SessionRecord>();
 
   create(input: CreateSessionInput): AgentSession {
-    const session: AgentSession = {
+    if (!Number.isSafeInteger(input.maxWrites ?? 10_000) || (input.maxWrites ?? 10_000) < 0) {
+      throw new Error("loom: maxWrites must be a non-negative safe integer");
+    }
+    const writeScope = Object.freeze([...input.writeScope]);
+    if (writeScope.some((prefix) => !isValidScopePrefix(prefix))) {
+      throw new Error("loom: writeScope contains an invalid path prefix");
+    }
+    const state = { status: "active" as SessionStatus, writes: 0 };
+    const session = Object.freeze({
       id: randomUUID(),
       agentDid: input.agentDid,
       grantId: input.grantId,
-      writeScope: input.writeScope,
+      writeScope,
       maxWrites: input.maxWrites ?? 10_000,
-      status: "active",
       createdAt: Date.now(),
-      writes: 0
-    };
-    this.sessions.set(session.id, session);
+      get status(): SessionStatus {
+        return state.status;
+      },
+      get writes(): number {
+        return state.writes;
+      }
+    }) as AgentSession;
+    this.sessions.set(session.id, { session, state });
     return session;
   }
 
   get(id: string): AgentSession | undefined {
-    return this.sessions.get(id);
+    return this.sessions.get(id)?.session;
   }
 
   /** True if the session may write to `path` (within scope and budget). */
   canWrite(session: AgentSession, path: string): boolean {
-    if (session.status !== "active") {
+    const owned = this.ownedSession(session);
+    if (owned === undefined || owned.status !== "active") {
       return false;
     }
-    if (session.writes >= session.maxWrites) {
+    if (owned.writes >= owned.maxWrites || !isSafeRelativePath(path)) {
       return false;
     }
-    return session.writeScope.some((prefix) => path.startsWith(prefix));
+    return owned.writeScope.some((prefix) => pathWithinScope(path, prefix));
   }
 
   /** Record a write; returns false if the write is not permitted. */
   recordWrite(session: AgentSession, path: string): boolean {
-    if (!this.canWrite(session, path)) {
+    const owned = this.ownedSession(session);
+    if (owned === undefined || !this.canWrite(owned, path)) {
       return false;
     }
-    session.writes += 1;
+    const record = this.sessions.get(owned.id);
+    if (record === undefined) {
+      return false;
+    }
+    record.state.writes += 1;
     return true;
   }
 
@@ -84,11 +102,57 @@ export class SessionStore {
   }
 
   private transition(id: string, next: SessionStatus): AgentSession | undefined {
-    const session = this.sessions.get(id);
-    if (!session || session.status !== "active") {
-      return session;
+    const record = this.sessions.get(id);
+    if (!record || record.state.status !== "active") {
+      return record?.session;
     }
-    session.status = next;
-    return session;
+    record.state.status = next;
+    return record.session;
   }
+
+  /** Resolve only the exact object issued by this store; forged session records
+   * with a copied id must never inherit another session's authority. */
+  private ownedSession(session: AgentSession): AgentSession | undefined {
+    if (typeof session !== "object" || session === null || typeof session.id !== "string") {
+      return undefined;
+    }
+    const owned = this.sessions.get(session.id);
+    return owned?.session === session ? owned.session : undefined;
+  }
+}
+
+interface SessionRecord {
+  readonly session: AgentSession;
+  readonly state: { status: SessionStatus; writes: number };
+}
+
+function isValidScopePrefix(prefix: unknown): prefix is string {
+  return (
+    typeof prefix === "string" &&
+    prefix.length > 0 &&
+    isSafeRelativePath(prefix.replace(/\/$/u, ""))
+  );
+}
+
+function isSafeRelativePath(path: unknown): path is string {
+  if (
+    typeof path !== "string" ||
+    path.length === 0 ||
+    path.includes("\\") ||
+    path.startsWith("/") ||
+    path.includes("\u0000")
+  ) {
+    return false;
+  }
+  return path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+/** Match complete path segments, not just a textual prefix (`src` must not
+ * authorize `src-private`). A trailing slash remains a directory scope. */
+export function pathWithinScope(path: string, prefix: string): boolean {
+  if (!isSafeRelativePath(path) || !isValidScopePrefix(prefix)) {
+    return false;
+  }
+  const normalizedPrefix = prefix.replace(/\/$/u, "");
+  return path === normalizedPrefix || path.startsWith(`${normalizedPrefix}/`);
 }

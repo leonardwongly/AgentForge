@@ -10,7 +10,7 @@
  * model that maps path prefixes to Lines for sharding.
  */
 
-import type { FileLineJournal } from "./store.js";
+import type { FileLineJournal, LineAdvanceInput } from "./store.js";
 import { FileLock } from "./lock.js";
 import type { Cid, LineScope } from "./types.js";
 
@@ -33,7 +33,11 @@ export interface ProposalUpdate {
 export interface ProposalResult {
   readonly ok: boolean;
   /** Per-line outcomes for a committed proposal. */
-  readonly committed: ReadonlyArray<{ readonly line: string; readonly head: Cid; readonly sequence: number }>;
+  readonly committed: ReadonlyArray<{
+    readonly line: string;
+    readonly head: Cid;
+    readonly sequence: number;
+  }>;
   /** The first failing line for a rejected proposal. */
   readonly failedLine?: string | undefined;
   readonly reason?: string | undefined;
@@ -41,36 +45,78 @@ export interface ProposalResult {
 
 /** Validate that shards are disjoint (no two Lines own the same path prefix). */
 export function validateShards(shards: readonly LineShard[]): string | undefined {
-  const seen = new Set<string>();
-  for (const shard of shards) {
+  const normalized = shards.map((shard) => ({
+    ...shard,
+    pathPrefix: normalizePrefix(shard.pathPrefix)
+  }));
+  for (let i = 0; i < normalized.length; i += 1) {
+    const shard = normalized[i]!;
     if (shard.pathPrefix === "") {
       return `shard "${shard.line}" has an empty path prefix`;
     }
-    if (seen.has(shard.pathPrefix)) {
-      return `duplicate path prefix "${shard.pathPrefix}" across shards`;
+    if (!isSafePath(shard.pathPrefix)) {
+      return `shard "${shard.line}" has an unsafe path prefix`;
     }
-    seen.add(shard.pathPrefix);
+    for (let j = 0; j < i; j += 1) {
+      const previous = normalized[j]!;
+      if (prefixesOverlap(previous.pathPrefix, shard.pathPrefix)) {
+        if (previous.pathPrefix === shard.pathPrefix) {
+          return `duplicate path prefix "${shard.pathPrefix}" across shards`;
+        }
+        return `overlapping path prefix "${shard.pathPrefix}" with "${previous.pathPrefix}" across shards`;
+      }
+    }
   }
   return undefined;
 }
 
 /** Resolve which Line owns a path, or undefined if no shard covers it. */
 export function resolveShard(shards: readonly LineShard[], path: string): LineShard | undefined {
-  return shards.find((shard) => path.startsWith(shard.pathPrefix));
+  return shards.find((shard) => pathWithinPrefix(path, shard.pathPrefix));
+}
+
+function normalizePrefix(prefix: string): string {
+  return prefix.replace(/\/$/u, "");
+}
+
+function isSafePath(path: string): boolean {
+  return (
+    path.length > 0 &&
+    !path.includes("\\") &&
+    !path.startsWith("/") &&
+    !path.split("/").some((segment) => segment === "" || segment === "." || segment === "..")
+  );
+}
+
+function pathWithinPrefix(path: string, prefix: string): boolean {
+  const normalized = normalizePrefix(prefix);
+  return (
+    isSafePath(path) &&
+    isSafePath(normalized) &&
+    (path === normalized || path.startsWith(`${normalized}/`))
+  );
+}
+
+function prefixesOverlap(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 }
 
 /**
  * Read-only prepare: verify every update's CAS condition holds without
  * committing. Returns undefined when all updates are applicable, else an error.
  */
-export function prepareProposal(journal: FileLineJournal, updates: readonly ProposalUpdate[]): string | undefined {
+export function prepareProposal(
+  journal: FileLineJournal,
+  updates: readonly ProposalUpdate[]
+): string | undefined {
+  const inputError = validateProposalUpdates(updates);
+  if (inputError !== undefined) {
+    return inputError;
+  }
   for (const update of updates) {
     const current = journal.read(update.line);
     if (current === undefined) {
-      if (update.expectedSequence !== 0) {
-        return `line "${update.line}" has no genesis; expectedSequence must be 0`;
-      }
-      continue;
+      return `line "${update.line}" has no genesis; proposals cannot create Lines`;
     }
     if (current.head !== update.expectedHead) {
       return `line "${update.line}" head moved (expected ${update.expectedHead}, current ${current.head})`;
@@ -92,6 +138,10 @@ export async function commitProposal(
   journal: FileLineJournal,
   updates: readonly ProposalUpdate[]
 ): Promise<ProposalResult> {
+  const inputError = validateProposalUpdates(updates);
+  if (inputError !== undefined) {
+    return { ok: false, committed: [], reason: inputError };
+  }
   const lock = new FileLock(root, "proposal-global");
   const release = await lock.acquire();
   try {
@@ -99,23 +149,47 @@ export async function commitProposal(
     if (prepareError !== undefined) {
       return { ok: false, committed: [], reason: prepareError };
     }
-    const committed: ProposalResult["committed"][number][] = [];
-    for (const update of updates) {
-      const outcome = await journal.advance({
+    const outcome = await journal.advanceBatch(
+      updates.map((update): LineAdvanceInput => ({
         name: update.line,
         scope: "shared",
         expectedHead: update.expectedHead,
         expectedSequence: update.expectedSequence,
         newHead: update.newHead
-      });
-      if (!outcome.ok) {
-        // Should not happen under the global lock, but fail closed.
-        return { ok: false, committed, failedLine: update.line, reason: outcome.detail };
-      }
-      committed.push({ line: update.line, head: outcome.entry.head, sequence: outcome.entry.sequence });
+      }))
+    );
+    if (!outcome.ok) {
+      return { ok: false, committed: [], failedLine: outcome.failedLine, reason: outcome.detail };
     }
-    return { ok: true, committed };
+    return {
+      ok: true,
+      committed: outcome.entries.map((entry) => ({
+        line: entry.name,
+        head: entry.head,
+        sequence: entry.sequence
+      }))
+    };
   } finally {
     release();
   }
+}
+
+function validateProposalUpdates(updates: readonly ProposalUpdate[]): string | undefined {
+  if (updates.length === 0) {
+    return "proposal must contain at least one line update";
+  }
+  const seen = new Set<string>();
+  for (const update of updates) {
+    if (!update.line || seen.has(update.line)) {
+      return `proposal contains duplicate or empty line "${update.line}"`;
+    }
+    seen.add(update.line);
+    if (!Number.isSafeInteger(update.expectedSequence) || update.expectedSequence < 0) {
+      return `line "${update.line}" has an invalid expected sequence`;
+    }
+    if (!update.expectedHead || !update.newHead) {
+      return `line "${update.line}" must include both expectedHead and newHead`;
+    }
+  }
+  return undefined;
 }

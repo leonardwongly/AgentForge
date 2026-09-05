@@ -25,6 +25,7 @@ import {
   pendingRequiredReviewers
 } from "../data";
 import { createRecordExport } from "../records/actions";
+import { recordHref } from "../security/navigation";
 
 type DashboardPageProps = {
   searchParams?: Promise<{
@@ -156,7 +157,7 @@ export default async function DashboardPage({ searchParams }: DashboardPageProps
                       <div>
                         <h3>
                           {item.title}{" "}
-                          <Link href={`/records/${record.id}`}>#{record.pullRequestNumber}</Link>
+                          <Link href={recordHref(record.id)}>#{record.pullRequestNumber}</Link>
                         </h3>
                         <p>
                           {record.repositoryFullName} · {item.team} · {item.age}

@@ -321,6 +321,7 @@ async function runVerify(flags: Flags, io: CliIo): Promise<number> {
   const headRef = requireString(flags, "head");
   const envelopePath = requireString(flags, "env");
   const publicKeyPath = requireString(flags, "pubkey");
+  const policyVersion = optionalString(flags, "policy-version", "1");
   const reader = io.makeReader(repoDir);
   const envelope = JSON.parse(io.readFile(envelopePath)) as DsseEnvelope;
   const publicKeyPem = io.readFile(publicKeyPath);
@@ -329,7 +330,8 @@ async function runVerify(flags: Flags, io: CliIo): Promise<number> {
     baseRef,
     headRef,
     envelope,
-    publicKeyPem
+    publicKeyPem,
+    policyVersion
   });
   io.log(formatVerify(res));
   return res.verdict.ok ? 0 : 1;
@@ -344,7 +346,9 @@ async function runPilot(sub: readonly string[], io: CliIo): Promise<number> {
     const message = typeof flags.message === "string" ? flags.message : "loom mirror";
     const result = await mirrorHeadState(repo, gitRepo, message);
     if (!result.equivalent) {
-      io.error(`mirror diverged: ${result.divergences.map((d) => `${d.path}: ${d.reason}`).join("; ")}`);
+      io.error(
+        `mirror diverged: ${result.divergences.map((d) => `${d.path}: ${d.reason}`).join("; ")}`
+      );
       io.error(`loom digest ${result.loomDigest} != git digest ${result.gitDigest}`);
       return 1;
     }
@@ -355,7 +359,9 @@ async function runPilot(sub: readonly string[], io: CliIo): Promise<number> {
     const gitRepo = requireString(flags, "git");
     const result = await verifyMirrorEquivalence(repo, gitRepo);
     if (!result.equivalent) {
-      io.error(`mirror diverged: ${result.divergences.map((d) => `${d.path}: ${d.reason}`).join("; ")}`);
+      io.error(
+        `mirror diverged: ${result.divergences.map((d) => `${d.path}: ${d.reason}`).join("; ")}`
+      );
       return 1;
     }
     io.log(`mirror equivalent (digest ${result.loomDigest})`);

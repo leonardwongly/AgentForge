@@ -223,7 +223,7 @@ type ResolvedApiRouteContext = {
     };
   }>;
   config: ApiConfig;
-  defaultDataHandlingSettings: () => Promise<Record<string, unknown>>;
+  defaultDataHandlingSettings: (organizationId?: string) => Promise<Record<string, unknown>>;
   enqueueMergeGuardEvaluation: (input: {
     state: AppState;
     evaluationQueue: EvaluationQueue;
@@ -240,7 +240,10 @@ type ResolvedApiRouteContext = {
     target: QueueReplayTarget,
     organizationId?: string
   ) => Promise<ReplayableDelivery | undefined>;
-  findRepositoryIdByFullName: (fullName: string) => Promise<string | undefined>;
+  findRepositoryIdByFullName: (
+    fullName: string,
+    organizationId?: string
+  ) => Promise<string | undefined>;
   getExportJob: (id: string) => Promise<ExportJob | undefined>;
   getRecord: (id: string) => Promise<ChangeControlRecord | undefined>;
   getRecordPolicyConfig: (record: ChangeControlRecord) => Promise<{
@@ -292,10 +295,7 @@ type ResolvedApiRouteContext = {
     state: AppState;
     evaluationQueue: EvaluationQueue;
   }) => Promise<QueueStatus>;
-  recomputeRequirementStatus: (
-    record: ChangeControlRecord,
-    now?: string
-  ) => ChangeControlRecord;
+  recomputeRequirementStatus: (record: ChangeControlRecord, now?: string) => ChangeControlRecord;
   rejectGithubInstallation: (input: {
     id: string;
     organizationId: string;
@@ -430,11 +430,7 @@ function manualMutationAuditTrail(input: {
       actorRole: input.actor.role
     }
   });
-  return [
-    ...(input.actionEvent ? [input.actionEvent] : []),
-    reevaluated,
-    requested
-  ];
+  return [...(input.actionEvent ? [input.actionEvent] : []), reevaluated, requested];
 }
 
 function manualMutationFailure(
@@ -962,7 +958,7 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
           trustedProxyConfigured: config.auth.apiTrustProxyHeaders
         },
         repositories,
-        dataHandling: await defaultDataHandlingSettings(),
+        dataHandling: await defaultDataHandlingSettings(actor.organizationId),
         ownerMappings: ownerMappings.map(ownerMappingForApi),
         routingDiagnostics: routingDiagnosticsFromOwnerMappings(
           ownerMappings,
@@ -1577,31 +1573,68 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       }
     );
 
-    app.post("/api/policies/validate", async (request, reply) => {
-      const parsedBody = policyUpdateSchema.safeParse(request.body ?? {});
-      if (!parsedBody.success) {
-        return reply.code(400).send({
-          error: "Invalid policy validation input",
-          details: parsedBody.error.issues.map((issue) => ({
-            path: issue.path.join("."),
-            message: issue.message
-          }))
-        });
+    app.post(
+      "/api/policies/validate",
+      {
+        config: {
+          rateLimit: {
+            max: config.nodeEnv === "test" ? 1_000 : 20,
+            timeWindow: "1 minute"
+          }
+        }
+      },
+      async (request, reply) => {
+        if (Buffer.byteLength(JSON.stringify(request.body ?? {}), "utf8") > 256_000) {
+          return reply.code(413).send({ error: "Policy validation payload is too large." });
+        }
+        const parsedBody = policyUpdateSchema.safeParse(request.body ?? {});
+        if (!parsedBody.success) {
+          return reply.code(400).send({
+            error: "Invalid policy validation input",
+            details: parsedBody.error.issues.map((issue) => ({
+              path: issue.path.join("."),
+              message: issue.message
+            }))
+          });
+        }
+        return validatePolicyYaml(parsedBody.data.contentYaml);
       }
-      return validatePolicyYaml(parsedBody.data.contentYaml);
-    });
+    );
 
     app.post(
       "/api/policies/preview",
       {
         config: {
           rateLimit: {
-            max: config.nodeEnv === "test" ? 1_000 : 60,
+            max: config.nodeEnv === "test" ? 1_000 : 20,
             timeWindow: "1 minute"
           }
         }
       },
       async (request, reply) => {
+        if (Buffer.byteLength(JSON.stringify(request.body ?? {}), "utf8") > 512_000) {
+          return reply.code(413).send({ error: "Policy preview payload is too large." });
+        }
+        // Preserve the established, actionable error for the most common
+        // malformed fixture while the full schema below rejects all other
+        // unsafe nested shapes before evaluation.
+        const rawPullRequest =
+          request.body &&
+          typeof request.body === "object" &&
+          !Array.isArray(request.body) &&
+          "pr" in request.body &&
+          request.body.pr &&
+          typeof request.body.pr === "object" &&
+          !Array.isArray(request.body.pr)
+            ? (request.body.pr as { repositoryFullName?: unknown })
+            : undefined;
+        if (
+          rawPullRequest &&
+          (typeof rawPullRequest.repositoryFullName !== "string" ||
+            rawPullRequest.repositoryFullName.trim().length === 0)
+        ) {
+          return reply.code(400).send({ error: "pr.repositoryFullName is required" });
+        }
         const parsedBody = policyPreviewSchema.safeParse(request.body ?? {});
         if (!parsedBody.success) {
           return reply.code(400).send({
@@ -1643,10 +1676,17 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         ) {
           return reply.code(400).send({ error: "pr.repositoryFullName is required" });
         }
+        // Prefer a tenant-scoped match so duplicate GitHub names cannot select
+        // another organization's repository. If the scoped lookup misses but
+        // an actor is present, retain a global match solely to surface the
+        // repository's owning tenant and reject cross-tenant fixture previews
+        // instead of treating them as unregistered stateless evaluations.
+        const scopedRepositoryId = actor
+          ? await findRepositoryIdByFullName(body.pr.repositoryFullName, actor.organizationId)
+          : undefined;
         const repositoryId =
-          requiresStoredPolicyAccess || actor
-            ? await findRepositoryIdByFullName(body.pr.repositoryFullName)
-            : undefined;
+          scopedRepositoryId ??
+          (actor ? await findRepositoryIdByFullName(body.pr.repositoryFullName) : undefined);
         const repositoryOrganization = repositoryId
           ? await repositoryOrganizationId(repositoryId)
           : undefined;
@@ -1934,15 +1974,13 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (mutation.result.status !== "committed") {
         return manualMutationFailure(reply, mutation.result);
       }
-      return reply
-        .code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 200)
-        .send({
-          evidence: safe(
-            mutation.result.record.requiredEvidence.find((item) => item.id === evidence.id)
-          ),
-          record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
-          reevaluation: mutation.reevaluation
-        });
+      return reply.code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 200).send({
+        evidence: safe(
+          mutation.result.record.requiredEvidence.find((item) => item.id === evidence.id)
+        ),
+        record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
+        reevaluation: mutation.reevaluation
+      });
     });
 
     app.patch("/api/evidence/:id/approve", async (request, reply) => {
@@ -1972,7 +2010,11 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (!record || record.organizationId !== actor.organizationId) {
         return reply.code(404).send({ error: "Change Control Record not found" });
       }
-      const tenantAccess = requireOrganizationAccess(actor, record.organizationId, "Evidence approval");
+      const tenantAccess = requireOrganizationAccess(
+        actor,
+        record.organizationId,
+        "Evidence approval"
+      );
       if (!tenantAccess.ok) {
         return handleAuthzFailure(request, reply, tenantAccess);
       }
@@ -1986,6 +2028,11 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         return reply
           .code(409)
           .send({ error: "Evidence must be provided before it can be approved." });
+      }
+      if (evidence.providedBy && evidence.providedBy === actor.login) {
+        return reply
+          .code(403)
+          .send({ error: "Evidence cannot be approved by the person who provided it." });
       }
       const approvedAt = new Date().toISOString();
       const nextRecord = structuredClone(record);
@@ -2030,15 +2077,13 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (mutation.result.status !== "committed") {
         return manualMutationFailure(reply, mutation.result);
       }
-      return reply
-        .code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 200)
-        .send({
-          evidence: safe(
-            mutation.result.record.requiredEvidence.find((item) => item.id === evidence.id)
-          ),
-          record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
-          reevaluation: mutation.reevaluation
-        });
+      return reply.code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 200).send({
+        evidence: safe(
+          mutation.result.record.requiredEvidence.find((item) => item.id === evidence.id)
+        ),
+        record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
+        reevaluation: mutation.reevaluation
+      });
     });
 
     app.patch("/api/evidence/:id/reject", async (request, reply) => {
@@ -2068,7 +2113,11 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (!record || record.organizationId !== actor.organizationId) {
         return reply.code(404).send({ error: "Change Control Record not found" });
       }
-      const tenantAccess = requireOrganizationAccess(actor, record.organizationId, "Evidence rejection");
+      const tenantAccess = requireOrganizationAccess(
+        actor,
+        record.organizationId,
+        "Evidence rejection"
+      );
       if (!tenantAccess.ok) {
         return handleAuthzFailure(request, reply, tenantAccess);
       }
@@ -2139,15 +2188,13 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (mutation.result.status !== "committed") {
         return manualMutationFailure(reply, mutation.result);
       }
-      return reply
-        .code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 200)
-        .send({
-          evidence: safe(
-            mutation.result.record.requiredEvidence.find((item) => item.id === evidence.id)
-          ),
-          record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
-          reevaluation: mutation.reevaluation
-        });
+      return reply.code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 200).send({
+        evidence: safe(
+          mutation.result.record.requiredEvidence.find((item) => item.id === evidence.id)
+        ),
+        record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
+        reevaluation: mutation.reevaluation
+      });
     });
 
     app.patch("/api/reviewers/:id/approve", async (request, reply) => {
@@ -2169,7 +2216,11 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (!record || record.organizationId !== actor.organizationId) {
         return reply.code(404).send({ error: "Change Control Record not found" });
       }
-      const tenantAccess = requireOrganizationAccess(actor, record.organizationId, "Reviewer approval");
+      const tenantAccess = requireOrganizationAccess(
+        actor,
+        record.organizationId,
+        "Reviewer approval"
+      );
       if (!tenantAccess.ok) {
         return handleAuthzFailure(request, reply, tenantAccess);
       }
@@ -2241,15 +2292,13 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
       if (mutation.result.status !== "committed") {
         return manualMutationFailure(reply, mutation.result);
       }
-      return reply
-        .code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 200)
-        .send({
-          reviewer: safe(
-            mutation.result.record.requiredReviewers.find((item) => item.id === reviewer.id)
-          ),
-          record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
-          reevaluation: mutation.reevaluation
-        });
+      return reply.code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 200).send({
+        reviewer: safe(
+          mutation.result.record.requiredReviewers.find((item) => item.id === reviewer.id)
+        ),
+        record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
+        reevaluation: mutation.reevaluation
+      });
     });
 
     app.post("/api/pull-requests/:id/override", async (request, reply) => {
@@ -2324,16 +2373,14 @@ export function registerApiRoutes(app: FastifyInstance, context: ApiRouteContext
         if (mutation.result.status !== "committed") {
           return manualMutationFailure(reply, mutation.result);
         }
-        return reply
-          .code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 201)
-          .send({
-            override: safe(output.overrideRecord),
-            record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
-            auditEvent: output.auditEvent,
-            reevaluation: mutation.reevaluation,
-            prVisibleMessage:
-              "Merge Guard override recorded. Merge was allowed after authorized override with reason."
-          });
+        return reply.code(mutation.reevaluation?.status === "enqueue_failed" ? 202 : 201).send({
+          override: safe(output.overrideRecord),
+          record: sanitizeChangeControlRecord(mutation.result.record, storagePolicy),
+          auditEvent: output.auditEvent,
+          reevaluation: mutation.reevaluation,
+          prVisibleMessage:
+            "Merge Guard override recorded. Merge was allowed after authorized override with reason."
+        });
       } catch (error) {
         return reply
           .code(403)

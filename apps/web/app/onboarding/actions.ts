@@ -48,9 +48,10 @@ export async function runSamplePolicyPreview(): Promise<void> {
     );
     recordId = payload.record.id;
   } catch (error) {
-    console.error("Sample policy preview failed", {
-      message: error instanceof Error ? error.message : "unknown error"
-    });
+    // Keep backend response details out of logs and the redirect URL; the API
+    // may include implementation details that are not suitable for operators.
+    void error;
+    console.error("Sample policy preview failed");
     redirect("/onboarding?error=sample-preview-failed");
   }
 

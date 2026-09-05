@@ -33,9 +33,16 @@ object EndpointValidator {
         .getOrElse { return Result.failure(IllegalArgumentException("URL is malformed.")) }
 
     val scheme = uri.scheme?.lowercase()
-    val host = uri.host?.lowercase()
+    val host = uri.host?.lowercase()?.trim('[', ']')
     if (scheme !in setOf("https", "http") || host.isNullOrBlank()) {
       return Result.failure(IllegalArgumentException("URL must include an HTTP or HTTPS host."))
+    }
+
+    // Credentials and URL query/fragment data do not belong in a base URL.
+    // Reject them instead of displaying or persisting values that can leak
+    // secrets or silently alter the health/OAuth paths we append below.
+    if (uri.rawUserInfo != null || uri.rawQuery != null || uri.rawFragment != null) {
+      return Result.failure(IllegalArgumentException("Base URL must not include credentials, a query, or a fragment."))
     }
 
     if (scheme == "http" && !host.isLocalDevelopmentHost()) {
@@ -46,5 +53,5 @@ object EndpointValidator {
   }
 
   private fun String.isLocalDevelopmentHost(): Boolean =
-    this == "localhost" || this == "127.0.0.1" || this == "10.0.2.2"
+    this == "localhost" || this == "127.0.0.1" || this == "10.0.2.2" || this == "::1"
 }

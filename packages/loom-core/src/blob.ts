@@ -118,7 +118,11 @@ function nextPowerOfTwo(value: number): number {
 // ---- store / load -----------------------------------------------------------
 
 /** Store bytes as a chunked BlobManifest and return the manifest CID. */
-export function storeBlob(store: DurableObjectStore, bytes: Uint8Array, params: ChunkingParams = DEFAULT_CHUNKING): Cid {
+export function storeBlob(
+  store: DurableObjectStore,
+  bytes: Uint8Array,
+  params: ChunkingParams = DEFAULT_CHUNKING
+): Cid {
   const chunks = chunkBytes(bytes, params);
   const chunkRefs: BlobChunk[] = chunks.map((chunk) => ({
     cid: store.putRaw(chunk),

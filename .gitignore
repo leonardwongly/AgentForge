@@ -13,6 +13,9 @@ coverage/
 playwright-report/
 test-results/
 .playwright-mcp/
+.playwright-cli/
+.mimosa/
+.pnpm-store/
 .qoder/
 .kiro/
 .DS_Store

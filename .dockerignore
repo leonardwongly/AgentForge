@@ -1,0 +1,34 @@
+# Never send credentials or repository metadata to the Docker daemon.
+.git
+.git/**
+.env
+.env.*
+!.env.example
+
+# Local and generated content that is not required to build the runtime.
+node_modules
+**/node_modules
+dist
+**/dist
+.next
+**/.next
+coverage
+**/coverage
+.turbo
+**/.turbo
+.playwright-mcp
+playwright-report
+test-results
+apps/android/.gradle
+apps/android/**/build
+apps/ios/**/DerivedData
+apps/ios/**/*.xcuserdata
+*.log
+*.tsbuildinfo
+*.apk
+*.aab
+*.pem
+*.key
+*.p12
+*.pfx
+.DS_Store

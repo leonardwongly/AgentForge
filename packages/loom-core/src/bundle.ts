@@ -35,7 +35,19 @@ export function verifyBundle(
   witnesses: WitnessSet,
   quorum: number
 ): boolean {
-  return witnesses.quorumReached(bundle.signatures, bundle.checkpointCid, quorum);
+  if (
+    !bundle.authority ||
+    bundle.signatures.some((signature) => signature.authority !== bundle.authority)
+  ) {
+    return false;
+  }
+  return witnesses.quorumReached(
+    bundle.signatures,
+    bundle.checkpointCid,
+    quorum,
+    bundle.sequence,
+    bundle.authority
+  );
 }
 
 export type ReconcileResult =
@@ -140,13 +152,27 @@ export function detectForkUnderPartition(
   witnesses: WitnessSet,
   config: QuorumConfig
 ): { readonly fork: boolean; readonly detail: string } {
-  const reached: Array<{ readonly name: string; readonly checkpointCid: string; readonly sequence: number }> = [];
+  const reached: Array<{
+    readonly name: string;
+    readonly checkpointCid: string;
+    readonly sequence: number;
+  }> = [];
   for (const group of groups) {
     for (const authority of group.authorities) {
       const quorum = quorumFor(config, authority.name);
-      const ok = witnesses.quorumReached(authority.signatures, group.checkpointCid, quorum);
+      const ok = witnesses.quorumReached(
+        authority.signatures,
+        group.checkpointCid,
+        quorum,
+        group.sequence,
+        authority.name
+      );
       if (ok) {
-        reached.push({ name: `${group.name}/${authority.name}`, checkpointCid: group.checkpointCid, sequence: group.sequence });
+        reached.push({
+          name: `${group.name}/${authority.name}`,
+          checkpointCid: group.checkpointCid,
+          sequence: group.sequence
+        });
       }
     }
   }
@@ -178,7 +204,11 @@ export function reconcile(
   quorum: number
 ): ReconcileResult {
   if (a.sequence !== b.sequence) {
-    return { consistent: false, reason: "no_quorum", detail: "bundles are for different sequences" };
+    return {
+      consistent: false,
+      reason: "no_quorum",
+      detail: "bundles are for different sequences"
+    };
   }
   const aOk = verifyBundle(a, witnesses, quorum);
   const bOk = verifyBundle(b, witnesses, quorum);

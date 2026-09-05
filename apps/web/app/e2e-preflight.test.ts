@@ -16,9 +16,16 @@ describe("E2E preflight checks", () => {
     expect(() => assertDistinctPorts(targets)).toThrow(/distinct localhost ports/);
   });
 
-  it("reports occupied ports before Playwright starts web servers", async () => {
+  it("reports occupied ports before Playwright starts web servers", async (context) => {
     const server = net.createServer();
-    await listen(server);
+    try {
+      await listen(server);
+    } catch (error) {
+      // Only a genuine sandbox/network restriction is skip-worthy; anything
+      // else fails loudly so the preflight contract stays covered.
+      if ((error as NodeJS.ErrnoException)?.code === "EPERM") return context.skip();
+      throw error;
+    }
     const address = server.address();
     if (!address || typeof address === "string") {
       throw new Error("Test server did not expose a TCP address.");

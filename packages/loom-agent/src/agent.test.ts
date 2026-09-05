@@ -6,6 +6,7 @@ import {
   applyOps,
   captureState,
   emptyState,
+  FileLineJournal,
   mintNodeIdent,
   stateAddress,
   type Cid,
@@ -41,7 +42,12 @@ const T0 = "loom:sha256:genesis" as Cid;
 
 describe("AgentClient", () => {
   it("creates a bounded delegated session with defaults", () => {
-    const client = new AgentClient({ root: ".", agentDid: AGENT, grantId: GRANT, writeScope: SCOPE });
+    const client = new AgentClient({
+      root: ".",
+      agentDid: AGENT,
+      grantId: GRANT,
+      writeScope: SCOPE
+    });
     const session = client.createSession();
     expect(session.agentDid).toBe(AGENT);
     expect(session.grantId).toBe(GRANT);
@@ -57,17 +63,30 @@ describe("AgentClient", () => {
       "src/billing/invoice.ts": "export const token = 'x';\n"
     });
     try {
-      const client = new AgentClient({ root: ".", agentDid: AGENT, grantId: GRANT, writeScope: SCOPE });
+      const client = new AgentClient({
+        root: ".",
+        agentDid: AGENT,
+        grantId: GRANT,
+        writeScope: SCOPE
+      });
       const session = client.createSession();
       const base = requireState([
-        { op: "put_cell", at: "src/app.ts", ident: mintNodeIdent(T0, 0, "src/app.ts"), facet: "text", text: "export const v = 1;\n" }
+        {
+          op: "put_cell",
+          at: "src/app.ts",
+          ident: mintNodeIdent(T0, 0, "src/app.ts"),
+          facet: "text",
+          text: "export const v = 1;\n"
+        }
       ]);
       const report = client.captureChange(session, { workingDir: dir, baseState: base });
       expect(report.journal.modified).toContain("src/app.ts");
       expect(report.journal.added).toContain("src/billing/invoice.ts");
       expect(report.effects).toContain("edits_source");
       expect(report.effects).toContain("touches_sensitive_path");
-      expect(report.reviewRequirements.some((r) => r.reviewers.includes("security-team"))).toBe(true);
+      expect(report.reviewRequirements.some((r) => r.reviewers.includes("security-team"))).toBe(
+        true
+      );
       expect(report.withinScope).toBe(true);
       expect(report.writes).toBe(2);
     } finally {
@@ -78,7 +97,12 @@ describe("AgentClient", () => {
   it("flags out-of-scope writes and does not record them", async () => {
     const dir = await makeWorkingCopy({ "outside.txt": "x" });
     try {
-      const client = new AgentClient({ root: ".", agentDid: AGENT, grantId: GRANT, writeScope: SCOPE });
+      const client = new AgentClient({
+        root: ".",
+        agentDid: AGENT,
+        grantId: GRANT,
+        writeScope: SCOPE
+      });
       const session = client.createSession();
       const report = client.captureChange(session, { workingDir: dir, baseState: emptyState() });
       expect(report.withinScope).toBe(false);
@@ -92,7 +116,13 @@ describe("AgentClient", () => {
   it("respects the session write budget", async () => {
     const dir = await makeWorkingCopy({ "src/a.ts": "a", "src/b.ts": "b", "src/c.ts": "c" });
     try {
-      const client = new AgentClient({ root: ".", agentDid: AGENT, grantId: GRANT, writeScope: SCOPE, maxWrites: 2 });
+      const client = new AgentClient({
+        root: ".",
+        agentDid: AGENT,
+        grantId: GRANT,
+        writeScope: SCOPE,
+        maxWrites: 2
+      });
       const session = client.createSession();
       const report = client.captureChange(session, { workingDir: dir, baseState: emptyState() });
       expect(report.writes).toBe(2);
@@ -104,7 +134,12 @@ describe("AgentClient", () => {
   });
 
   it("builds a valid recipe and rejects an invalid one", () => {
-    const client = new AgentClient({ root: ".", agentDid: AGENT, grantId: GRANT, writeScope: SCOPE });
+    const client = new AgentClient({
+      root: ".",
+      agentDid: AGENT,
+      grantId: GRANT,
+      writeScope: SCOPE
+    });
     const recipe = client.buildRecipe({
       engine: "regex-replace",
       rule: { find: "foo", replace: "bar" },
@@ -123,17 +158,29 @@ describe("AgentClient", () => {
   });
 
   it("tracks work nodes and rejects a cycle", () => {
-    const client = new AgentClient({ root: ".", agentDid: AGENT, grantId: GRANT, writeScope: SCOPE });
+    const client = new AgentClient({
+      root: ".",
+      agentDid: AGENT,
+      grantId: GRANT,
+      writeScope: SCOPE
+    });
     const session = client.createSession();
     const a = client.trackWork({ sessionId: session.id, title: "a" });
     const b = client.trackWork({ sessionId: session.id, title: "b", dependsOn: [a.nodeId] });
     expect(b.order.indexOf(a.nodeId)).toBeLessThan(b.order.indexOf(b.nodeId));
     // Creating a self-dependency is rejected at edge-add time.
-    expect(() => client.trackWork({ sessionId: session.id, title: "c", dependsOn: [a.nodeId] })).not.toThrow();
+    expect(() =>
+      client.trackWork({ sessionId: session.id, title: "c", dependsOn: [a.nodeId] })
+    ).not.toThrow();
   });
 
   it("submits a proposal and admits it only after approvals and evidence", async () => {
-    const client = new AgentClient({ root: ".", agentDid: AGENT, grantId: GRANT, writeScope: SCOPE });
+    const client = new AgentClient({
+      root: ".",
+      agentDid: AGENT,
+      grantId: GRANT,
+      writeScope: SCOPE
+    });
     const proposal = client.submitProposal({
       title: "add migration",
       updates: [],
@@ -148,8 +195,32 @@ describe("AgentClient", () => {
     client.approveProposal(proposal.id, "database-owner");
     client.provideEvidence(proposal.id, "rollback_plan");
     const after = await client.admitProposal(proposal.id);
-    expect(after.ok).toBe(true);
-    expect(client.getProposal(proposal.id)?.state).toBe("admitted");
+    expect(after.ok).toBe(false); // an approval cannot admit an empty proposal
+    expect(after.reason).toMatch(/at least one line update/);
+    expect(client.getProposal(proposal.id)?.state).toBe("proposed");
+  });
+
+  it("does not let the submitting agent self-approve a review gate", () => {
+    const client = new AgentClient({
+      root: ".",
+      agentDid: AGENT,
+      grantId: GRANT,
+      writeScope: SCOPE
+    });
+    const proposal = client.submitProposal({
+      title: "self review",
+      updates: [
+        {
+          line: "main",
+          expectedHead: "head" as never,
+          expectedSequence: 0,
+          newHead: "next" as never
+        }
+      ],
+      requiredReviewers: ["maintainer"]
+    });
+    client.approveProposal(proposal.id, AGENT);
+    expect(client.getProposal(proposal.id)?.approvals).toEqual([]);
   });
 
   it("runs the full delegated-change workflow end to end", async () => {
@@ -171,6 +242,14 @@ describe("AgentClient", () => {
 
       const next = captureState(dir);
       const nextHead = stateAddress(next);
+      const lineJournal = new FileLineJournal(join(root, ".loom"));
+      await lineJournal.advance({
+        name: "main",
+        scope: "shared",
+        expectedHead: stateAddress(emptyState()) as never,
+        expectedSequence: 0,
+        newHead: stateAddress(base) as never
+      });
       const proposal = client.submitProposal({
         title: "bump v",
         updates: [

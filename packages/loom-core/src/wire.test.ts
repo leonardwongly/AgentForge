@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildRequest,
   canonicalRequest,
+  NonceReplayGuard,
   negotiate,
   signRequest,
   validateWireMessage,
@@ -36,6 +37,14 @@ describe("wire request signing", () => {
     expect(verifyRequest(request, signature, SECRET, now)).toBeUndefined();
     // 60s later the request is outside the 30s window.
     expect(verifyRequest(request, signature, SECRET, now + 60_000)).toMatch(/replay/);
+  });
+
+  it("consumes a nonce when a replay guard is supplied", () => {
+    const now = Date.now();
+    const { request, signature } = buildRequest("hello", {}, SECRET, now);
+    const guard = new NonceReplayGuard();
+    expect(verifyRequest(request, signature, SECRET, now, guard)).toBeUndefined();
+    expect(verifyRequest(request, signature, SECRET, now, guard)).toMatch(/replayed nonce/);
   });
 
   it("is deterministic: same request signs identically", () => {
@@ -72,14 +81,14 @@ describe("validateWireMessage", () => {
     expect(validateWireMessage(null)).toMatch(/must be an object/);
     expect(validateWireMessage({ v: 2, id: "1", ok: true, result: {} })).toMatch(/unsupported/);
     expect(validateWireMessage({ v: 1, id: "", ok: true, result: {} })).toMatch(/non-empty/);
-    expect(validateWireMessage({ v: 1, id: "1", method: "bogus", params: {}, nonce: "n", timestamp: 1 })).toMatch(
-      /unknown method/
-    );
+    expect(
+      validateWireMessage({ v: 1, id: "1", method: "bogus", params: {}, nonce: "n", timestamp: 1 })
+    ).toMatch(/unknown method/);
     expect(
       validateWireMessage({ v: 1, id: "1", method: "hello", params: [], nonce: "n", timestamp: 1 })
     ).toMatch(/params must be an object/);
-    expect(
-      validateWireMessage({ v: 1, id: "1", ok: false, error: { code: "x" } })
-    ).toMatch(/requires \{code, message\}/);
+    expect(validateWireMessage({ v: 1, id: "1", ok: false, error: { code: "x" } })).toMatch(
+      /requires \{code, message\}/
+    );
   });
 });

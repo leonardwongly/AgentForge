@@ -13,7 +13,15 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  writeFileSync
+} from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 
 import { validateMaterializePath, type State } from "@agentforge/loom-core";
@@ -47,27 +55,102 @@ export function stateToGitWorkingCopy(state: State, targetDir: string): ExportRe
       losses.push({ path, reason: error });
       continue;
     }
+    if (path === ".git" || path.startsWith(".git/")) {
+      losses.push({ path, reason: "refusing to materialize Git metadata or hooks" });
+      continue;
+    }
     const target = resolve(join(root, path));
     if (!target.startsWith(root + sep)) {
       losses.push({ path, reason: "path escapes the working copy" });
       continue;
     }
-    mkdirSync(dirname(target), { recursive: true });
-    if (cell.facet === "bytes") {
-      writeFileSync(target, Buffer.from(cell.text, "base64"));
-    } else {
-      writeFileSync(target, cell.text, "utf8");
+    try {
+      // Decode before opening the target. Buffer.from's permissive base64
+      // behavior must not leave a newly-created empty file (or truncate an
+      // existing file) when an untrusted bytes cell is malformed.
+      const bytes = cell.facet === "bytes" ? decodeBase64(cell.text) : undefined;
+      ensureSafeParentDirectories(root, dirname(target));
+      const fd = openSync(
+        target,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
+        0o600
+      );
+      try {
+        if (bytes !== undefined) {
+          writeFileSync(fd, bytes);
+        } else {
+          writeFileSync(fd, cell.text, "utf8");
+        }
+      } finally {
+        closeSync(fd);
+      }
+    } catch (error) {
+      losses.push({ path, reason: error instanceof Error ? error.message : "unsafe target path" });
+      continue;
     }
     if (cell.mode !== undefined) {
-      try {
-        chmodSync(target, cell.mode);
-      } catch {
+      const mode = normalizeMode(cell.mode);
+      if (mode === undefined) {
         losses.push({ path, reason: `cannot set mode ${cell.mode}` });
+      } else {
+        try {
+          chmodSync(target, mode);
+        } catch {
+          losses.push({ path, reason: `cannot set mode ${cell.mode}` });
+        }
       }
     }
     written += 1;
   }
   return { written, losses };
+}
+
+/** Decode bytes cells without Buffer's permissive invalid-character handling. */
+function decodeBase64(value: string): Buffer {
+  if (
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)
+  ) {
+    throw new Error("bytes cell is not valid base64");
+  }
+  return Buffer.from(value, "base64");
+}
+
+/** Keep only permission bits from a regular-file POSIX mode. */
+function normalizeMode(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    return undefined;
+  }
+  // Accept regular-file type bits (e.g. Git's 100644) and permission/special
+  // bits, but never silently coerce directory, symlink, or arbitrary flags.
+  if ((value & ~0o107777) !== 0) {
+    return undefined;
+  }
+  return value & 0o7777;
+}
+
+function ensureSafeParentDirectories(root: string, parent: string): void {
+  const rootStat = lstatSync(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error("target root is a symlink or non-directory");
+  }
+  let current = root;
+  const relativeParent = resolve(parent).slice(root.length).split(sep).filter(Boolean);
+  for (const segment of relativeParent) {
+    current = join(current, segment);
+    try {
+      const stat = lstatSync(current);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error(`refusing to traverse symlink/non-directory ${current}`);
+      }
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        mkdirSync(current);
+        continue;
+      }
+      throw error;
+    }
+  }
 }
 
 /** Options for {@link exportStateToGit}. */
@@ -119,6 +202,8 @@ export function exportStateToGit(
     `committer.name=${committer.split("<")[0]?.trim() ?? "Loom Mirror"}`,
     "-c",
     `committer.email=${committer.match(/<([^>]+)>/)?.[1] ?? "loom-mirror@example.invalid"}`,
+    "-c",
+    "core.hooksPath=/dev/null",
     "commit",
     "--quiet",
     "--no-gpg-sign",

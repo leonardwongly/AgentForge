@@ -32,7 +32,11 @@ const SIGNATURE_REPLAY_WINDOW_SECONDS = 5 * 60;
 // RedisCacheManager instances in apps/api/src/app.ts and
 // apps/worker/src/index.ts. AF-SEC: closes the multi-instance replay gap a
 // per-process Map could not.
-const signatureReplayGuard = new SignatureReplayGuard(process.env.REDIS_URL);
+const signatureReplayGuard = new SignatureReplayGuard(
+  process.env.REDIS_URL,
+  undefined,
+  process.env.NODE_ENV === "production"
+);
 
 async function registerSignatureUse(signature: string, nowMs: number): Promise<boolean> {
   return signatureReplayGuard.claim(
@@ -129,8 +133,15 @@ async function resolveApiActorUncached(request: FastifyRequest): Promise<ApiActo
 
     // Validate timestamp (5-minute window clock skew)
     const now = Math.floor(Date.now() / 1000);
-    const timestamp = parseInt(timestampStr, 10);
-    if (isNaN(timestamp)) {
+    // Require a canonical base-10 integer. `parseInt("<valid>junk", 10)`
+    // would otherwise authenticate a malformed header when the proxy signed
+    // the same malformed value, defeating strict input validation and making
+    // intermediary parsing behavior ambiguous.
+    if (!/^-?\d+$/u.test(timestampStr)) {
+      return undefined;
+    }
+    const timestamp = Number(timestampStr);
+    if (!Number.isSafeInteger(timestamp)) {
       return undefined;
     }
     if (Math.abs(now - timestamp) > SIGNATURE_REPLAY_WINDOW_SECONDS) {

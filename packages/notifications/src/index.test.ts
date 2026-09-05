@@ -56,7 +56,10 @@ describe("buildNotificationPayload", () => {
   });
 
   it("summarizes evidence_required", () => {
-    const payload = buildNotificationPayload({ event: "evidence_required", record: record("blocked") });
+    const payload = buildNotificationPayload({
+      event: "evidence_required",
+      record: record("blocked")
+    });
     expect(payload.summary).toContain("Evidence required");
   });
 });
@@ -67,9 +70,13 @@ describe("deliverWebhook", () => {
       expect(typeof init?.body).toBe("string");
       return { ok: true, status: 200 };
     };
-    const result = await deliverWebhook("https://hooks.example/x", { a: 1 }, {
-      fetchImpl: fetchImpl as unknown as typeof fetch
-    });
+    const result = await deliverWebhook(
+      "https://hooks.example/x",
+      { a: 1 },
+      {
+        fetchImpl: fetchImpl as unknown as typeof fetch
+      }
+    );
     expect(result.ok).toBe(true);
     expect(result.status).toBe(200);
   });
@@ -78,12 +85,66 @@ describe("deliverWebhook", () => {
     const fetchImpl: FetchLike = async () => {
       throw new Error("network down");
     };
-    const result = await deliverWebhook("https://hooks.example/x", {}, {
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      retries: 1
-    });
+    const result = await deliverWebhook(
+      "https://hooks.example/x",
+      {},
+      {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        retries: 1
+      }
+    );
     expect(result.ok).toBe(false);
     expect(result.error).toBe("network down");
+  });
+
+  it("rejects private or non-HTTPS destinations before making a request", async () => {
+    let called = false;
+    const fetchImpl: FetchLike = async () => {
+      called = true;
+      return { ok: true, status: 200 };
+    };
+    const result = await deliverWebhook(
+      "http://169.254.169.254/latest",
+      {},
+      {
+        fetchImpl: fetchImpl as unknown as typeof fetch
+      }
+    );
+    expect(result).toEqual({ ok: false, error: "invalid webhook destination" });
+    expect(called).toBe(false);
+  });
+
+  it("rejects bracketed IPv6 loopback and IPv4-mapped private destinations", async () => {
+    let called = false;
+    const fetchImpl: FetchLike = async () => {
+      called = true;
+      return { ok: true, status: 200 };
+    };
+    for (const url of ["https://[::1]/hook", "https://[::ffff:127.0.0.1]/hook"]) {
+      await expect(
+        deliverWebhook(url, {}, { fetchImpl: fetchImpl as unknown as typeof fetch })
+      ).resolves.toEqual({ ok: false, error: "invalid webhook destination" });
+    }
+    expect(called).toBe(false);
+  });
+
+  it("bounds non-finite retry configuration instead of looping forever", async () => {
+    let attempts = 0;
+    const fetchImpl: FetchLike = async () => {
+      attempts += 1;
+      return { ok: true, status: 204 };
+    };
+    const result = await deliverWebhook(
+      "https://hooks.example/x",
+      {},
+      {
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        retries: Number.POSITIVE_INFINITY,
+        timeoutMs: Number.NaN
+      }
+    );
+    expect(result).toEqual({ ok: true, status: 204 });
+    expect(attempts).toBe(1);
   });
 });
 

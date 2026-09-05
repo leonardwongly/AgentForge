@@ -9,7 +9,7 @@
 #   cloudflared tunnel create agentforge
 #   cloudflared tunnel route dns agentforge <your-hostname>
 tunnel: agentforge
-credentials-file: /etc/cloudflared/<tunnel-id>.json
+credentials-file: /etc/cloudflared/tunnel-credentials.json
 
 ingress:
   # Dashboard (Next.js)

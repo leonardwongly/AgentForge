@@ -71,11 +71,27 @@ function makeWorkingCopy(files: Readonly<Record<string, string>>): Promise<strin
 describe("Phase 1 exit evidence — no-silent-loss fault matrix (LOOM-MERGE-002)", () => {
   it("both sides editing different cells both appear, with no conflict", () => {
     const base = requireState(emptyState(), [
-      { op: "put_cell", at: "a.txt", ident: mintNodeIdent(T0, 0, "a.txt"), facet: "text", text: "base-a\n" },
-      { op: "put_cell", at: "b.txt", ident: mintNodeIdent(T0, 1, "b.txt"), facet: "text", text: "base-b\n" }
+      {
+        op: "put_cell",
+        at: "a.txt",
+        ident: mintNodeIdent(T0, 0, "a.txt"),
+        facet: "text",
+        text: "base-a\n"
+      },
+      {
+        op: "put_cell",
+        at: "b.txt",
+        ident: mintNodeIdent(T0, 1, "b.txt"),
+        facet: "text",
+        text: "base-b\n"
+      }
     ]);
-    const ours = requireState(base, [{ op: "patch_text", sel: { path: "a.txt" }, range: [0, 6], text: "ours-a\n" }]);
-    const theirs = requireState(base, [{ op: "patch_text", sel: { path: "b.txt" }, range: [0, 6], text: "theirs-b\n" }]);
+    const ours = requireState(base, [
+      { op: "patch_text", sel: { path: "a.txt" }, range: [0, 6], text: "ours-a\n" }
+    ]);
+    const theirs = requireState(base, [
+      { op: "patch_text", sel: { path: "b.txt" }, range: [0, 6], text: "theirs-b\n" }
+    ]);
     const merged = mergeStates(base, ours, theirs);
     expect(merged.conflicts).toHaveLength(0);
     // No silent loss: both edits are present in the merged candidate.
@@ -85,10 +101,20 @@ describe("Phase 1 exit evidence — no-silent-loss fault matrix (LOOM-MERGE-002)
 
   it("both sides editing the same cell differently yields a typed conflict, never silent loss", () => {
     const base = requireState(emptyState(), [
-      { op: "put_cell", at: "a.txt", ident: mintNodeIdent(T0, 0, "a.txt"), facet: "text", text: "base\n" }
+      {
+        op: "put_cell",
+        at: "a.txt",
+        ident: mintNodeIdent(T0, 0, "a.txt"),
+        facet: "text",
+        text: "base\n"
+      }
     ]);
-    const ours = requireState(base, [{ op: "patch_text", sel: { path: "a.txt" }, range: [0, 4], text: "ours\n" }]);
-    const theirs = requireState(base, [{ op: "patch_text", sel: { path: "a.txt" }, range: [0, 4], text: "theirs\n" }]);
+    const ours = requireState(base, [
+      { op: "patch_text", sel: { path: "a.txt" }, range: [0, 4], text: "ours\n" }
+    ]);
+    const theirs = requireState(base, [
+      { op: "patch_text", sel: { path: "a.txt" }, range: [0, 4], text: "theirs\n" }
+    ]);
     const merged = mergeStates(base, ours, theirs);
     // Either the change is present or a typed conflict is reported — never dropped.
     const oursPresent = textAt(merged.candidate, "a.txt")?.includes("ours") ?? false;
@@ -98,10 +124,18 @@ describe("Phase 1 exit evidence — no-silent-loss fault matrix (LOOM-MERGE-002)
 
   it("delete/edit on the same cell is surfaced as a typed conflict", () => {
     const base = requireState(emptyState(), [
-      { op: "put_cell", at: "a.txt", ident: mintNodeIdent(T0, 0, "a.txt"), facet: "text", text: "base\n" }
+      {
+        op: "put_cell",
+        at: "a.txt",
+        ident: mintNodeIdent(T0, 0, "a.txt"),
+        facet: "text",
+        text: "base\n"
+      }
     ]);
     const ours = requireState(base, [{ op: "delete_cell", sel: { path: "a.txt" } }]);
-    const theirs = requireState(base, [{ op: "patch_text", sel: { path: "a.txt" }, range: [0, 4], text: "edited\n" }]);
+    const theirs = requireState(base, [
+      { op: "patch_text", sel: { path: "a.txt" }, range: [0, 4], text: "edited\n" }
+    ]);
     const merged = mergeStates(base, ours, theirs);
     expect(merged.conflicts.length).toBeGreaterThan(0);
     expect(merged.conflicts.some((c) => c.kind === "delete/edit")).toBe(true);
@@ -109,7 +143,13 @@ describe("Phase 1 exit evidence — no-silent-loss fault matrix (LOOM-MERGE-002)
 
   it("divergent moves of the same cell are surfaced as a typed conflict", () => {
     const base = requireState(emptyState(), [
-      { op: "put_cell", at: "a.txt", ident: mintNodeIdent(T0, 0, "a.txt"), facet: "text", text: "base\n" }
+      {
+        op: "put_cell",
+        at: "a.txt",
+        ident: mintNodeIdent(T0, 0, "a.txt"),
+        facet: "text",
+        text: "base\n"
+      }
     ]);
     const ours = requireState(base, [{ op: "move_cell", sel: { path: "a.txt" }, to: "x.txt" }]);
     const theirs = requireState(base, [{ op: "move_cell", sel: { path: "a.txt" }, to: "y.txt" }]);
@@ -125,8 +165,20 @@ describe("Phase 1 exit evidence — byte-exact materialization (LOOM-WC-001 / LO
     const dir = await mkdtemp(join(tmpdir(), "loom-mat-"));
     try {
       const state = requireState(emptyState(), [
-        { op: "put_cell", at: "src/app.ts", ident: mintNodeIdent(T0, 0, "src/app.ts"), facet: "text", text: "export const v = 1;\n" },
-        { op: "put_cell", at: "README.md", ident: mintNodeIdent(T0, 1, "README.md"), facet: "text", text: "# title\n\nbody\n" }
+        {
+          op: "put_cell",
+          at: "src/app.ts",
+          ident: mintNodeIdent(T0, 0, "src/app.ts"),
+          facet: "text",
+          text: "export const v = 1;\n"
+        },
+        {
+          op: "put_cell",
+          at: "README.md",
+          ident: mintNodeIdent(T0, 1, "README.md"),
+          facet: "text",
+          text: "# title\n\nbody\n"
+        }
       ]);
       materializeState(state, dir);
       const recaptured = captureState(dir);
@@ -146,7 +198,13 @@ describe("Phase 1 exit evidence — byte-exact materialization (LOOM-WC-001 / LO
     try {
       const opaque = Buffer.from([0, 1, 2, 0xff, 0xfe]).toString("base64");
       const state = requireState(emptyState(), [
-        { op: "put_cell", at: "assets/icon.bin", ident: mintNodeIdent(T0, 0, "assets/icon.bin"), facet: "bytes", text: opaque }
+        {
+          op: "put_cell",
+          at: "assets/icon.bin",
+          ident: mintNodeIdent(T0, 0, "assets/icon.bin"),
+          facet: "bytes",
+          text: opaque
+        }
       ]);
       materializeState(state, dir);
       const recaptured = captureState(dir);
@@ -162,7 +220,13 @@ describe("Phase 1 exit evidence — byte-exact materialization (LOOM-WC-001 / LO
     const dir = await mkdtemp(join(tmpdir(), "loom-mat-diff-"));
     try {
       const state = requireState(emptyState(), [
-        { op: "put_cell", at: "a.txt", ident: mintNodeIdent(T0, 0, "a.txt"), facet: "text", text: "same\n" }
+        {
+          op: "put_cell",
+          at: "a.txt",
+          ident: mintNodeIdent(T0, 0, "a.txt"),
+          facet: "text",
+          text: "same\n"
+        }
       ]);
       materializeState(state, dir);
       const journal = diffWorkingCopy(dir, state);
@@ -196,7 +260,10 @@ describe("Phase 2 exit evidence — unauthorized admission (LOOM-ADMIT-002 / LOO
       expect(stillMissingEvidence.ok).toBe(false);
       store.provideEvidence(proposal.id, "rollback_plan");
       const admitted = await store.admit(proposal.id);
-      expect(admitted.ok).toBe(true);
+      expect(admitted.ok).toBe(false);
+      if (!admitted.ok) {
+        expect(admitted.reason).toMatch(/at least one line update/);
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -217,9 +284,17 @@ describe("Phase 2 exit evidence — unauthorized admission (LOOM-ADMIT-002 / LOO
         newHead: genesis as never
       });
       // The line advances to `next` (sequence 0 -> 1).
-      const next = stateAddress(requireState(emptyState(), [
-        { op: "put_cell", at: "a.txt", ident: mintNodeIdent(T0, 0, "a.txt"), facet: "text", text: "x\n" }
-      ]));
+      const next = stateAddress(
+        requireState(emptyState(), [
+          {
+            op: "put_cell",
+            at: "a.txt",
+            ident: mintNodeIdent(T0, 0, "a.txt"),
+            facet: "text",
+            text: "x\n"
+          }
+        ])
+      );
       await journal.advance({
         name: "main",
         scope: "shared",
@@ -231,7 +306,12 @@ describe("Phase 2 exit evidence — unauthorized admission (LOOM-ADMIT-002 / LOO
       const stale = store.create({
         title: "stale",
         updates: [
-          { line: "main", expectedHead: genesis as never, expectedSequence: 0, newHead: next as never }
+          {
+            line: "main",
+            expectedHead: genesis as never,
+            expectedSequence: 0,
+            newHead: next as never
+          }
         ]
       });
       store.submit(stale.id);
@@ -277,8 +357,16 @@ describe("Phase 3 exit evidence — concurrent-agent integration", () => {
     });
     try {
       const sessions = new SessionStore();
-      const agentA = sessions.create({ agentDid: "did:loom:agent-a" as never, grantId: "g1", writeScope: ["src/"] });
-      const agentB = sessions.create({ agentDid: "did:loom:agent-b" as never, grantId: "g2", writeScope: ["docs/"] });
+      const agentA = sessions.create({
+        agentDid: "did:loom:agent-a" as never,
+        grantId: "g1",
+        writeScope: ["src/"]
+      });
+      const agentB = sessions.create({
+        agentDid: "did:loom:agent-b" as never,
+        grantId: "g2",
+        writeScope: ["docs/"]
+      });
       const base = emptyState();
 
       const journalA = diffWorkingCopy(dir, base, new Set(["docs"]));
@@ -322,7 +410,13 @@ describe("Phase 5 exit evidence — no-undetected-fork under partition (LOOM-TRU
           checkpointCid: "cid:a",
           sequence: 1,
           authorities: [
-            { name: "auth-a", signatures: [witnesses.sign("did:loom:w1", "cid:a", 1), witnesses.sign("did:loom:w2", "cid:a", 1)] }
+            {
+              name: "auth-a",
+              signatures: [
+                witnesses.sign("did:loom:w1", "cid:a", 1, "auth-a"),
+                witnesses.sign("did:loom:w2", "cid:a", 1, "auth-a")
+              ]
+            }
           ]
         },
         {
@@ -330,7 +424,13 @@ describe("Phase 5 exit evidence — no-undetected-fork under partition (LOOM-TRU
           checkpointCid: "cid:b",
           sequence: 1,
           authorities: [
-            { name: "auth-b", signatures: [witnesses.sign("did:loom:w3", "cid:b", 1), witnesses.sign("did:loom:w4", "cid:b", 1)] }
+            {
+              name: "auth-b",
+              signatures: [
+                witnesses.sign("did:loom:w3", "cid:b", 1, "auth-b"),
+                witnesses.sign("did:loom:w4", "cid:b", 1, "auth-b")
+              ]
+            }
           ]
         }
       ],
@@ -346,13 +446,19 @@ describe("Phase 5 exit evidence — no-undetected-fork under partition (LOOM-TRU
         authority: "auth-a",
         checkpointCid: "cid:a",
         sequence: 1,
-        signatures: [witnesses.sign("did:loom:w1", "cid:a", 1), witnesses.sign("did:loom:w2", "cid:a", 1)]
+        signatures: [
+          witnesses.sign("did:loom:w1", "cid:a", 1, "auth-a"),
+          witnesses.sign("did:loom:w2", "cid:a", 1, "auth-a")
+        ]
       },
       {
         authority: "auth-b",
         checkpointCid: "cid:b",
         sequence: 1,
-        signatures: [witnesses.sign("did:loom:w3", "cid:b", 1), witnesses.sign("did:loom:w4", "cid:b", 1)]
+        signatures: [
+          witnesses.sign("did:loom:w3", "cid:b", 1, "auth-b"),
+          witnesses.sign("did:loom:w4", "cid:b", 1, "auth-b")
+        ]
       }
     ];
     const result = reconcileMany(bundles, witnesses, { defaultQuorum: 2 });
@@ -368,7 +474,13 @@ describe("Phase 5 exit evidence — no-undetected-fork under partition (LOOM-TRU
           checkpointCid: "cid:c",
           sequence: 1,
           authorities: [
-            { name: "auth-a", signatures: [witnesses.sign("did:loom:w1", "cid:c", 1), witnesses.sign("did:loom:w2", "cid:c", 1)] }
+            {
+              name: "auth-a",
+              signatures: [
+                witnesses.sign("did:loom:w1", "cid:c", 1, "auth-a"),
+                witnesses.sign("did:loom:w2", "cid:c", 1, "auth-a")
+              ]
+            }
           ]
         },
         {
@@ -376,7 +488,13 @@ describe("Phase 5 exit evidence — no-undetected-fork under partition (LOOM-TRU
           checkpointCid: "cid:c",
           sequence: 1,
           authorities: [
-            { name: "auth-b", signatures: [witnesses.sign("did:loom:w3", "cid:c", 1), witnesses.sign("did:loom:w4", "cid:c", 1)] }
+            {
+              name: "auth-b",
+              signatures: [
+                witnesses.sign("did:loom:w3", "cid:c", 1, "auth-b"),
+                witnesses.sign("did:loom:w4", "cid:c", 1, "auth-b")
+              ]
+            }
           ]
         }
       ],

@@ -7,12 +7,13 @@ export { Prisma, PrismaClient };
 /**
  * Per-request/per-job tenant context. When set, the Prisma client below binds a
  * transaction-local `agentforge.current_org` GUC on every operation so Postgres
- * Row-Level Security policies scope reads/writes to that organization. When unset
- * (ingestion, seed, migrations, system tasks) the RLS policies are permissive, so
- * behavior is unchanged — this is a defense-in-depth backstop, not the primary
- * authorization control (AF-SEC M4).
+ * Row-Level Security policies scope reads/writes to that organization. For
+ * organization-owned rows, the migration denies access when this context is
+ * unset; only explicitly nullable, pre-attribution rows remain available to
+ * ingestion/system workflows (AF-SEC M4).
  */
 const orgContextStore = new AsyncLocalStorage<string>();
+const systemContextStore = new AsyncLocalStorage<true>();
 
 /** Run `callback` with the tenant org bound for all Prisma operations it performs. */
 export function runWithOrgContext<T>(
@@ -38,6 +39,11 @@ export function enterOrgContext(organizationId: string): void {
 
 export function getOrgContext(): string | undefined {
   return orgContextStore.getStore();
+}
+
+/** Run trusted webhook/system reconciliation with an explicit RLS system marker. */
+export function runWithSystemContext<T>(callback: () => Promise<T> | T): Promise<T> {
+  return systemContextStore.run(true, async () => await callback());
 }
 
 /**
@@ -99,14 +105,21 @@ export function createPrismaClient(connectionString: string): PrismaClient {
           return query(args);
         }
         const organizationId = orgContextStore.getStore();
-        if (!organizationId) {
-          return query(args);
+        if (organizationId) {
+          const [, result] = await base.$transaction([
+            base.$executeRaw`SELECT set_config('agentforge.current_org', ${organizationId}, true)`,
+            query(args)
+          ]);
+          return result;
         }
-        const [, result] = await base.$transaction([
-          base.$executeRaw`SELECT set_config('agentforge.current_org', ${organizationId}, true)`,
-          query(args)
-        ]);
-        return result;
+        if (systemContextStore.getStore()) {
+          const [, result] = await base.$transaction([
+            base.$executeRaw`SELECT set_config('agentforge.system_task', 'true', true)`,
+            query(args)
+          ]);
+          return result;
+        }
+        return query(args);
       }
     }
   });

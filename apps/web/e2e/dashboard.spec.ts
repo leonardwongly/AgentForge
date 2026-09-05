@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, test, type APIRequestContext } from "@playwright/test";
 import type { ChangeControlRecord, PullRequestInput } from "@agentforge/core";
+import { DASHBOARD_SESSION_COOKIE, createDashboardSessionCookie } from "../app/auth/session";
 
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://127.0.0.1:4100";
 const readActorHeaders = {
@@ -357,6 +358,33 @@ test("evidence workflow resolves requirements through record actions", async ({
   }
   await expect(page.getByText("provided").first()).toBeVisible();
 
+  // Evidence providers cannot approve their own attestations. Switch the
+  // browser session to a distinct reviewer before exercising approval actions.
+  const sessionSecret = process.env.E2E_SESSION_SECRET;
+  if (!sessionSecret) {
+    throw new Error("E2E_SESSION_SECRET must be set by the Playwright harness");
+  }
+  await page.context().addCookies([
+    {
+      name: DASHBOARD_SESSION_COOKIE,
+      value: createDashboardSessionCookie(
+        {
+          login: "evidence-reviewer",
+          role: "platform_admin",
+          organizationId: "org_local",
+          provider: "github"
+        },
+        sessionSecret
+      ),
+      domain: new URL(process.env.APP_BASE_URL ?? "http://127.0.0.1:3100").hostname,
+      path: "/",
+      expires: -1,
+      httpOnly: true,
+      secure: false,
+      sameSite: "Lax"
+    }
+  ]);
+
   for (let index = 0; index < record.requiredEvidence.length; index += 1) {
     await page.getByRole("button", { name: "Approve evidence" }).first().click();
     await expect(page.getByRole("heading", { name: "Evidence approved" })).toBeVisible();
@@ -393,9 +421,7 @@ test("evidence workflow resolves requirements through record actions", async ({
 
 test("standalone ingestion creates a Change Control Record without GitHub", async ({ page }) => {
   await page.goto("/records");
-  await expect(
-    page.getByRole("heading", { name: "Create Change Control Record" })
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Create Change Control Record" })).toBeVisible();
   await expect(page.getByText("Standalone ingestion")).toBeVisible();
 
   await page.getByLabel("Repository (owner/name)").fill("acme/standalone-e2e");

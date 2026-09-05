@@ -36,7 +36,14 @@ let restricted: PrismaClient | undefined;
 // reporting as skipped.
 function isUnreachableConnectionError(error: unknown): boolean {
   const code = (error as { code?: unknown } | undefined)?.code;
-  return code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "P1001" || code === "P1017";
+  return (
+    code === "ECONNREFUSED" ||
+    code === "ENOTFOUND" ||
+    code === "EPERM" ||
+    code === "EACCES" ||
+    code === "P1001" ||
+    code === "P1017"
+  );
 }
 
 function isTransientConnectionError(error: unknown): boolean {

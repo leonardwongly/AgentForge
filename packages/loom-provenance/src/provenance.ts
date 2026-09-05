@@ -142,6 +142,26 @@ export function signStatement(
   if (privateKey.asymmetricKeyType !== "ed25519" || publicKey.asymmetricKeyType !== "ed25519") {
     throw new Error("provenance signing requires Ed25519 key material");
   }
+  // A KeyPair is a pair, not two independently accepted keys. Without this
+  // check a caller can accidentally sign with one private key while publishing
+  // a different public key, producing an attestation that can never verify and
+  // making a key-rotation/configuration error look like a bad statement.
+  const privateJwk = privateKey.export({ format: "jwk" });
+  if (
+    privateJwk.kty !== "OKP" ||
+    privateJwk.crv !== "Ed25519" ||
+    typeof privateJwk.x !== "string"
+  ) {
+    throw new Error("provenance signing requires Ed25519 key material");
+  }
+  const derivedPublic = createPublicKey({
+    key: { kty: "OKP", crv: "Ed25519", x: privateJwk.x },
+    format: "jwk"
+  }).export({ type: "spki", format: "der" });
+  const configuredPublic = publicKey.export({ type: "spki", format: "der" });
+  if (!Buffer.from(derivedPublic).equals(Buffer.from(configuredPublic))) {
+    throw new Error("provenance signing requires matching Ed25519 key material");
+  }
   const signature = sign(null, pae(INTOTO_PAYLOAD_TYPE, payloadBytes), privateKey);
   const sig = signature.toString("base64");
   const signatureEntry: DsseSignature = keyid === undefined ? { sig } : { keyid, sig };
@@ -160,18 +180,49 @@ export function signStatement(
  */
 export function verifyEnvelope(envelope: DsseEnvelope, publicKeyPem: string): boolean {
   try {
+    if (
+      !isRecord(envelope) ||
+      typeof envelope.payloadType !== "string" ||
+      typeof envelope.payload !== "string" ||
+      !isStrictBase64(envelope.payload) ||
+      !Array.isArray(envelope.signatures)
+    ) {
+      return false;
+    }
     const payloadBytes = Buffer.from(envelope.payload, "base64");
     const publicKey = createPublicKey(publicKeyPem);
     if (publicKey.asymmetricKeyType !== "ed25519") {
       return false;
     }
     const preAuth = pae(envelope.payloadType, payloadBytes);
-    return envelope.signatures.some((signature) =>
-      verify(null, preAuth, publicKey, Buffer.from(signature.sig, "base64"))
-    );
+    // DSSE permits multiple signatures. A malformed/unrecognized extra entry
+    // must not hide a valid signature, but malformed payload encoding itself
+    // is rejected above instead of being silently normalized by Buffer.from.
+    return envelope.signatures.some((signature) => {
+      if (
+        !isRecord(signature) ||
+        typeof signature.sig !== "string" ||
+        !isStrictBase64(signature.sig)
+      ) {
+        return false;
+      }
+      try {
+        return verify(null, preAuth, publicKey, Buffer.from(signature.sig, "base64"));
+      } catch {
+        return false;
+      }
+    });
   } catch {
     return false;
   }
+}
+
+/** Accept only canonical RFC 4648 base64 as emitted by Buffer.toString(). */
+function isStrictBase64(value: string): boolean {
+  if (value.length === 0 || value.length % 4 !== 0) {
+    return false;
+  }
+  return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -214,16 +265,20 @@ function isDecision(value: unknown): value is DeterministicCheckPredicate["decis
  *  5. factsDigest must describe the signed facts.
  */
 export function verifyProvenance(input: VerifyProvenanceInput): VerifyResult {
-  if (input.envelope.payloadType !== INTOTO_PAYLOAD_TYPE) {
+  if (!isRecord(input) || !isRecord(input.envelope)) {
+    return { ok: false, reason: "malformed envelope" };
+  }
+  const envelope = input.envelope as unknown as DsseEnvelope;
+  if (envelope.payloadType !== INTOTO_PAYLOAD_TYPE) {
     return { ok: false, reason: "unexpected payload type" };
   }
-  if (!verifyEnvelope(input.envelope, input.publicKeyPem)) {
+  if (!verifyEnvelope(envelope, input.publicKeyPem)) {
     return { ok: false, reason: "signature invalid" };
   }
 
   let statement: unknown;
   try {
-    statement = JSON.parse(Buffer.from(input.envelope.payload, "base64").toString("utf8"));
+    statement = JSON.parse(Buffer.from(envelope.payload, "base64").toString("utf8"));
   } catch {
     return { ok: false, reason: "malformed statement" };
   }
@@ -271,7 +326,11 @@ export function verifyProvenance(input: VerifyProvenanceInput): VerifyResult {
     return { ok: false, reason: "malformed deterministic-check predicate" };
   }
 
-  if (inputs["baseState"] !== input.baseState || inputs["resultState"] !== input.resultState) {
+  if (
+    inputs["baseState"] !== input.baseState ||
+    inputs["resultState"] !== input.resultState ||
+    inputs["policyVersion"] !== input.policyVersion
+  ) {
     return { ok: false, reason: "predicate inputs do not match expected transition" };
   }
 

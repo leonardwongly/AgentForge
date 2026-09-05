@@ -23,8 +23,7 @@ Two complementary options:
 - A Cloudflare account with a zone (domain) you control.
 - `cloudflared` installed, or Docker (the included compose file runs it in a
   container).
-- The AgentForge services running locally on `127.0.0.1` (API `:4000`, web
-  `:3000`) or on the host network.
+- A pinned AgentForge image digest and a pinned `cloudflared` image digest.
 
 ### 1.2 Create the tunnel
 
@@ -37,12 +36,20 @@ cloudflared tunnel route dns agentforge api.<your-hostname>
 
 ### 1.3 Configure and run
 
-Edit `deploy/cloudflare/tunnel/config.yml` to set your tunnel name, credentials
-path, and hostnames, then run:
+Edit `deploy/cloudflare/tunnel/config.yml` to set your tunnel name and hostnames.
+The Compose file intentionally fails closed unless image digests and one tunnel
+credential JSON path are supplied:
 
 ```bash
+export CLOUDFLARED_IMAGE='cloudflare/cloudflared:<version>@sha256:<digest>'
+export AGENTFORGE_IMAGE='your-registry/agentforge:<version>@sha256:<digest>'
+export CLOUDFLARED_CREDENTIALS_FILE="$HOME/.cloudflared/<tunnel-id>.json"
 docker compose -f deploy/cloudflare/tunnel/docker-compose.yml up -d
 ```
+
+The tunnel and reference services run on an isolated Compose network; the
+operator's complete `~/.cloudflared` directory and host network are never
+mounted into containers.
 
 The tunnel exposes:
 

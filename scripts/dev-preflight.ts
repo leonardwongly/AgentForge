@@ -126,7 +126,7 @@ export function checkLocalActorExposure(
     ok: false,
     required: true,
     detail: `local actor fallback is enabled with non-local URL(s): ${unsafeUrls
-      .map(([name, value]) => `${name}=${value}`)
+      .map(([name, value]) => `${name}=${safeUrlForReport(value)}`)
       .join(", ")}`,
     remediation:
       "Disable local actor fallback/header mode or set APP_BASE_URL, NEXT_PUBLIC_APP_URL, and API_BASE_URL to localhost, 127.0.0.1, or [::1]."
@@ -163,6 +163,21 @@ function isLoopbackUrl(value: string): boolean {
     return ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
   } catch {
     return false;
+  }
+}
+
+function safeUrlForReport(value: string | undefined): string {
+  if (value === undefined) {
+    return "[unset]";
+  }
+  try {
+    const parsed = new URL(value);
+    // Preflight output is often copied into CI logs. Keep the useful origin
+    // while excluding credentials, query tokens, paths, and fragments that a
+    // misconfigured URL could otherwise leak.
+    return parsed.origin;
+  } catch {
+    return "[invalid URL]";
   }
 }
 

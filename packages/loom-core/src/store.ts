@@ -21,21 +21,22 @@
  * ambient state.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  lstatSync,
   readFileSync,
   readdirSync,
   renameSync,
   rmSync,
   writeFileSync
 } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { address, verifyAddress } from "./addressing.js";
-import { cidV1, decodeDagCbor, encodeDagCbor, MULTICODEC } from "./codec.js";
+import { cidV1, decodeDagCbor, encodeDagCbor, MULTICODEC, parseCid } from "./codec.js";
 import { FileLock } from "./lock.js";
 import type { Cid, LineScope } from "./types.js";
 
@@ -68,7 +69,7 @@ export class FileObjectStore implements DurableObjectStore {
   put(value: unknown): Cid {
     const cid = address(value);
     const target = join(this.objectsDir, `${cid}.json`);
-    if (existsSync(target)) {
+    if (this.get(cid) !== undefined) {
       // Content-addressed objects are immutable: a present object is already correct.
       return cid;
     }
@@ -79,8 +80,9 @@ export class FileObjectStore implements DurableObjectStore {
   }
 
   get<T>(cid: Cid): T | undefined {
-    const target = join(this.objectsDir, `${cid}.json`);
-    if (!existsSync(target)) {
+    const target = this.objectPath(cid, "json");
+    if (!target) return undefined;
+    if (!isRegularFile(target)) {
       return undefined;
     }
     try {
@@ -92,14 +94,15 @@ export class FileObjectStore implements DurableObjectStore {
   }
 
   has(cid: Cid): boolean {
-    return existsSync(join(this.objectsDir, `${cid}.json`));
+    const target = this.objectPath(cid, "json");
+    return target !== undefined && isRegularFile(target);
   }
 
   /** Store raw bytes under a `raw`-codec CIDv1 (immutable dedup). */
   putRaw(bytes: Uint8Array): Cid {
     const cid = cidV1(MULTICODEC.raw, bytes);
     const target = join(this.objectsDir, `${cid}.bin`);
-    if (existsSync(target)) {
+    if (this.getRaw(cid) !== undefined) {
       return cid;
     }
     const tmp = join(this.objectsDir, `.${cid}.${process.pid}.${randomUUID()}.tmp`);
@@ -110,8 +113,9 @@ export class FileObjectStore implements DurableObjectStore {
 
   /** Read raw bytes and verify they hash to the requested CID; undefined if absent/corrupt. */
   getRaw(cid: Cid): Uint8Array | undefined {
-    const target = join(this.objectsDir, `${cid}.bin`);
-    if (!existsSync(target)) {
+    const target = this.objectPath(cid, "bin");
+    if (!target) return undefined;
+    if (!isRegularFile(target)) {
       return undefined;
     }
     try {
@@ -123,7 +127,8 @@ export class FileObjectStore implements DurableObjectStore {
   }
 
   hasRaw(cid: Cid): boolean {
-    return existsSync(join(this.objectsDir, `${cid}.bin`));
+    const target = this.objectPath(cid, "bin");
+    return target !== undefined && isRegularFile(target);
   }
 
   /** Encode a structured object as DAG-CBOR, store under a `dag-cbor` CIDv1. */
@@ -131,7 +136,7 @@ export class FileObjectStore implements DurableObjectStore {
     const bytes = encodeDagCbor(value);
     const cid = cidV1(MULTICODEC.dagCbor, bytes);
     const target = join(this.objectsDir, `${cid}.cbor`);
-    if (existsSync(target)) {
+    if (this.getDagCbor(cid) !== undefined) {
       return cid;
     }
     const tmp = join(this.objectsDir, `.${cid}.${process.pid}.${randomUUID()}.tmp`);
@@ -142,8 +147,9 @@ export class FileObjectStore implements DurableObjectStore {
 
   /** Read and decode a DAG-CBOR object, verifying its CID; undefined if absent/corrupt. */
   getDagCbor<T>(cid: Cid): T | undefined {
-    const target = join(this.objectsDir, `${cid}.cbor`);
-    if (!existsSync(target)) {
+    const target = this.objectPath(cid, "cbor");
+    if (!target) return undefined;
+    if (!isRegularFile(target)) {
       return undefined;
     }
     try {
@@ -158,13 +164,15 @@ export class FileObjectStore implements DurableObjectStore {
   }
 
   hasDagCbor(cid: Cid): boolean {
-    return existsSync(join(this.objectsDir, `${cid}.cbor`));
+    const target = this.objectPath(cid, "cbor");
+    return target !== undefined && isRegularFile(target);
   }
 
   /** List every stored object CID (across all codecs). */
   listCids(): Cid[] {
     const cids = new Set<Cid>();
     for (const file of readdirSync(this.objectsDir)) {
+      if (!isRegularFile(join(this.objectsDir, file))) continue;
       // Legacy canonical-JSON address (loom:sha256:<hex>) or CIDv1 base32.
       const legacy = /^(loom:sha256:[0-9a-f]{64})\.json$/u.exec(file);
       if (legacy) {
@@ -173,7 +181,8 @@ export class FileObjectStore implements DurableObjectStore {
       }
       const cidv1 = /^([a-z2-7]{20,})\.(bin|cbor)$/u.exec(file);
       if (cidv1) {
-        cids.add(cidv1[1] as Cid);
+        const candidate = cidv1[1] as Cid;
+        if (parseCid(candidate) !== undefined) cids.add(candidate);
       }
     }
     return [...cids];
@@ -181,8 +190,9 @@ export class FileObjectStore implements DurableObjectStore {
 
   /** Delete a stored object (no-op if absent). */
   delete(cid: Cid): void {
+    if (!isSafeCid(cid)) return;
     for (const ext of ["json", "bin", "cbor"]) {
-      rmSync(join(this.objectsDir, `${cid}.${ext}`), { force: true });
+      rmSync(this.objectPath(cid, ext)!, { force: true });
     }
   }
 
@@ -190,15 +200,33 @@ export class FileObjectStore implements DurableObjectStore {
   backupTo(backupDir: string): void {
     mkdirSync(backupDir, { recursive: true });
     for (const file of readdirSync(this.objectsDir)) {
-      copyFileSync(join(this.objectsDir, file), join(backupDir, file));
+      if (!lstatSync(join(this.objectsDir, file)).isFile()) continue;
+      const target = join(backupDir, file);
+      ensureRegularOrMissing(target);
+      copyFileAtomically(join(this.objectsDir, file), target);
     }
   }
 
   /** Restore every object file from `backupDir`. */
   restoreFrom(backupDir: string): void {
     mkdirSync(this.objectsDir, { recursive: true });
+    const pending: Array<{ source: string; target: string }> = [];
     for (const file of readdirSync(backupDir)) {
-      copyFileSync(join(backupDir, file), join(this.objectsDir, file));
+      if (!/^(?:loom:sha256:[0-9a-f]{64}|[a-z2-7]{20,})\.(?:json|bin|cbor)$/u.test(file)) {
+        continue;
+      }
+      if (!lstatSync(join(backupDir, file)).isFile()) continue;
+      const source = join(backupDir, file);
+      if (!backupObjectMatchesCid(file, readFileSync(source))) {
+        throw new Error(`loom: backup object ${file} does not match its CID`);
+      }
+      pending.push({ source, target: join(this.objectsDir, file) });
+    }
+    for (const { source, target } of pending) {
+      ensureRegularOrMissing(target);
+    }
+    for (const { source, target } of pending) {
+      copyFileAtomically(source, target);
     }
   }
 
@@ -209,6 +237,68 @@ export class FileObjectStore implements DurableObjectStore {
         rmSync(join(this.objectsDir, file), { force: true });
       }
     }
+  }
+
+  private objectPath(cid: Cid, extension: string): string | undefined {
+    if (!isSafeCid(cid)) return undefined;
+    return join(this.objectsDir, `${cid}.${extension}`);
+  }
+}
+
+function isRegularFile(path: string): boolean {
+  try {
+    return lstatSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function ensureRegularOrMissing(path: string): void {
+  try {
+    if (!lstatSync(path).isFile()) {
+      throw new Error(`loom: refusing to overwrite symlink/non-regular object ${path}`);
+    }
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
+    throw error;
+  }
+}
+
+function copyFileAtomically(source: string, target: string): void {
+  const temporary = join(
+    dirname(target),
+    `.${basename(target)}.${process.pid}.${randomUUID()}.tmp`
+  );
+  try {
+    copyFileSync(source, temporary);
+    renameSync(temporary, target);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+}
+
+function isSafeCid(cid: string): boolean {
+  if (/^loom:sha256:[0-9a-f]{64}$/u.test(cid)) return true;
+  if (!/^[a-z2-7]{20,}$/u.test(cid)) return false;
+  const parsed = parseCid(cid);
+  return parsed?.version === 1 && parsed.digest.length === 32;
+}
+
+function backupObjectMatchesCid(filename: string, bytes: Buffer): boolean {
+  const separator = filename.lastIndexOf(".");
+  const cid = filename.slice(0, separator) as Cid;
+  const extension = filename.slice(separator + 1);
+  if (extension === "bin") {
+    return cidV1(MULTICODEC.raw, bytes) === cid;
+  }
+  if (extension === "cbor") {
+    return cidV1(MULTICODEC.dagCbor, bytes) === cid;
+  }
+  try {
+    return verifyAddress(cid, JSON.parse(bytes.toString("utf8")));
+  } catch {
+    return false;
   }
 }
 
@@ -225,6 +315,26 @@ export type AdvanceOutcome =
   | { readonly ok: true; readonly entry: LineJournalEntry; readonly applied: boolean }
   | {
       readonly ok: false;
+      readonly reason: "stale" | "conflict" | "missing_line";
+      readonly detail: string;
+    };
+
+type IdempotencyRecord = {
+  readonly digest: string;
+  readonly entry: LineJournalEntry;
+};
+
+type LineReadResult =
+  | { readonly kind: "missing" }
+  | { readonly kind: "invalid"; readonly detail: string }
+  | { readonly kind: "present"; readonly entry: LineJournalEntry };
+
+/** Result of a multi-Line CAS commit. Writes are rolled back on failure. */
+export type BatchAdvanceOutcome =
+  | { readonly ok: true; readonly entries: ReadonlyArray<LineJournalEntry> }
+  | {
+      readonly ok: false;
+      readonly failedLine: string;
       readonly reason: "stale" | "conflict" | "missing_line";
       readonly detail: string;
     };
@@ -255,15 +365,8 @@ export class FileLineJournal {
 
   /** Current durable entry for a Line, or undefined if the Line has no genesis yet. */
   read(name: string): LineJournalEntry | undefined {
-    const target = this.linePath(name);
-    if (!existsSync(target)) {
-      return undefined;
-    }
-    try {
-      return JSON.parse(readFileSync(target, "utf8")) as LineJournalEntry;
-    } catch {
-      return undefined;
-    }
+    const result = this.readLineState(name);
+    return result.kind === "present" ? result.entry : undefined;
   }
 
   /**
@@ -274,15 +377,136 @@ export class FileLineJournal {
     // Serialize in-process via the promise chain AND take a cross-process file
     // lock so the CAS read-modify-write is safe across multiple processes.
     const run = this.chain.then(async () => {
-      const lock = new FileLock(this.root, `line:${input.name}`);
-      const release = await lock.acquire();
+      const validation = validateLineAdvanceInput(input);
+      if (validation !== undefined) {
+        throw new Error(`loom: invalid line advance: ${validation}`);
+      }
+      const lockNames = [`line:${input.name}`];
+      if (input.idempotencyKey !== undefined) {
+        lockNames.push(`idempotency:${input.idempotencyKey}`);
+      }
+      lockNames.sort();
+      const releases: Array<() => void> = [];
       try {
+        for (const name of lockNames) {
+          releases.push(await new FileLock(this.root, name).acquire());
+        }
         return this.advanceSync(input);
       } finally {
-        release();
+        for (const release of releases.reverse()) release();
       }
     });
     // Keep the chain alive even if a caller never awaits the result.
+    this.chain = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * Atomically apply a set of CAS updates spanning multiple Lines. Per-Line
+   * locks are acquired in a stable order, so ordinary `advance` calls cannot
+   * interleave. If a filesystem write fails after an earlier write, all
+   * already-written entries are restored from their snapshots before the
+   * error is propagated to the caller.
+   */
+  advanceBatch(inputs: readonly LineAdvanceInput[]): Promise<BatchAdvanceOutcome> {
+    const run = this.chain.then(async () => {
+      const seenNames = new Set<string>();
+      let duplicateName: string | undefined;
+      for (const input of inputs) {
+        if (seenNames.has(input.name)) {
+          duplicateName = input.name;
+          break;
+        }
+        seenNames.add(input.name);
+      }
+      if (duplicateName !== undefined) {
+        return {
+          ok: false as const,
+          failedLine: duplicateName,
+          reason: "conflict" as const,
+          detail: `line "${duplicateName}" appears more than once in one batch`
+        };
+      }
+      for (const input of inputs) {
+        const validation = validateLineAdvanceInput(input);
+        if (validation !== undefined) {
+          throw new Error(`loom: invalid line advance: ${validation}`);
+        }
+      }
+      const names = [...new Set(inputs.map((input) => input.name))].sort();
+      const releases: Array<() => void> = [];
+      const snapshots = new Map<string, LineJournalEntry | undefined>();
+      try {
+        for (const name of names) {
+          releases.push(await new FileLock(this.root, `line:${name}`).acquire());
+        }
+        for (const name of names) {
+          const current = this.readLineState(name);
+          if (current.kind === "invalid") {
+            throw new Error(`loom: line "${name}" is corrupt: ${current.detail}`);
+          }
+          snapshots.set(name, current.kind === "present" ? current.entry : undefined);
+        }
+
+        const nextEntries: LineJournalEntry[] = [];
+        for (const input of inputs) {
+          const current = snapshots.get(input.name);
+          if (current === undefined) {
+            return {
+              ok: false as const,
+              failedLine: input.name,
+              reason: "missing_line" as const,
+              detail: `line "${input.name}" has no genesis`
+            };
+          }
+          if (current.head !== input.expectedHead) {
+            return {
+              ok: false as const,
+              failedLine: input.name,
+              reason: "stale" as const,
+              detail: `line "${input.name}" head moved (expected ${input.expectedHead}, current ${current.head})`
+            };
+          }
+          if (current.sequence !== input.expectedSequence) {
+            return {
+              ok: false as const,
+              failedLine: input.name,
+              reason: "conflict" as const,
+              detail: `line "${input.name}" sequence moved (expected ${input.expectedSequence}, current ${current.sequence})`
+            };
+          }
+          nextEntries.push({
+            name: input.name,
+            scope: current.scope,
+            head: input.newHead,
+            sequence: current.sequence + 1
+          });
+        }
+
+        const written: LineJournalEntry[] = [];
+        try {
+          for (const entry of nextEntries) {
+            this.writeLine(entry);
+            written.push(entry);
+          }
+        } catch (error) {
+          // Best-effort rollback keeps the batch all-or-nothing for ordinary
+          // I/O failures. A process crash still requires startup recovery.
+          for (const entry of written.reverse()) {
+            const previous = snapshots.get(entry.name);
+            if (previous === undefined) {
+              rmSync(this.linePath(entry.name), { force: true });
+            } else {
+              this.writeLine(previous);
+            }
+          }
+          throw error;
+        }
+        return { ok: true as const, entries: nextEntries };
+      } finally {
+        for (const release of releases.reverse()) release();
+      }
+    });
     this.chain = run.catch(() => undefined);
     return run;
   }
@@ -297,14 +521,29 @@ export class FileLineJournal {
   }
 
   private advanceSync(input: LineAdvanceInput): AdvanceOutcome {
+    const requestDigest = this.idempotencyDigest(input);
     if (input.idempotencyKey !== undefined) {
       const prior = this.readIdempotency(input.idempotencyKey);
       if (prior !== undefined) {
-        return { ok: true, entry: prior, applied: false };
+        if (prior.digest !== requestDigest) {
+          return {
+            ok: false,
+            reason: "conflict",
+            detail: "idempotency key was already used for a different request"
+          };
+        }
+        if (!isMatchingIdempotencyRecord(prior, input)) {
+          throw new Error(`loom: idempotency record for "${input.idempotencyKey}" is invalid`);
+        }
+        return { ok: true, entry: prior.entry, applied: false };
       }
     }
 
-    const current = this.read(input.name);
+    const lineState = this.readLineState(input.name);
+    if (lineState.kind === "invalid") {
+      throw new Error(`loom: line "${input.name}" is corrupt: ${lineState.detail}`);
+    }
+    const current = lineState.kind === "present" ? lineState.entry : undefined;
     let next: LineJournalEntry;
 
     if (current === undefined) {
@@ -341,7 +580,7 @@ export class FileLineJournal {
 
     this.writeLine(next);
     if (input.idempotencyKey !== undefined) {
-      this.writeIdempotency(input.idempotencyKey, next);
+      this.writeIdempotency(input.idempotencyKey, { digest: requestDigest, entry: next });
     }
     return { ok: true, entry: next, applied: true };
   }
@@ -350,29 +589,151 @@ export class FileLineJournal {
     return join(this.linesDir, `${encodeURIComponent(name)}.json`);
   }
 
+  private readLineState(name: string): LineReadResult {
+    const target = this.linePath(name);
+    try {
+      lstatSync(target);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        return { kind: "missing" };
+      }
+      return { kind: "invalid", detail: "line record cannot be inspected" };
+    }
+    if (!isRegularFile(target)) {
+      return { kind: "invalid", detail: "line record is not a regular file" };
+    }
+    try {
+      const parsed = JSON.parse(readFileSync(target, "utf8")) as unknown;
+      if (!isValidLineEntry(parsed, name)) {
+        return { kind: "invalid", detail: "line record has an invalid shape" };
+      }
+      return { kind: "present", entry: parsed };
+    } catch {
+      return { kind: "invalid", detail: "line record is not valid JSON" };
+    }
+  }
+
   private writeLine(entry: LineJournalEntry): void {
     const target = this.linePath(entry.name);
-    const tmp = join(this.linesDir, `.${encodeURIComponent(entry.name)}.${process.pid}.${randomUUID()}.tmp`);
+    const tmp = join(
+      this.linesDir,
+      `.${encodeURIComponent(entry.name)}.${process.pid}.${randomUUID()}.tmp`
+    );
     writeFileSync(tmp, JSON.stringify(entry), { encoding: "utf8", flag: "wx" });
     renameSync(tmp, target);
   }
 
-  private readIdempotency(key: string): LineJournalEntry | undefined {
+  private idempotencyDigest(input: LineAdvanceInput): string {
+    return createHash("sha256")
+      .update(
+        JSON.stringify({
+          name: input.name,
+          scope: input.scope,
+          expectedHead: input.expectedHead,
+          expectedSequence: input.expectedSequence,
+          newHead: input.newHead
+        })
+      )
+      .digest("hex");
+  }
+
+  private readIdempotency(key: string): IdempotencyRecord | undefined {
     const target = join(this.idemDir, `${encodeURIComponent(key)}.json`);
     if (!existsSync(target)) {
       return undefined;
     }
+    if (!isRegularFile(target)) {
+      throw new Error(`loom: idempotency record for "${key}" is not a regular file`);
+    }
     try {
-      return JSON.parse(readFileSync(target, "utf8")) as LineJournalEntry;
+      const parsed = JSON.parse(readFileSync(target, "utf8")) as Partial<IdempotencyRecord>;
+      if (
+        typeof parsed.digest !== "string" ||
+        !/^[0-9a-f]{64}$/u.test(parsed.digest) ||
+        !isValidLineEntry(parsed.entry, parsed.entry?.name)
+      ) {
+        throw new Error(`loom: idempotency record for "${key}" is invalid`);
+      }
+      return parsed as IdempotencyRecord;
     } catch {
-      return undefined;
+      throw new Error(`loom: idempotency record for "${key}" is invalid`);
     }
   }
 
-  private writeIdempotency(key: string, entry: LineJournalEntry): void {
+  private writeIdempotency(key: string, record: IdempotencyRecord): void {
     const target = join(this.idemDir, `${encodeURIComponent(key)}.json`);
-    const tmp = join(this.idemDir, `.${encodeURIComponent(key)}.${process.pid}.${randomUUID()}.tmp`);
-    writeFileSync(tmp, JSON.stringify(entry), { encoding: "utf8", flag: "wx" });
+    const tmp = join(
+      this.idemDir,
+      `.${encodeURIComponent(key)}.${process.pid}.${randomUUID()}.tmp`
+    );
+    writeFileSync(tmp, JSON.stringify(record), { encoding: "utf8", flag: "wx" });
     renameSync(tmp, target);
   }
+}
+
+function validateLineAdvanceInput(input: LineAdvanceInput): string | undefined {
+  if (
+    typeof input.name !== "string" ||
+    input.name.length === 0 ||
+    input.name.length > 256 ||
+    input.name.includes("\u0000")
+  ) {
+    return "name must be a non-empty string of at most 256 characters";
+  }
+  if (input.scope !== "local" && input.scope !== "shared") {
+    return "scope must be local or shared";
+  }
+  if (
+    typeof input.expectedHead !== "string" ||
+    input.expectedHead.length === 0 ||
+    input.expectedHead.length > 256 ||
+    typeof input.newHead !== "string" ||
+    input.newHead.length === 0 ||
+    input.newHead.length > 256
+  ) {
+    return "expectedHead and newHead must be non-empty strings of at most 256 characters";
+  }
+  if (
+    !Number.isSafeInteger(input.expectedSequence) ||
+    input.expectedSequence < 0 ||
+    input.expectedSequence >= Number.MAX_SAFE_INTEGER
+  ) {
+    return "expectedSequence must be a non-negative safe integer";
+  }
+  if (
+    input.idempotencyKey !== undefined &&
+    (typeof input.idempotencyKey !== "string" ||
+      input.idempotencyKey.length === 0 ||
+      input.idempotencyKey.length > 256 ||
+      input.idempotencyKey.includes("\u0000"))
+  ) {
+    return "idempotencyKey must be a non-empty string of at most 256 characters";
+  }
+  return undefined;
+}
+
+function isValidLineEntry(
+  value: unknown,
+  expectedName: string | undefined
+): value is LineJournalEntry {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  return (
+    typeof entry.name === "string" &&
+    (expectedName === undefined || entry.name === expectedName) &&
+    (entry.scope === "local" || entry.scope === "shared") &&
+    typeof entry.head === "string" &&
+    entry.head.length > 0 &&
+    entry.head.length <= 256 &&
+    Number.isSafeInteger(entry.sequence) &&
+    (entry.sequence as number) >= 0
+  );
+}
+
+function isMatchingIdempotencyRecord(record: IdempotencyRecord, input: LineAdvanceInput): boolean {
+  return (
+    record.entry.name === input.name &&
+    record.entry.head === input.newHead &&
+    (record.entry.sequence === 0 || record.entry.sequence === input.expectedSequence + 1)
+  );
 }

@@ -589,7 +589,11 @@ export async function publishMergeGuardCheck(input: {
   detailsUrl?: string | undefined;
   externalId?: string | undefined;
   conclusionOverride?: CheckRunPayload["conclusion"] | undefined;
-}): Promise<{ id: number | undefined; conclusion: CheckRunPayload["conclusion"]; reused?: boolean }> {
+}): Promise<{
+  id: number | undefined;
+  conclusion: CheckRunPayload["conclusion"];
+  reused?: boolean;
+}> {
   return publishMergeGuardCheckWithClient({
     client: createGithubClient(input.token),
     owner: input.owner,
@@ -611,9 +615,7 @@ export async function reconcileMergeGuardCheckWithClient(input: {
   externalId: string;
   detailsUrl?: string | undefined;
   conclusionOverride?: CheckRunPayload["conclusion"] | undefined;
-}): Promise<
-  { id: number; conclusion: CheckRunPayload["conclusion"]; reused: true } | undefined
-> {
+}): Promise<{ id: number; conclusion: CheckRunPayload["conclusion"]; reused: true } | undefined> {
   const listForRef = input.client.checks.listForRef;
   if (!listForRef) {
     return undefined;
@@ -673,7 +675,11 @@ export async function publishMergeGuardCheckWithClient(input: {
   detailsUrl?: string | undefined;
   externalId?: string | undefined;
   conclusionOverride?: CheckRunPayload["conclusion"] | undefined;
-}): Promise<{ id: number | undefined; conclusion: CheckRunPayload["conclusion"]; reused?: boolean }> {
+}): Promise<{
+  id: number | undefined;
+  conclusion: CheckRunPayload["conclusion"];
+  reused?: boolean;
+}> {
   if (input.externalId) {
     const reconciled = await reconcileMergeGuardCheckWithClient({
       client: input.client,

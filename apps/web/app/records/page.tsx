@@ -5,6 +5,7 @@ import { DataSourceNotice } from "../data-source-notice";
 import { formatDate, loadDashboardData, loadPolicyPacks, summarizeFindings } from "../data";
 import { createCompliancePackageExport, createRecordExport } from "./actions";
 import { StandaloneRecordForm } from "./standalone-record-form";
+import { recordHref } from "../security/navigation";
 
 const ALLOWED_STATUSES = ["pass", "warn", "block"] as const;
 type RecordStatusFilter = (typeof ALLOWED_STATUSES)[number];
@@ -239,9 +240,7 @@ export default async function RecordsPage({ searchParams }: RecordsPageProps) {
                 <tr key={item.record.id}>
                   <td>{item.record.repositoryFullName}</td>
                   <td>
-                    <Link href={`/records/${item.record.id}`}>
-                      #{item.record.pullRequestNumber}
-                    </Link>
+                    <Link href={recordHref(item.record.id)}>#{item.record.pullRequestNumber}</Link>
                     <p className="muted">{item.title}</p>
                   </td>
                   <td>

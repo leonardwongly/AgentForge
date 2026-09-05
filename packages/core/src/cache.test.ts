@@ -32,7 +32,14 @@ import {
 
 describe("Caching Layer", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    // Reset implementations as well as call history. `clearAllMocks()` leaves
+    // a previous test's rejected Redis command installed, making the fallback
+    // cases pass or fail depending on test order.
+    mockRedis.get.mockReset();
+    mockRedis.set.mockReset();
+    mockRedis.del.mockReset();
+    mockRedis.quit.mockReset();
+    mockRedis.on.mockReset();
   });
 
   describe("Key Helpers", () => {
@@ -44,7 +51,8 @@ describe("Caching Layer", () => {
     it("generates an injective file content cache key", () => {
       const key = getFileContentCacheKey("OwnerName", "Repo-Name", "SHA123", "src/dir/file.ts");
       const pathHash = createHash("sha256").update("src/dir/file.ts").digest("hex");
-      expect(key).toBe(`agentforge:cache:file-content:ownername:repo-name:sha123:${pathHash}`);
+      // Repository names are case-insensitive, but git refs are not.
+      expect(key).toBe(`agentforge:cache:file-content:ownername:repo-name:SHA123:${pathHash}`);
       // Paths that previously collided under lossy "/"->"_" sanitization now differ.
       expect(getFileContentCacheKey("o", "r", "s", "a/package.json")).not.toBe(
         getFileContentCacheKey("o", "r", "s", "a_package.json")
@@ -219,10 +227,21 @@ describe("Caching Layer", () => {
 
     it("falls back to memory if Redis get fails (fail-open)", async () => {
       mockRedis.get.mockRejectedValue(new Error("Redis read error"));
+      mockRedis.set.mockRejectedValue(new Error("Redis connection failure"));
       const manager = new RedisCacheManager("redis://localhost:6379");
 
       await manager.set("fallbackKey", "fallbackVal", 10);
       expect(await manager.get("fallbackKey")).toBe("fallbackVal");
+    });
+
+    it("latches Redis command failures to avoid retrying a known-down backend", async () => {
+      mockRedis.set.mockRejectedValue(new Error("Redis connection failure"));
+      mockRedis.get.mockResolvedValue("stale-redis-value");
+      const manager = new RedisCacheManager("redis://localhost:6379");
+
+      await manager.set("fallbackKey", "fallbackVal", 10);
+      expect(await manager.get("fallbackKey")).toBe("fallbackVal");
+      expect(mockRedis.get).not.toHaveBeenCalled();
     });
   });
 
@@ -277,6 +296,15 @@ describe("Caching Layer", () => {
       expect(await guard.claim("sig-fallback", 300, now)).toBe(true);
       // The fallback claim set still rejects a replay even though Redis is down.
       expect(await guard.claim("sig-fallback", 300, now + 1_000)).toBe(false);
+    });
+
+    it("fails closed when strict replay protection loses Redis", async () => {
+      mockRedis.set.mockRejectedValue(new Error("Redis connection failure"));
+      const guard = new SignatureReplayGuard("redis://localhost:6379", undefined, true);
+      const now = Date.now();
+
+      expect(await guard.claim("sig-strict", 300, now)).toBe(false);
+      expect(await guard.claim("sig-strict", 300, now + 1_000)).toBe(false);
     });
 
     it("bounds in-memory fallback growth and evicts the oldest claim once the cap is exceeded", async () => {

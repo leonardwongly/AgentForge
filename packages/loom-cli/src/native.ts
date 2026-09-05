@@ -24,7 +24,10 @@ const LOOM_DIR = ".loom";
 const HEAD_FILE = "head";
 const LEDGER_FILE = "ledger.jsonl";
 
-const EXCLUDE = new Set([LOOM_DIR]);
+// Repository metadata is not Loom content. Excluding `.git` also prevents
+// native capture/propose from ingesting hooks, object databases, or other
+// executable administrative files into an authoritative State.
+const EXCLUDE = new Set([LOOM_DIR, ".git"]);
 
 function loomDir(dir: string): string {
   return join(dir, LOOM_DIR);
@@ -40,7 +43,9 @@ function readHead(dir: string): string | undefined {
 }
 
 function genesisHead(): string {
-  return address({ kind: "line", name: "main", scope: "shared", head: "genesis" });
+  // Native CLI repositories are explicitly local. Shared Lines must only move
+  // through the authenticated proposal/admission service.
+  return address({ kind: "line", name: "main", scope: "local", head: "genesis" });
 }
 
 /** Initialize a Loom repository: create the store, base State, Line, and ledger. */
@@ -57,7 +62,7 @@ export function initRepo(dir: string): string {
   const journal = new FileLineJournal(loomDir(dir));
   void journal.advance({
     name: "main",
-    scope: "shared",
+    scope: "local",
     expectedHead: genesisHead() as never,
     expectedSequence: 0,
     newHead: head as never
@@ -113,9 +118,12 @@ export async function proposeRepo(dir: string, title: string): Promise<string> {
   const nextHead = store.putDagCbor(next);
   const lineJournal = new FileLineJournal(loomDir(dir));
   const current = lineJournal.read("main");
+  if (current !== undefined && current.scope !== "local") {
+    return "proposal rejected: shared Line requires authenticated admission";
+  }
   const outcome = await lineJournal.advance({
     name: "main",
-    scope: "shared",
+    scope: "local",
     expectedHead: (current?.head ?? head) as never,
     expectedSequence: current?.sequence ?? 0,
     newHead: nextHead as never
@@ -149,5 +157,3 @@ export function logRepo(dir: string): string {
   lines.push(`ledger ${verify.valid ? "valid" : "TAMPERED"}`);
   return lines.join("\n");
 }
-
-

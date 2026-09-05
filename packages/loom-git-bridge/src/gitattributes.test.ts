@@ -9,13 +9,9 @@ import {
 
 describe("parseGitAttributes", () => {
   it("parses text and -text patterns, ignoring comments and blanks", () => {
-    const attrs = parseGitAttributes([
-      "# comment",
-      "*.png -text",
-      "*.md text",
-      "",
-      "docs/** text"
-    ].join("\n"));
+    const attrs = parseGitAttributes(
+      ["# comment", "*.png -text", "*.md text", "", "docs/** text"].join("\n")
+    );
     expect(attrs.binaryPaths).toEqual(["*.png"]);
     expect(attrs.textPaths).toEqual(["*.md", "docs/**"]);
   });
@@ -37,6 +33,16 @@ describe("facetFromAttributes", () => {
     expect(facetFromAttributes(attrs, "README.md")).toBe("text");
     expect(facetFromAttributes(attrs, "src/app.ts")).toBeUndefined();
   });
+
+  it("uses the last matching text declaration, as Git attributes require", () => {
+    const attrs = parseGitAttributes("*.dat text\n*.dat -text\n");
+    expect(facetFromAttributes(attrs, "payload.dat")).toBe("bytes");
+  });
+
+  it("allows a later broad rule to override an earlier specific rule", () => {
+    const attrs = parseGitAttributes("secret.env -text\n*.env text\n");
+    expect(facetFromAttributes(attrs, "secret.env")).toBe("text");
+  });
 });
 
 describe("filter attributes (item #5)", () => {
@@ -57,6 +63,11 @@ describe("filter attributes (item #5)", () => {
     const attrs = parseGitAttributes("*.secret filter=loom");
     expect(filterForPath(attrs, "config/foo.secret")).toBe("loom");
     expect(filterForPath(attrs, "src/app.ts")).toBeUndefined();
+  });
+
+  it("uses the last matching filter declaration", () => {
+    const attrs = parseGitAttributes("*.secret filter=first\n*.secret filter=last\n");
+    expect(filterForPath(attrs, "config.secret")).toBe("last");
   });
 
   it("combines text, -text, and filter attributes on one line", () => {

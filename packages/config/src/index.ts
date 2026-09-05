@@ -10,14 +10,25 @@ const LOCAL_REDIS_URL = "redis://localhost:6379";
 const booleanFromEnv = z
   .union([z.boolean(), z.string()])
   .optional()
-  .transform((value) => {
+  .transform((value, context) => {
     if (typeof value === "boolean") {
       return value;
     }
-    if (value === undefined || value === "") {
+    if (value === undefined || value.trim() === "") {
       return undefined;
     }
-    return ["1", "true", "yes", "on"].includes(value.toLowerCase());
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["0", "false", "no", "off"].includes(normalized)) {
+      return false;
+    }
+    context.addIssue({
+      code: "custom",
+      message: "expected a boolean value (true/false, 1/0, yes/no, or on/off)"
+    });
+    return z.NEVER;
   });
 
 const optionalStringFromEnv = z
@@ -231,6 +242,20 @@ function validateProductionConfig(config: AgentForgeConfig): void {
   if (!config.github.webhookSecret) {
     errors.push("GITHUB_WEBHOOK_SECRET is required in production.");
   }
+  if (!config.databaseUrl) {
+    errors.push("DATABASE_URL is required in production for durable tenant-scoped persistence.");
+  }
+  if (!config.redisUrl) {
+    errors.push("REDIS_URL is required in production for durable queues and replay protection.");
+  }
+  for (const [name, destination] of [
+    ["NOTIFICATION_WEBHOOK_URL", config.notificationWebhookUrl],
+    ["AUDIT_STREAM_WEBHOOK_URL", config.auditStreamWebhookUrl]
+  ] as const) {
+    if (destination && !isSecureWebhookUrl(destination)) {
+      errors.push(`${name} must use an https URL in production.`);
+    }
+  }
   checkProductionSecretStrength("GITHUB_WEBHOOK_SECRET", config.github.webhookSecret, errors);
   if (!config.github.appId) {
     errors.push(
@@ -315,6 +340,35 @@ function isLoopbackUrl(value: string): boolean {
   try {
     const parsed = new URL(value);
     return ["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isSecureWebhookUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    const hostname = parsed.hostname.toLowerCase();
+    if (parsed.protocol !== "https:" || !hostname || parsed.username || parsed.password) {
+      return false;
+    }
+    // HTTPS alone does not prevent SSRF to link-local or loopback services.
+    // Deployments should still prefer an explicit destination allowlist; this
+    // denylist blocks the common metadata/private-network targets by default.
+    if (
+      hostname === "localhost" ||
+      hostname.endsWith(".local") ||
+      hostname === "metadata.google.internal" ||
+      hostname === "::1" ||
+      /^127\./u.test(hostname) ||
+      /^10\./u.test(hostname) ||
+      /^192\.168\./u.test(hostname) ||
+      /^172\.(?:1[6-9]|2\d|3[0-1])\./u.test(hostname) ||
+      hostname === "169.254.169.254"
+    ) {
+      return false;
+    }
+    return true;
   } catch {
     return false;
   }

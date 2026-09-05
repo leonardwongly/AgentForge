@@ -12,12 +12,14 @@
  * consistency logic is fully exercised and testable.
  */
 
-import { createHmac } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 export interface WitnessSignature {
   readonly witnessDid: string;
   readonly checkpointCid: string;
   readonly sequence: number;
+  /** Authority this signature was collected for; included in the MAC. */
+  readonly authority?: string | undefined;
   readonly signature: string;
 }
 
@@ -31,13 +33,20 @@ export class WitnessSet {
   }
 
   /** Sign a checkpoint at a sequence with a witness key. */
-  sign(witnessDid: string, checkpointCid: string, sequence: number): WitnessSignature {
+  sign(
+    witnessDid: string,
+    checkpointCid: string,
+    sequence: number,
+    authority?: string
+  ): WitnessSignature {
     const key = this.keys.get(witnessDid);
     if (key === undefined) {
       throw new Error(`loom: unknown witness ${witnessDid}`);
     }
-    const signature = this.hmac(key, checkpointCid, sequence);
-    return { witnessDid, checkpointCid, sequence, signature };
+    const signature = this.hmac(key, checkpointCid, sequence, authority);
+    return authority === undefined
+      ? { witnessDid, checkpointCid, sequence, signature }
+      : { witnessDid, checkpointCid, sequence, authority, signature };
   }
 
   /** Verify a single witness signature. */
@@ -46,11 +55,23 @@ export class WitnessSet {
     if (key === undefined) {
       return false;
     }
-    return this.hmac(key, signature.checkpointCid, signature.sequence) === signature.signature;
+    return this.verifyMac(
+      key,
+      signature.checkpointCid,
+      signature.sequence,
+      signature.authority,
+      signature.signature
+    );
   }
 
   /** True if at least `quorum` distinct witnesses validly sign the checkpoint. */
-  quorumReached(signatures: readonly WitnessSignature[], checkpointCid: string, quorum: number): boolean {
+  quorumReached(
+    signatures: readonly WitnessSignature[],
+    checkpointCid: string,
+    quorum: number,
+    sequence?: number,
+    authority?: string
+  ): boolean {
     if (quorum < 1 || quorum > this.keys.size) {
       return false;
     }
@@ -58,6 +79,8 @@ export class WitnessSet {
     for (const signature of signatures) {
       if (
         signature.checkpointCid === checkpointCid &&
+        (sequence === undefined || signature.sequence === sequence) &&
+        (authority === undefined || signature.authority === authority) &&
         this.verify(signature) &&
         this.keys.has(signature.witnessDid)
       ) {
@@ -77,22 +100,47 @@ export class WitnessSet {
     sequence: number,
     quorum: number
   ): boolean {
-    const aCheckpoints = new Set(a.filter((s) => s.sequence === sequence).map((s) => s.checkpointCid));
-    const bCheckpoints = new Set(b.filter((s) => s.sequence === sequence).map((s) => s.checkpointCid));
+    const aCheckpoints = new Set(
+      a.filter((s) => s.sequence === sequence).map((s) => s.checkpointCid)
+    );
+    const bCheckpoints = new Set(
+      b.filter((s) => s.sequence === sequence).map((s) => s.checkpointCid)
+    );
     for (const cidA of aCheckpoints) {
-      if (this.quorumReached(a, cidA, quorum) && bCheckpoints.has(cidA)) {
+      if (this.quorumReached(a, cidA, quorum, sequence) && bCheckpoints.has(cidA)) {
         return false; // consistent: same checkpoint witnessed
       }
     }
     // If both reach quorum on different checkpoints, that's a fork.
-    const aCids = [...aCheckpoints].filter((cid) => this.quorumReached(a, cid, quorum));
-    const bCids = [...bCheckpoints].filter((cid) => this.quorumReached(b, cid, quorum));
+    const aCids = [...aCheckpoints].filter((cid) => this.quorumReached(a, cid, quorum, sequence));
+    const bCids = [...bCheckpoints].filter((cid) => this.quorumReached(b, cid, quorum, sequence));
     return aCids.length > 0 && bCids.length > 0 && aCids.some((cid) => !bCids.includes(cid));
   }
 
-  private hmac(key: Uint8Array, checkpointCid: string, sequence: number): string {
+  private hmac(
+    key: Uint8Array,
+    checkpointCid: string,
+    sequence: number,
+    authority?: string
+  ): string {
     return createHmac("sha256", key)
-      .update(`loom-witness-v1|${sequence}|${checkpointCid}`)
+      .update(`loom-witness-v1|${authority ?? ""}|${sequence}|${checkpointCid}`)
       .digest("base64");
+  }
+
+  private verifyMac(
+    key: Uint8Array,
+    checkpointCid: string,
+    sequence: number,
+    authority: string | undefined,
+    provided: string
+  ): boolean {
+    try {
+      const expected = Buffer.from(this.hmac(key, checkpointCid, sequence, authority), "base64");
+      const actual = Buffer.from(provided, "base64");
+      return actual.length === expected.length && timingSafeEqual(actual, expected);
+    } catch {
+      return false;
+    }
   }
 }

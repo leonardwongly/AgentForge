@@ -7,7 +7,11 @@ function finding(type: VerifiedFact["type"], id: string): VerifiedFact {
   return { id, type, source: "github_diff", evidence: "evidence", confidence: "verified" };
 }
 
-function record(id: string, lifecycle: ChangeControlRecord["lifecycle"], findings: VerifiedFact[]): ChangeControlRecord {
+function record(
+  id: string,
+  lifecycle: ChangeControlRecord["lifecycle"],
+  findings: VerifiedFact[]
+): ChangeControlRecord {
   return {
     id,
     revision: 1,

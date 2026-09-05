@@ -27,38 +27,25 @@ describe("witnessed trust", () => {
   });
 
   it("reaches quorum only with enough distinct valid signatures", () => {
-    const sigs = [
-      set.sign("did:loom:w1", "cid:c", 1),
-      set.sign("did:loom:w2", "cid:c", 1)
-    ];
+    const sigs = [set.sign("did:loom:w1", "cid:c", 1), set.sign("did:loom:w2", "cid:c", 1)];
     expect(set.quorumReached(sigs, "cid:c", 2)).toBe(true);
     expect(set.quorumReached(sigs, "cid:c", 3)).toBe(false);
     // A duplicate from the same witness does not count twice.
-    expect(set.quorumReached([...sigs, set.sign("did:loom:w1", "cid:c", 1)], "cid:c", 3)).toBe(false);
+    expect(set.quorumReached([...sigs, set.sign("did:loom:w1", "cid:c", 1)], "cid:c", 3)).toBe(
+      false
+    );
   });
 
   it("detects a fork (split view) when two checkpoints both reach quorum", () => {
-    const a = [
-      set.sign("did:loom:w1", "cid:a", 1),
-      set.sign("did:loom:w2", "cid:a", 1)
-    ];
-    const b = [
-      set.sign("did:loom:w1", "cid:b", 1),
-      set.sign("did:loom:w2", "cid:b", 1)
-    ];
+    const a = [set.sign("did:loom:w1", "cid:a", 1), set.sign("did:loom:w2", "cid:a", 1)];
+    const b = [set.sign("did:loom:w1", "cid:b", 1), set.sign("did:loom:w2", "cid:b", 1)];
     // Both reach quorum=2 on different checkpoints at sequence 1 -> fork.
     expect(set.detectFork(a, b, 1, 2)).toBe(true);
   });
 
   it("does not flag a consistent checkpoint as a fork", () => {
-    const a = [
-      set.sign("did:loom:w1", "cid:c", 1),
-      set.sign("did:loom:w2", "cid:c", 1)
-    ];
-    const b = [
-      set.sign("did:loom:w1", "cid:c", 1),
-      set.sign("did:loom:w3", "cid:c", 1)
-    ];
+    const a = [set.sign("did:loom:w1", "cid:c", 1), set.sign("did:loom:w2", "cid:c", 1)];
+    const b = [set.sign("did:loom:w1", "cid:c", 1), set.sign("did:loom:w3", "cid:c", 1)];
     expect(set.detectFork(a, b, 1, 2)).toBe(false);
   });
 });

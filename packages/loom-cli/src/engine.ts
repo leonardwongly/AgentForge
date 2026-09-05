@@ -95,6 +95,7 @@ export interface VerifyRequest {
   readonly headRef: string;
   readonly envelope: DsseEnvelope;
   readonly publicKeyPem: string;
+  readonly policyVersion: string;
 }
 
 export interface CliVerifyResult {
@@ -120,6 +121,7 @@ export async function verifyAttestation(req: VerifyRequest): Promise<CliVerifyRe
   const verdict = verifyProvenance({
     baseState: baseAddress,
     resultState: resultAddress,
+    policyVersion: req.policyVersion,
     envelope: req.envelope,
     publicKeyPem: req.publicKeyPem
   });

@@ -19,3 +19,17 @@ jobs:
           fail-on-severity: high
           license-check: true
           deny-licenses: GPL-2.0, GPL-3.0, AGPL-1.0, AGPL-3.0, LGPL-2.0, LGPL-2.1, LGPL-3.0
+          # sharp is Apache-2.0, but its patched platform libvips binaries are
+          # LGPL-3.0-or-later. Allow only the exact transitive binaries used by
+          # this lockfile; all other denied-license dependencies remain blocked.
+          allow-dependencies-licenses: >-
+            pkg:npm/@img/sharp-libvips-darwin-arm64@1.3.3,
+            pkg:npm/@img/sharp-libvips-darwin-x64@1.3.3,
+            pkg:npm/@img/sharp-libvips-linux-arm@1.3.3,
+            pkg:npm/@img/sharp-libvips-linux-arm64@1.3.3,
+            pkg:npm/@img/sharp-libvips-linux-ppc64@1.3.3,
+            pkg:npm/@img/sharp-libvips-linux-riscv64@1.3.3,
+            pkg:npm/@img/sharp-libvips-linux-s390x@1.3.3,
+            pkg:npm/@img/sharp-libvips-linux-x64@1.3.3,
+            pkg:npm/@img/sharp-libvips-linuxmusl-arm64@1.3.3,
+            pkg:npm/@img/sharp-libvips-linuxmusl-x64@1.3.3

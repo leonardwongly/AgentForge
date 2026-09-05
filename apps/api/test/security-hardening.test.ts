@@ -92,8 +92,11 @@ function authenticatedActorHeaders(
 
 function setProductionProxyAuthEnv() {
   process.env.NODE_ENV = "production";
-  delete process.env.DATABASE_URL;
-  delete process.env.REDIS_URL;
+  // Production configuration now refuses to boot without durable service
+  // URLs. These test values are intentionally unreachable; affected tests pass
+  // explicit in-memory dependency overrides to avoid opening connections.
+  process.env.DATABASE_URL = "postgresql://test:test@127.0.0.1:1/agentforge";
+  process.env.REDIS_URL = "redis://127.0.0.1:1";
   process.env.GITHUB_WEBHOOK_SECRET = "production-secret-32-characters-long";
   process.env.GITHUB_APP_ID = "123456";
   process.env.GITHUB_APP_PRIVATE_KEY = testPrivateKey;
@@ -412,7 +415,10 @@ describe("security and audit hardening", () => {
     });
     await app.close();
 
-    const inMemoryApp = createApp(createInitialState());
+    const inMemoryApp = createApp(createInitialState(), {
+      prisma: undefined,
+      evaluationQueue: undefined
+    });
     const inMemoryResponse = await inMemoryApp.inject({
       method: "POST",
       url: "/api/policies/preview",
@@ -655,7 +661,7 @@ describe("security and audit hardening", () => {
     await seeded.app.close();
 
     setProductionProxyAuthEnv();
-    const app = createApp(state);
+    const app = createApp(state, { prisma: undefined, evaluationQueue: undefined });
     const record = state.records[0]!;
     const evidence = record.requiredEvidence[0]!;
 
@@ -692,7 +698,7 @@ describe("security and audit hardening", () => {
     await seeded.app.close();
 
     setProductionProxyAuthEnv();
-    const app = createApp(state);
+    const app = createApp(state, { prisma: undefined, evaluationQueue: undefined });
     const record = state.records[0]!;
     const evidence = record.requiredEvidence[0]!;
 
@@ -715,7 +721,10 @@ describe("security and audit hardening", () => {
 
   it("rejects trusted proxy actor headers that omit organization identity", async () => {
     setProductionProxyAuthEnv();
-    const app = createApp(createInitialState());
+    const app = createApp(createInitialState(), {
+      prisma: undefined,
+      evaluationQueue: undefined
+    });
 
     const response = await app.inject({
       method: "POST",
@@ -893,6 +902,34 @@ describe("security and audit hardening", () => {
       state.records[0]!.requiredReviewers.find((item) => item.id === reviewer.id)?.approvalSource
     ).toBe("manual");
 
+    await app.close();
+  });
+
+  it("rejects evidence self-approval even for an evidence approver role", async () => {
+    const { app, state } = await createPreviewRecord();
+    const record = state.records[0]!;
+    const evidence = record.requiredEvidence[0]!;
+    const headers = {
+      "content-type": "application/json",
+      ...actorHeaders("reviewer", "security_reviewer")
+    };
+
+    const provided = await app.inject({
+      method: "POST",
+      url: `/api/pull-requests/${record.id}/evidence`,
+      payload: JSON.stringify({ evidenceId: evidence.id, content: "Independent evidence note." }),
+      headers
+    });
+    expect(provided.statusCode).toBe(200);
+
+    const approved = await app.inject({
+      method: "PATCH",
+      url: `/api/evidence/${evidence.id}/approve`,
+      payload: JSON.stringify({ recordId: record.id }),
+      headers
+    });
+    expect(approved.statusCode).toBe(403);
+    expect(approved.json().error).toContain("provided it");
     await app.close();
   });
 
@@ -1540,7 +1577,10 @@ describe("security and audit hardening", () => {
 
   it("protects readiness and metrics details in production", async () => {
     setProductionProxyAuthEnv();
-    const app = createApp(createInitialState());
+    const app = createApp(createInitialState(), {
+      prisma: undefined,
+      evaluationQueue: undefined
+    });
 
     const health = await app.inject({ method: "GET", url: "/health" });
     expect(health.statusCode).toBe(200);
@@ -1571,7 +1611,8 @@ describe("security and audit hardening", () => {
       expect.objectContaining({
         status: "ready",
         runtimeStore: "in_memory",
-        workerQueue: "in_memory"
+        database: "configured",
+        workerQueue: "configured"
       })
     );
 

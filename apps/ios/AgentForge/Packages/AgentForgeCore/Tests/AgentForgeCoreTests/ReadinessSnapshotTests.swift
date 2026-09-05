@@ -59,4 +59,59 @@ final class ReadinessSnapshotTests: XCTestCase {
         XCTAssertFalse(snapshot.hasQueueBackedEvaluations)
         XCTAssertFalse(snapshot.isProductionReady)
     }
+
+    func testConfiguredWorkerQueueWithInMemoryBackendIsNotProductionReady() {
+        let snapshot = ReadinessSnapshot(
+            response: ReadinessResponse(
+                status: "ready",
+                database: "configured",
+                workerQueue: "configured",
+                runtimeStore: "postgres",
+                queue: QueueResponse(status: "ready", backend: "in_memory"),
+                version: "1.0.0"
+            ),
+            httpStatus: 200,
+            checkedAt: Date(timeIntervalSince1970: 0)
+        )
+
+        XCTAssertFalse(snapshot.hasQueueBackedEvaluations)
+        XCTAssertFalse(snapshot.isProductionReady)
+    }
+
+    func testExplicitlyNullQueueIsNotTreatedAsLegacyReadyPayload() throws {
+        let data = #"""
+        {
+            "status": "ready",
+            "database": "configured",
+            "workerQueue": "configured",
+            "runtimeStore": "postgres",
+            "queue": null,
+            "version": "1.0.0"
+        }
+        """#.data(using: .utf8)!
+        let response = try JSONDecoder().decode(ReadinessResponse.self, from: data)
+        let snapshot = ReadinessSnapshot(
+            response: response,
+            httpStatus: 200,
+            checkedAt: Date(timeIntervalSince1970: 0)
+        )
+
+        XCTAssertFalse(snapshot.hasQueueBackedEvaluations)
+        XCTAssertFalse(snapshot.isProductionReady)
+    }
+
+    func testMalformedQueueShapeCannotBeAcceptedAsReady() {
+        let data = #"""
+        {
+            "status": "ready",
+            "database": "configured",
+            "workerQueue": "configured",
+            "runtimeStore": "postgres",
+            "queue": ["ready"],
+            "version": "1.0.0"
+        }
+        """#.data(using: .utf8)!
+
+        XCTAssertThrowsError(try JSONDecoder().decode(ReadinessResponse.self, from: data))
+    }
 }

@@ -8,7 +8,16 @@
  * abandoned (the holder crashed) and is stolen.
  */
 
-import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from "node:fs";
 import { dirname, join } from "node:path";
 
 import { randomUUID } from "node:crypto";
@@ -39,24 +48,51 @@ export class FileLock {
     const deadline = Date.now() + this.acquireTimeoutMs;
     for (;;) {
       try {
-        writeFileSync(this.lockPath, JSON.stringify({ pid: process.pid, token: randomUUID() }), {
+        const token = randomUUID();
+        writeFileSync(this.lockPath, JSON.stringify({ pid: process.pid, token }), {
           encoding: "utf8",
           flag: "wx"
         });
-        return () => this.release();
+        return () => this.release(token);
       } catch (error) {
         if (!isEexist(error)) {
           throw error;
         }
-        if (this.isStale()) {
-          // The previous holder crashed; steal the lock.
-          unlinkSync(this.lockPath);
+        if (this.stealIfStale()) {
+          // The previous holder crashed; retry the exclusive create.
           continue;
         }
         if (Date.now() > deadline) {
           throw new Error(`loom: timed out acquiring lock ${this.lockPath}`);
         }
         await sleep(RETRY_INTERVAL_MS);
+      }
+    }
+  }
+
+  /** Synchronous variant for synchronous append/registry APIs. */
+  acquireSync(): () => void {
+    const deadline = Date.now() + this.acquireTimeoutMs;
+    while (true) {
+      try {
+        const token = randomUUID();
+        writeFileSync(this.lockPath, JSON.stringify({ pid: process.pid, token }), {
+          encoding: "utf8",
+          flag: "wx"
+        });
+        return () => this.release(token);
+      } catch (error) {
+        if (!isEexist(error)) {
+          throw error;
+        }
+        if (this.stealIfStale()) {
+          continue;
+        }
+        if (Date.now() > deadline) {
+          throw new Error(`loom: timed out acquiring lock ${this.lockPath}`);
+        }
+        // A synchronous API cannot await; sleep without a busy CPU loop.
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RETRY_INTERVAL_MS);
       }
     }
   }
@@ -70,9 +106,31 @@ export class FileLock {
     }
   }
 
-  private release(): void {
+  /**
+   * Atomically retire an abandoned lock. Returns false when the lock is live
+   * or another contender won the steal race, so a contender can never delete
+   * a lock freshly created between checking staleness and stealing it.
+   */
+  private stealIfStale(): boolean {
+    if (!this.isStale()) {
+      return false;
+    }
+    const retiredPath = `${this.lockPath}.retired.${process.pid}.${randomUUID()}`;
     try {
-      unlinkSync(this.lockPath);
+      renameSync(this.lockPath, retiredPath);
+    } catch {
+      return false;
+    }
+    rmSync(retiredPath, { force: true });
+    return true;
+  }
+
+  private release(token: string): void {
+    try {
+      const current = JSON.parse(readFileSync(this.lockPath, "utf8")) as { token?: unknown };
+      if (current.token === token) {
+        unlinkSync(this.lockPath);
+      }
     } catch {
       // Already released or stolen; ignore.
     }

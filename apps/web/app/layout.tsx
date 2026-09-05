@@ -14,6 +14,7 @@ import {
   SlidersHorizontal
 } from "lucide-react";
 import { loadRepositories } from "./data";
+import { repositoryHref } from "./security/navigation";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -28,7 +29,7 @@ function navigation(repositoryId: string | undefined) {
   const items = [
     { href: "/dashboard", label: "Dashboard", icon: Home },
     { href: "/dashboard/blocked-prs", label: "Blocked PRs", icon: GitPullRequestArrow },
-    { href: "/dashboard/policy-violations", label: "Policy Findings", icon: ListChecks },
+    { href: "/dashboard/policy-violations", label: "Policy Violations", icon: ListChecks },
     { href: "/dashboard/overrides", label: "Overrides", icon: ShieldCheck },
     { href: "/dashboard/evidence-completion", label: "Evidence", icon: PieChart },
     { href: "/dashboard/policy-insights", label: "Policy Insights", icon: Lightbulb },
@@ -36,8 +37,12 @@ function navigation(repositoryId: string | undefined) {
   ];
   if (repositoryId) {
     items.push(
-      { href: `/repositories/${repositoryId}/policy`, label: "Policy", icon: SlidersHorizontal },
-      { href: `/repositories/${repositoryId}/policy-preview`, label: "Preview", icon: Gauge }
+      { href: repositoryHref(repositoryId, "policy"), label: "Policy", icon: SlidersHorizontal },
+      {
+        href: repositoryHref(repositoryId, "policy-preview"),
+        label: "Preview",
+        icon: Gauge
+      }
     );
   }
   return [
