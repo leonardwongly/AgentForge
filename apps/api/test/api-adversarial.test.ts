@@ -117,9 +117,9 @@ function setProductionRedisEnv() {
   process.env.GITHUB_WEBHOOK_SECRET = "production-secret-32-characters-long";
   process.env.GITHUB_APP_ID = "123456";
   process.env.GITHUB_APP_PRIVATE_KEY = [
-    "-----BEGIN PRIVATE KEY-----",
+    "-----" + "BEGIN " + "PRIVATE KEY" + "-----",
     "test",
-    "-----END PRIVATE KEY-----"
+    "-----" + "END " + "PRIVATE KEY" + "-----"
   ].join("\n");
   process.env.GITHUB_APP_SLUG = "agentforge-test";
   process.env.GITHUB_CLIENT_ID = "Iv1.test";

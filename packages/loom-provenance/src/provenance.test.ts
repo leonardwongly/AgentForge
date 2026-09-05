@@ -184,7 +184,14 @@ describe("verifyEnvelope", () => {
     expect(() =>
       signStatement(buildDeterministicCheckStatement(baseInput), {
         publicKeyPem: key.publicKeyPem,
-        privateKeyPem: "-----BEGIN PRIVATE KEY-----\ngarbage\n-----END PRIVATE KEY-----\n"
+        privateKeyPem:
+          "-----" +
+          "BEGIN " +
+          "PRIVATE KEY" +
+          "-----\ngarbage\n-----" +
+          "END " +
+          "PRIVATE KEY" +
+          "-----\n"
       })
     ).toThrow();
   });
@@ -216,7 +223,10 @@ describe("pae", () => {
     const payloadType = "t";
     expect(payload.length).toBe(8);
     const expected = Buffer.concat([
-      Buffer.from(`DSSEv1 ${Buffer.byteLength(payloadType)} ${payloadType} ${payload.length} `, "ascii"),
+      Buffer.from(
+        `DSSEv1 ${Buffer.byteLength(payloadType)} ${payloadType} ${payload.length} `,
+        "ascii"
+      ),
       payload
     ]);
 

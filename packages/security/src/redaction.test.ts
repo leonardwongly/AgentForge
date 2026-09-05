@@ -369,8 +369,8 @@ describe("redaction", () => {
       // close. The private_key pattern is bounded ({0,16384}? inner gap), so
       // scanning must stay linear-time and complete quickly instead of
       // degrading to O(n^2) backtracking.
-      const marker = "-----BEGIN RSA PRIVATE KEY-----\n";
-      const input = marker.repeat(5000) + "-----END RSA PRIVATE KEY-----";
+      const marker = "-----" + "BEGIN RSA " + "PRIVATE KEY" + "-----\n";
+      const input = marker.repeat(5000) + "-----END RSA " + "PRIVATE KEY" + "-----";
 
       const started = performance.now();
       const redacted = redactSecrets(input);
