@@ -15,9 +15,9 @@
     "@agentforge/core": "workspace:*",
     "@agentforge/evidence": "workspace:*",
     "@agentforge/reviewers": "workspace:*",
-    "minimatch": "10.2.5",
+    "minimatch": "10.2.6",
     "yaml": "2.9.0",
-    "zod": "4.4.3"
+    "zod": "4.5.4"
   },
   "devDependencies": {
     "@agentforge/detectors": "workspace:*"
